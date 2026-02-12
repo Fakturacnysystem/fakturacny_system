@@ -37,6 +37,8 @@ class ExecutionService:
         liquidations: float,
         funding_rate: float,
         spread_bps: float,
+        regime: str,
+        liquidity_regime: str,
     ) -> list[Fill]:
         if anti_toxic_block(oi_spike_pct, liquidations, funding_rate, spread_bps):
             return []
@@ -45,10 +47,21 @@ class ExecutionService:
         fills = []
         for i, sl in enumerate(slices):
             partial = max(0.0, min(1.0, self.settings.partial_fill_ratio))
+            maker_ok = self.settings.maker_preference and regime != "PANIC" and liquidity_regime == "GOOD" and spread_bps <= 15
+            if maker_ok:
+                fill_mode = "maker"
+                fee_bps = self.settings.fee_bps * 0.6
+                slippage_bps = self.settings.slippage_bps * 0.5
+            else:
+                # maker timeout fallback to taker (deterministic)
+                fill_mode = "taker_timeout"
+                fee_bps = self.settings.fee_bps
+                slippage_bps = self.settings.slippage_bps * 1.5
+
             filled_notional = sl * partial
-            fee = filled_notional * (self.settings.fee_bps / 10000)
-            spread_slip = filled_notional * (self.settings.slippage_bps / 10000)
-            fill_id = sha256(f"{order_id}:{i}:{filled_notional}".encode()).hexdigest()[:16]
+            fee = filled_notional * (fee_bps / 10000)
+            spread_slip = filled_notional * (slippage_bps / 10000)
+            fill_id = sha256(f"{order_id}:{i}:{filled_notional}:{fill_mode}".encode()).hexdigest()[:16]
             dedupe_key = ("paper", order_id, fill_id)
             if dedupe_key in self.fill_seen:
                 continue
@@ -64,7 +77,7 @@ class ExecutionService:
                     fee=fee,
                     slippage_cost=spread_slip,
                     latency_ms=100 + i * 20,
-                    status="filled_partial" if partial < 1.0 else "filled",
+                    status=f"filled_partial_{fill_mode}" if partial < 1.0 else f"filled_{fill_mode}",
                 )
             )
         return fills

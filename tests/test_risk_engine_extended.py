@@ -20,6 +20,7 @@ def _risk() -> RiskEngineService:
             max_oi_spike_pct=3.0,
             max_liquidation_spike=100000.0,
             divergence_threshold_bps=30.0,
+            crowding_score_kill=25.0,
         ),
         safe_mode=False,
     )

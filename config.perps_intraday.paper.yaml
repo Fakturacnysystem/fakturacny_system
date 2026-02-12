@@ -13,7 +13,11 @@
     "source": "fixtures"
   },
   "fixtures": {
-    "ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"
+    "ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv",
+    "symbol_files": {
+      "BTCUSDT": "data/fixtures/perps/btcusdt_perp_5m.csv",
+      "ETHUSDT": "data/fixtures/perps/ethusdt_perp_5m.csv"
+    }
   },
   "execution": {
     "mode": "paper",
@@ -57,7 +61,8 @@
     "max_funding_cost_per_day": 0.8,
     "max_oi_spike_pct": 2.5,
     "max_liquidation_spike": 180000.0,
-    "divergence_threshold_bps": 30.0
+    "divergence_threshold_bps": 30.0,
+    "crowding_score_kill": 25.0
   },
   "mlops": {
     "retrain_enabled": true,

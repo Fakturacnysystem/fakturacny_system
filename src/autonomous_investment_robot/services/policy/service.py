@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings
+from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings, TCOSettings, UNSPECIFIED
 from autonomous_investment_robot.services.models.service import Forecast
 from autonomous_investment_robot.services.policy.allocator import BanditAllocator
 from autonomous_investment_robot.services.policy.strategy_plugins import CarryStrategy, MeanReversionStrategy, StrategySignal, TrendStrategy
@@ -18,8 +18,10 @@ class OrderIntent:
 
 
 class PolicyService:
-    def __init__(self, settings: PolicySettings, allocator_settings: AllocatorSettings) -> None:
+    def __init__(self, settings: PolicySettings, allocator_settings: AllocatorSettings, tco_settings: TCOSettings) -> None:
         self.settings = settings
+        self.tco_settings = tco_settings
+        self.last_veto_reasons: list[str] = []
         self.allocator = BanditAllocator(
             decay=allocator_settings.decay,
             max_weight=allocator_settings.max_weight_per_strategy,
@@ -33,6 +35,7 @@ class PolicyService:
         return [s.signal(features, forecast.regime, forecast.liquidity_regime) for s in self.strategies]
 
     def make_intent(self, fc: Forecast, features: dict[str, float], fee_bps: float, slippage_bps: float) -> OrderIntent | None:
+        self.last_veto_reasons = []
         signals = self.evaluate_strategies(features, fc)
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -48,8 +51,15 @@ class PolicyService:
                 impact_bps=impact_bps,
                 maker=True,
             )
-            edge = estimate_edge(forecast_mu=fc.mu, confidence=s.confidence)
+            edge = estimate_edge(forecast_mu=s.expected_edge_bps / 10000, confidence=s.confidence)
+            if self.tco_settings.max_impact_bps != UNSPECIFIED and cost.impact_bps > float(self.tco_settings.max_impact_bps):
+                self.last_veto_reasons.append("impact_cap")
+                continue
+            if self.tco_settings.max_total_cost_bps != UNSPECIFIED and cost.total_bps > float(self.tco_settings.max_total_cost_bps):
+                self.last_veto_reasons.append("total_cost_cap")
+                continue
             if not should_trade(edge, cost, safety_buffer_bps=self.settings.safety_buffer_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
+                self.last_veto_reasons.append("edge_le_cost")
                 continue
             contrib = s.target_notional * weights.get(s.name, 0.0)
             combined += contrib

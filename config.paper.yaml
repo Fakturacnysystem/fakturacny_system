@@ -27,7 +27,8 @@
     "max_funding_cost_per_day": 1.0,
     "max_oi_spike_pct": 3.0,
     "max_liquidation_spike": 200000.0,
-    "divergence_threshold_bps": 30.0
+    "divergence_threshold_bps": 30.0,
+    "crowding_score_kill": 25.0
   },
   "execution": {
     "mode": "paper",
@@ -48,5 +49,9 @@
   },
   "fixtures": {
     "ohlcv_csv": "data/fixtures/btcusdt_1h.csv"
+  },
+  "tco": {
+    "max_total_cost_bps": 15.0,
+    "max_impact_bps": 15.0
   }
 }

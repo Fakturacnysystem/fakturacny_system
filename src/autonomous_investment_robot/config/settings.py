@@ -33,6 +33,7 @@ class RiskLimits:
     max_oi_spike_pct: float | str = UNSPECIFIED
     max_liquidation_spike: float | str = UNSPECIFIED
     divergence_threshold_bps: float | str = UNSPECIFIED
+    crowding_score_kill: float | str = UNSPECIFIED
 
 
 @dataclass
@@ -59,6 +60,12 @@ class PolicySettings:
 
 
 @dataclass
+class TCOSettings:
+    max_total_cost_bps: float | str = UNSPECIFIED
+    max_impact_bps: float | str = UNSPECIFIED
+
+
+@dataclass
 class AllocatorSettings:
     max_weight_per_strategy: float = 0.7
     decay: float = 0.9
@@ -80,6 +87,7 @@ class StorageSettings:
 @dataclass
 class FixtureSettings:
     ohlcv_csv: str = "data/fixtures/btcusdt_1h.csv"
+    symbol_files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,6 +116,7 @@ class RobotSettings:
     risk: RiskLimits = field(default_factory=RiskLimits)
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     policy: PolicySettings = field(default_factory=PolicySettings)
+    tco: TCOSettings = field(default_factory=TCOSettings)
     allocator: AllocatorSettings = field(default_factory=AllocatorSettings)
     monitoring: MonitoringSettings = field(default_factory=MonitoringSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
@@ -140,6 +149,7 @@ class RobotSettings:
             risk=RiskLimits(**data.get("risk", {})),
             execution=ExecutionSettings(**data.get("execution", {})),
             policy=PolicySettings(**data.get("policy", {})),
+            tco=TCOSettings(**data.get("tco", {})),
             allocator=AllocatorSettings(**data.get("allocator", {})),
             monitoring=MonitoringSettings(**data.get("monitoring", {})),
             storage=StorageSettings(**data.get("storage", {})),
@@ -169,6 +179,7 @@ class RobotSettings:
             self.risk.max_oi_spike_pct,
             self.risk.max_liquidation_spike,
             self.risk.divergence_threshold_bps,
+            self.risk.crowding_score_kill,
         ]
         if any(v == UNSPECIFIED for v in required):
             # fail-closed always for trading path

@@ -32,7 +32,7 @@ class RobotOrchestrator:
         self.event_store = EventStore(settings.storage.run_dir)
         self.features = FeatureStoreService()
         self.models = ModelsService()
-        self.policy = PolicyService(settings.policy, settings.allocator)
+        self.policy = PolicyService(settings.policy, settings.allocator, settings.tco)
         self.risk = RiskEngineService(settings.risk, safe_mode=settings.safe_mode_default)
         self.execution = ExecutionService(settings.execution)
         self.recon = ReconciliationService()
@@ -59,6 +59,9 @@ class RobotOrchestrator:
             self.settings.risk.max_oi_spike_pct,
             self.settings.risk.max_liquidation_spike,
             self.settings.risk.divergence_threshold_bps,
+            self.settings.risk.crowding_score_kill,
+            self.settings.tco.max_total_cost_bps,
+            self.settings.tco.max_impact_bps,
         ]
         return any(v == UNSPECIFIED for v in req)
 
@@ -72,6 +75,13 @@ class RobotOrchestrator:
             return {"status": "blocked", "reason": c.reason}
         if self._missing_limits():
             return {"status": "blocked", "reason": "missing_required_limits"}
+
+        if len(self.settings.universe) > 1:
+            if not self.settings.fixtures.symbol_files:
+                return {"status": "blocked", "reason": "missing_symbol_fixtures"}
+            for sym in self.settings.universe:
+                if sym not in self.settings.fixtures.symbol_files:
+                    return {"status": "blocked", "reason": f"missing_fixture_for_{sym}"}
 
         bars = self.ingestion.replay_csv(symbol, self.settings.fixtures.ohlcv_csv)
         ok, issues = self.qa.validate_replay(bars)
@@ -102,6 +112,8 @@ class RobotOrchestrator:
             intent = self.policy.make_intent(fc, fv.values, self.settings.execution.fee_bps, self.settings.execution.slippage_bps)
             if intent is None:
                 self.ops.inc_metric("orders_rejected_total")
+                if self.policy.last_veto_reasons:
+                    self.ops.inc_metric("veto_tco_total", float(len(self.policy.last_veto_reasons)))
                 continue
 
             oi_prev = max(1.0, bars[i - 1].oi)
@@ -123,6 +135,7 @@ class RobotOrchestrator:
                 liquidation_spike=bar.liquidations,
                 divergence_bps=divergence_bps,
                 margin_buffer=margin_buffer,
+                funding_rate_abs=abs(bar.funding_rate),
             )
             if not decision.allowed:
                 self.event_store.append("risk", make_event(RiskEvent, "RISK_REJECT", symbol, "paper", self.event_store.next_seq("risk"), {"reason": decision.reason}))
@@ -144,7 +157,7 @@ class RobotOrchestrator:
             self.oms.transition(order_id, "ACK")
             self.event_store.append("orders", make_event(OrderEvent, "ORDER_ACK", symbol, "paper", self.event_store.next_seq("orders"), {"order_id": order_id}, idempotency_key=idem))
 
-            fills = self.execution.execute_paper(order_id, adjusted, bar.mark_price, bar.depth_notional, oi_spike, bar.liquidations, bar.funding_rate, bar.spread_bps)
+            fills = self.execution.execute_paper(order_id, adjusted, bar.mark_price, bar.depth_notional, oi_spike, bar.liquidations, bar.funding_rate, bar.spread_bps, fc.regime, fc.liquidity_regime)
             if not fills:
                 self.ops.inc_metric("orders_rejected_total")
                 continue
@@ -195,6 +208,8 @@ class RobotOrchestrator:
         self.ops.set_metric("slippage_bps", self.settings.execution.slippage_bps)
         self.ops.set_metric("fees_paid", sum(f.fee for f in fills_all))
         self.ops.set_metric("funding_paid", funding_paid_pct)
+        maker_count = len([f for f in fills_all if "maker" in f.status])
+        self.ops.set_metric("maker_fill_rate", 0.0 if not fills_all else maker_count / len(fills_all))
         avg_cost = 0.0
         if trade_log:
             vals = []
@@ -205,6 +220,7 @@ class RobotOrchestrator:
                 avg_cost = sum(vals) / len(vals)
 
         self.ops.set_metric("cost_total_bps", avg_cost)
+        self.ops.set_metric("crowding_score", getattr(self.risk.state, "last_crowding_score", 0.0))
         for k, v in self.policy.allocator.state.weights.items():
             self.ops.set_metric(f"allocator_weight_{k}", v)
 

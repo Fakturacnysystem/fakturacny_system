@@ -15,6 +15,7 @@ class RiskState:
     loss_streak: int = 0
     de_risk_multiplier: float = 1.0
     dd_throttle: float = 1.0
+    last_crowding_score: float = 0.0
 
 
 @dataclass
@@ -73,6 +74,9 @@ class RiskEngineService:
         if self.state.loss_streak >= 3:
             self.state.de_risk_multiplier = 0.5
 
+    def _crowding_score(self, funding_rate_abs: float, oi_spike_pct: float, liquidation_spike: float, spread_bps: float, divergence_bps: float) -> float:
+        return funding_rate_abs * 10000 + max(0.0, oi_spike_pct) + (liquidation_spike / 50000) + spread_bps / 10 + divergence_bps / 10
+
     def evaluate(
         self,
         intent: OrderIntent,
@@ -88,6 +92,7 @@ class RiskEngineService:
         liquidation_spike: float,
         divergence_bps: float,
         margin_buffer: float,
+        funding_rate_abs: float = 0.0,
     ) -> RiskDecision:
         if self.state.safe_mode:
             return RiskDecision(False, "safe_mode_default")
@@ -98,6 +103,11 @@ class RiskEngineService:
         if self.state.dd_throttle == 0.0:
             self.state.kill_switch = True
             return RiskDecision(False, "drawdown_safe_mode", flatten=True)
+
+        self.state.last_crowding_score = self._crowding_score(funding_rate_abs, oi_spike_pct, liquidation_spike, spread_bps, divergence_bps)
+        if self.state.last_crowding_score > float(self.limits.crowding_score_kill):
+            self.state.kill_switch = True
+            return RiskDecision(False, "crowding_radar_kill", flatten=True)
 
         if data_lag_seconds > float(self.limits.stale_data_seconds):
             self.state.kill_switch = True
