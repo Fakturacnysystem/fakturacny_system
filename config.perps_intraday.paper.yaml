@@ -31,7 +31,8 @@
   "policy": {
     "confidence_threshold": 0.52,
     "estimated_cost_bps": 4.0,
-    "base_risk_budget": 1200.0
+    "base_risk_budget": 1200.0,
+    "safety_buffer_bps": 1.5
   },
   "allocator": {
     "max_weight_per_strategy": 0.7,
@@ -75,5 +76,9 @@
     "5m",
     "15m",
     "1h"
-  ]
+  ],
+  "tco": {
+    "max_total_cost_bps": 15.0,
+    "max_impact_bps": 15.0
+  }
 }

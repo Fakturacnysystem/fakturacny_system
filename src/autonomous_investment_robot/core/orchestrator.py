@@ -195,6 +195,16 @@ class RobotOrchestrator:
         self.ops.set_metric("slippage_bps", self.settings.execution.slippage_bps)
         self.ops.set_metric("fees_paid", sum(f.fee for f in fills_all))
         self.ops.set_metric("funding_paid", funding_paid_pct)
+        avg_cost = 0.0
+        if trade_log:
+            vals = []
+            for t in trade_log:
+                comps = t.get("why", {}).get("components", [])
+                vals.extend([c.get("cost_total_bps", 0.0) for c in comps])
+            if vals:
+                avg_cost = sum(vals) / len(vals)
+
+        self.ops.set_metric("cost_total_bps", avg_cost)
         for k, v in self.policy.allocator.state.weights.items():
             self.ops.set_metric(f"allocator_weight_{k}", v)
 

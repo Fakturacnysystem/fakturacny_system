@@ -49,7 +49,7 @@ class PolicyService:
                 maker=True,
             )
             edge = estimate_edge(forecast_mu=fc.mu, confidence=s.confidence)
-            if not should_trade(edge, cost, safety_buffer_bps=self.settings.estimated_cost_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
+            if not should_trade(edge, cost, safety_buffer_bps=self.settings.safety_buffer_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
                 continue
             contrib = s.target_notional * weights.get(s.name, 0.0)
             combined += contrib

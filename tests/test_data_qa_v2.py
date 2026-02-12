@@ -13,3 +13,8 @@ def test_schema_mismatch_fail_closed():
     ok, reason = qa.schema_guard({"a": 1}, ["a", "b"])
     assert ok is False
     assert "schema_missing" in reason
+
+
+def test_outlier_squash():
+    qa = DataQAService()
+    assert qa.outlier_squash(200.0, 0.0, 100.0) == 100.0

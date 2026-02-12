@@ -26,3 +26,7 @@ class DataQAService:
     def schema_guard(self, row: dict, required_cols: list[str]) -> tuple[bool, str]:
         missing = [c for c in required_cols if c not in row]
         return (len(missing) == 0, "ok" if not missing else f"schema_missing:{','.join(missing)}")
+
+
+    def outlier_squash(self, value: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, value))

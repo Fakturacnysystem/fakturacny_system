@@ -54,6 +54,7 @@ class ExecutionSettings:
 class PolicySettings:
     confidence_threshold: float = 0.55
     estimated_cost_bps: float = 3.0
+    safety_buffer_bps: float = 1.0
     base_risk_budget: float = 1000.0
 
 
