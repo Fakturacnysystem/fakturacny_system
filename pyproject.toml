@@ -19,6 +19,9 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: opt-in networked integration tests (set RUN_TESTNET=1)"
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

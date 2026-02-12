@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 
 
 @dataclass
@@ -53,3 +55,37 @@ class DataIngestionService:
                     )
                 )
         return bars
+
+    def replay_recordings(self, run_dir: str, run_id: str, symbol: str, source: str = "recordings") -> list[IngestedBar]:
+        p = Path(run_dir) / "recordings" / run_id / "market.jsonl"
+        if not p.exists():
+            return []
+        out: list[IngestedBar] = []
+        close = 0.0
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            data = row.get("data", row)
+            evt = int(data.get("E", data.get("T", 0)))
+            ts = datetime.fromtimestamp(evt / 1000.0, tz=timezone.utc) if evt > 0 else datetime.now(timezone.utc)
+            if data.get("e") == "aggTrade":
+                close = float(data.get("p", close or 0.0))
+            if close <= 0:
+                continue
+            out.append(
+                IngestedBar(
+                    source=source,
+                    symbol=symbol,
+                    ts=ts,
+                    open=close,
+                    high=close,
+                    low=close,
+                    close=close,
+                    volume=float(data.get("q", 0.0)),
+                    mark_price=close,
+                    index_price=close,
+                    secondary_price=close,
+                )
+            )
+        return out

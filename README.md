@@ -1,65 +1,80 @@
-# Autonomous Investment Robot (Perps Intraday Paper, Safe-First)
+# Autonomous Investment Robot (Perps Intraday)
 
-Offline, deterministic autonomous crypto robot scaffold for intraday + perpetual futures paper trading.
+Offline-deterministic paper/replay robot with fail-closed Binance USD-M live execution path.
 
-## Safety invariants (hard)
-- Safe-mode default.
-- Missing/`UNSPECIFIED` critical limits => fail-closed no-trade.
-- Integrity kill paths (stale/divergence/reconciliation) => stop + safe mode + flatten (paper).
-- Live is hard-locked unless ALL are true: `ENABLE_LIVE_TRADING=true`, `ACK_I_UNDERSTAND_RISKS=true`, `CANARY_MODE=true`, and all required limits set.
+## Safety invariants (hard fail-closed)
+- Live order placement is blocked unless both env flags are true:
+  - `ENABLE_LIVE_TRADING=true`
+  - `ACK_I_UNDERSTAND_RISKS=true`
+- Live order placement is blocked unless:
+  - `provider_whitelist` includes `binance_um_perps`
+  - critical risk + TCO limits are explicit (no `UNSPECIFIED`)
+  - API key + secret env vars exist and config validates
+- Any of stale-data, schema mismatch, cross-feed divergence, reconciliation mismatch, auth errors, reject storm, abnormal latency => kill + safe mode + flatten + cooldown.
+- Keys must be trade-only with withdrawals disabled. If API permissions cannot be verified, live is refused unless `execution.binance.allow_unknown_permissions=true` is explicitly set.
 
-## Quickstart (offline)
+## Profiles
+- Paper baseline: `config.paper.yaml`
+- Paper perps intraday: `config.perps_intraday.paper.yaml`
+- Live readonly (no order placement): `config.perps_intraday.live_readonly.yaml`
+- Testnet tiny risk: `config.perps_intraday.testnet.yaml`
+- Live canary: `config.perps_intraday.live_canary.yaml`
+- Live full strict: `config.perps_intraday.live.yaml`
+
+## Amateur runbook (step-by-step)
+1. Create Binance Futures API key:
+- Futures enabled.
+- Withdrawals disabled.
+- IP allowlist strongly recommended.
+
+2. Configure `.env`:
+```bash
+EXCHANGE_API_KEY=...
+EXCHANGE_API_SECRET=...
+ENABLE_LIVE_TRADING=false
+ACK_I_UNDERSTAND_RISKS=false
+TESTNET_VALIDATED=false
+```
+
+3. Rollout path (must be sequential):
+1. `live-readonly` for 24-72h with recordings.
+2. `live_testnet` for 3-7 days with tiny notionals.
+3. `live_canary` for 1-2 weeks at 1-5% risk.
+4. `live` full strict after stability.
+
+## Commands
+```bash
+PYTHONPATH=src python -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
+PYTHONPATH=src python -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
+PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
+PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
+PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
+PYTHONPATH=src python -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml
+PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perps_intraday.paper.yaml --source recordings
+PYTHONPATH=src python -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
+```
+
+## Emergency stop
+- Soft stop: run with `--kill`.
+- Hard stop file: create `runs/<run_id>/KILL`.
+- Emergency flatten path uses reduce-only market close (if enabled in config).
+
+## Monitoring (Grafana)
+- drawdown (`drawdown`)
+- exposure (`exposure_notional`)
+- reject count (`orders_rejected_total`)
+- ws disconnect storm (`ws_disconnects_5m`)
+- reconciliation mismatch (`reconciliation_mismatch_total`)
+- execution cost (`cost_total_bps`)
+
+## Offline deterministic workflow
 ```bash
 make up
 make init
 make paper
+pytest -q
 ```
-
-## Paper profiles
-- Baseline: `config.paper.yaml`
-- Perps intraday: `config.perps_intraday.paper.yaml`
-
-Run:
-```bash
-PYTHONPATH=src python scripts/run_paper.py --config config.perps_intraday.paper.yaml
-PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perps_intraday.paper.yaml --source fixtures
-```
-
-## What is implemented
-- Strategy ensemble plugins (trend, mean-reversion, carry stub) + regime controller (TREND/RANGE/PANIC, GOOD/THIN).
-- Bandit allocator with decay, cooldown, fatal-loss kill, max strategy weight.
-- Cost-aware policy (TCO gate: fees + slippage + funding + spread component).
-- Execution v2: anti-toxic filter, participation cap, slicing (POV/TWAP-like), partial fills.
-- Risk v2: perps constraints (funding/OI/liquidations/margin buffer/divergence), DD throttle, CVaR approx, flatten triggers.
-- Deterministic append-only event log with checksum/idempotency.
-- Incident policy engine + notifier stub.
-- MLOps stubs: registry, drift detector, canary/rollback trigger logic.
-
-## Monitoring
-- Prometheus: `infra/prometheus.yml`
-- Alerts: `infra/alerts/alerts.yml`
-- Grafana dashboard: `infra/grafana/dashboards/autobot.json`
-
-## Incident automation mapping
-- DataStale -> safe_mode
-- RejectStorm -> cooldown
-- ReconciliationMismatch -> flatten
-- HighSlippage -> reduce_size
-
-## Outputs
-`runs/*` include:
-- `order_plans.json`, `fills.json`, `report.json`, `checksums.json`
-- `events_*.jsonl` (append-only)
-- `metrics.prom`
-- `audit.log`, `config_history.jsonl`
 
 ## Security hygiene
 - Secrets via env vars only.
 - Never commit API keys.
-
-
-## Metrics exported
-- pnl, drawdown, exposure_notional
-- fees_paid, funding_paid, slippage_bps
-- allocator_weight_*
-- compliance_veto_state, kill_switch_state, reconciliation_mismatch_total

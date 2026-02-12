@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 
-from autonomous_investment_robot.config.settings import ExecutionSettings
+from autonomous_investment_robot.config.settings import ExecutionMode, ExecutionSettings
 from autonomous_investment_robot.services.execution.tco import anti_toxic_block, slice_notional
 from autonomous_investment_robot.services.policy.service import OrderIntent
 
@@ -26,6 +26,10 @@ class ExecutionService:
     def __init__(self, settings: ExecutionSettings) -> None:
         self.settings = settings
         self.fill_seen: set[tuple[str, str, str]] = set()
+        self.live_service = None
+
+    def attach_live_service(self, live_service: object) -> None:
+        self.live_service = live_service
 
     def execute_paper(
         self,
@@ -81,6 +85,16 @@ class ExecutionService:
                 )
             )
         return fills
+
+    def execute_live(self, intent: OrderIntent):
+        mode = ExecutionMode(self.settings.mode)
+        if self.live_service is None:
+            raise RuntimeError("live_service_not_configured")
+        if mode == ExecutionMode.LIVE_READONLY:
+            return self.live_service.execute_readonly(intent)
+        if mode in {ExecutionMode.LIVE_TESTNET, ExecutionMode.LIVE}:
+            return self.live_service.execute_intent(intent)
+        raise RuntimeError("execute_live_called_in_paper_mode")
 
     def flatten_worst_case(self, symbol: str, exposure_notional: float) -> Fill:
         fee = abs(exposure_notional) * (self.settings.fee_bps / 10000)

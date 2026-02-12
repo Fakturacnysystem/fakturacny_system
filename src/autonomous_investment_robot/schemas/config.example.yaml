@@ -1,32 +1,51 @@
-trading_mode: paper
-explicit_live_enable: false
-safe_mode_default: true
+mode: paper
+provider_whitelist:
+  - paper_sim_provider
+execution:
+  mode: paper
+  binance:
+    rest_base_url: https://fapi.binance.com
+    ws_stream_base_url: wss://fstream.binance.com
+    ws_user_base_url: wss://fstream.binance.com
+    api_key_env: EXCHANGE_API_KEY
+    api_secret_env: EXCHANGE_API_SECRET
+    recv_window_ms: 5000
+    request_timeout_s: 10
+    rate_limit_rps: 8
+    max_retries: 3
+    backoff_base_ms: 200
+    backoff_max_ms: 3000
+    account_mode: one_way
+    leverage_target: 1
+    margin_type: ISOLATED
+    reduce_only_on_flatten: true
+    maker_preference: true
+    maker_timeout_s: 20
+    taker_fallback: true
+    idempotency_salt_env: ORDER_SALT
+    allow_unknown_permissions: false
+safety:
+  live_unlock:
+    enable_live_trading: false
+    ack_i_understand_risks: false
+    require_testnet_passed: true
+    canary_required_before_full: true
 risk:
   max_daily_loss_pct: UNSPECIFIED
   max_drawdown_pct: UNSPECIFIED
-  var_confidence: UNSPECIFIED
-  var_horizon: UNSPECIFIED
-  cvar_confidence: UNSPECIFIED
-  cvar_horizon: UNSPECIFIED
-  per_asset_cap: UNSPECIFIED
-  per_venue_cap: UNSPECIFIED
-  depth_usage_limit_pct: UNSPECIFIED
-  max_spread_percentile: UNSPECIFIED
-compliance:
-  require_authorized_provider: true
-  mica_register_url: UNSPECIFIED
-  travel_rule_enabled: true
-  allowed_providers: []
-security:
-  require_ip_allowlist: true
-  trading_key_withdrawals_disabled: true
-  key_rotation_days: UNSPECIFIED
-connectors:
-  binance:
-    ws_url: UNSPECIFIED
-    rest_url: UNSPECIFIED
-    api_key_env: BINANCE_API_KEY
-  coinbase:
-    ws_url: UNSPECIFIED
-    rest_url: UNSPECIFIED
-    api_key_env: COINBASE_API_KEY
+  max_position_notional: UNSPECIFIED
+  max_exposure_notional: UNSPECIFIED
+  max_orders_per_min: UNSPECIFIED
+  leverage: UNSPECIFIED
+  max_spread_bps: UNSPECIFIED
+  min_depth_notional: UNSPECIFIED
+  stale_data_seconds: UNSPECIFIED
+  min_margin_buffer: UNSPECIFIED
+  max_funding_cost_per_day: UNSPECIFIED
+  max_oi_spike_pct: UNSPECIFIED
+  max_liquidation_spike: UNSPECIFIED
+  divergence_threshold_bps: UNSPECIFIED
+  crowding_score_kill: UNSPECIFIED
+tco:
+  max_total_cost_bps: UNSPECIFIED
+  max_impact_bps: UNSPECIFIED

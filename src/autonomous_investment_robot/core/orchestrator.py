@@ -4,12 +4,14 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 
-from autonomous_investment_robot.config.settings import RobotSettings, UNSPECIFIED
+from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, UNSPECIFIED
+from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceUMPerpsConnector
 from autonomous_investment_robot.services.compliance.service import ComplianceService
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.data_qa.service import DataQAService
 from autonomous_investment_robot.services.event_store.service import EventStore
 from autonomous_investment_robot.services.execution.service import ExecutionService
+from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
 from autonomous_investment_robot.services.feature_store.service import FeatureStoreService
 from autonomous_investment_robot.services.incident.service import IncidentPolicy, Notifier
 from autonomous_investment_robot.services.mlops.service import MLOpsService
@@ -68,13 +70,34 @@ class RobotOrchestrator:
     def boot(self) -> dict:
         self.ops.track_config(asdict(self.settings))
         symbol = self.settings.universe[0]
-        provider = "paper_sim_provider"
+        mode = self.settings.execution_mode_enum()
+        provider = "paper_sim_provider" if mode == ExecutionMode.PAPER else "binance_um_perps"
         c = self.compliance.check_provider_authorization(provider)
         self.event_store.append("compliance", make_event(ComplianceEvent, "COMPLIANCE_CHECK", symbol, provider, self.event_store.next_seq("compliance"), {"allowed": c.allowed, "reason": c.reason}))
         if not c.allowed:
             return {"status": "blocked", "reason": c.reason}
         if self._missing_limits():
             return {"status": "blocked", "reason": "missing_required_limits"}
+
+        if mode != ExecutionMode.PAPER:
+            live = LiveBinanceService(
+                settings=self.settings,
+                run_id=self.settings.storage.run_dir.replace("/", "_"),
+                connector=BinanceUMPerpsConnector(self.settings.execution.binance),
+            )
+            self.execution.attach_live_service(live)
+            ok_preflight, reason_preflight = live.preflight()
+            self.recon.persist_report(
+                self.settings.storage.run_dir,
+                {"mode": mode.value, "preflight_ok": ok_preflight, "reason": reason_preflight},
+            )
+            if not ok_preflight:
+                self.ops.inc_metric("auth_errors_total")
+                inc = self.incidents.evaluate(self.ops.metrics)
+                if inc is not None:
+                    self.notifier.notify(inc.action, inc.reason)
+                return {"status": "blocked", "reason": reason_preflight}
+            return {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
 
         if len(self.settings.universe) > 1:
             if not self.settings.fixtures.symbol_files:
