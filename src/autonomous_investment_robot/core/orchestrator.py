@@ -50,6 +50,15 @@ class RobotOrchestrator:
             self.settings.risk.max_position_notional,
             self.settings.risk.max_exposure_notional,
             self.settings.risk.max_orders_per_min,
+            self.settings.risk.leverage,
+            self.settings.risk.max_spread_bps,
+            self.settings.risk.min_depth_notional,
+            self.settings.risk.stale_data_seconds,
+            self.settings.risk.min_margin_buffer,
+            self.settings.risk.max_funding_cost_per_day,
+            self.settings.risk.max_oi_spike_pct,
+            self.settings.risk.max_liquidation_spike,
+            self.settings.risk.divergence_threshold_bps,
         ]
         return any(v == UNSPECIFIED for v in req)
 
@@ -73,7 +82,7 @@ class RobotOrchestrator:
 
         equity, peak, exposure = 1.0, 1.0, 0.0
         funding_paid_pct = 0.0
-        fills_all, plans, strategy_perf = [], [], {"trend": 0.0, "mean_reversion": 0.0, "carry": 0.0}
+        fills_all, plans, trade_log, strategy_perf = [], [], [], {"trend": 0.0, "mean_reversion": 0.0, "carry": 0.0}
 
         for i in range(1, len(fvs)):
             fv = fvs[i - 1]
@@ -82,7 +91,11 @@ class RobotOrchestrator:
 
             if self.qa.divergence_breaker(bar, float(self.settings.risk.divergence_threshold_bps)):
                 self.risk.state.kill_switch = True
+                self.risk.state.safe_mode = True
                 self.event_store.append("risk", make_event(RiskEvent, "DIVERGENCE_KILL", symbol, "paper", self.event_store.next_seq("risk"), {"divergence": True}))
+                if abs(exposure) > 0:
+                    fills_all.append(self.execution.flatten_worst_case(symbol, exposure))
+                    exposure = 0.0
                 break
 
             fc = self.models.forecast(fv)
@@ -152,6 +165,7 @@ class RobotOrchestrator:
             exposure += fill_notional if adjusted.side == "buy" else -fill_notional
             self.risk.record_return((pnl / max(fill_notional, 1.0)) * 100)
             plans.append({"order_id": order_id, **asdict(adjusted)})
+            trade_log.append({"order_id": order_id, "side": adjusted.side, "notional": fill_notional, "pnl": pnl, "why": adjusted.why})
             self.ops.inc_metric("orders_submitted_total")
             strategy_perf = {k: v + pnl / 10000 for k, v in strategy_perf.items()}
             self.policy.update_allocator(strategy_perf)
@@ -192,6 +206,7 @@ class RobotOrchestrator:
         self.raw.write_table("order_plans", plans)
         self.raw.write_table("fills", [asdict(f) for f in fills_all])
         self.raw.write_table("report", [{"equity": equity, "drawdown": drawdown, "funding_paid_pct": funding_paid_pct}])
+        self.raw.write_table("trade_log", trade_log)
 
         checksums = {
             "orders_checksum": sha256(json.dumps(plans, sort_keys=True, default=str).encode()).hexdigest(),

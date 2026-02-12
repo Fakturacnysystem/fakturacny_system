@@ -38,5 +38,8 @@ class MLOpsService:
         self.drift_psi_threshold = drift_psi_threshold
         self.detector = DriftDetector()
 
+    def canary_risk_budget(self, total_risk_budget: float, canary_pct: float) -> float:
+        return max(0.0, total_risk_budget * canary_pct)
+
     def should_rollback(self, drawdown_pct: float, psi_value: float) -> bool:
         return drawdown_pct < -self.rollback_dd_threshold_pct or psi_value > self.drift_psi_threshold

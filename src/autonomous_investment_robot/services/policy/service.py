@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings
-from autonomous_investment_robot.services.execution.tco import edge_after_cost, estimate_total_cost_bps
 from autonomous_investment_robot.services.models.service import Forecast
 from autonomous_investment_robot.services.policy.allocator import BanditAllocator
 from autonomous_investment_robot.services.policy.strategy_plugins import CarryStrategy, MeanReversionStrategy, StrategySignal, TrendStrategy
+from autonomous_investment_robot.services.policy.tco import estimate_cost, estimate_edge, should_trade
 
 
 @dataclass
@@ -39,20 +39,36 @@ class PolicyService:
         combined = 0.0
         why_parts = []
         for s in signals:
-            total_cost = estimate_total_cost_bps(
+            impact_bps = min(15.0, abs(s.target_notional) / max(features.get("depth_notional", 1.0), 1.0) * 10000)
+            cost = estimate_cost(
                 fee_bps=fee_bps,
                 slippage_bps=slippage_bps,
                 funding_bps=abs(features.get("funding_rate", 0.0)) * 10000,
                 spread_bps=features.get("spread_proxy", 0.0) * 10000,
+                impact_bps=impact_bps,
                 maker=True,
             )
-            edge_bps = abs(fc.mu) * 10000 * s.confidence
-            net_edge = edge_after_cost(edge_bps, total_cost)
-            if net_edge <= 0:
+            edge = estimate_edge(forecast_mu=fc.mu, confidence=s.confidence)
+            if not should_trade(edge, cost, safety_buffer_bps=self.settings.estimated_cost_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
                 continue
             contrib = s.target_notional * weights.get(s.name, 0.0)
             combined += contrib
-            why_parts.append({"strategy": s.name, "weight": weights.get(s.name, 0.0), "net_edge_bps": net_edge, **s.why})
+            why_parts.append(
+                {
+                    "strategy": s.name,
+                    "weight": weights.get(s.name, 0.0),
+                    "edge_bps": edge.expected_bps,
+                    "cost_total_bps": cost.total_bps,
+                    "cost_breakdown": {
+                        "fees_bps": cost.fees_bps,
+                        "slippage_bps": cost.slippage_bps,
+                        "funding_bps": cost.funding_bps,
+                        "impact_bps": cost.impact_bps,
+                        "spread_bps": cost.spread_bps,
+                    },
+                    **s.why,
+                }
+            )
 
         if abs(combined) < 1e-9 or fc.confidence < self.settings.confidence_threshold:
             return None

@@ -56,3 +56,10 @@ PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perp
 ## Security hygiene
 - Secrets via env vars only.
 - Never commit API keys.
+
+
+## Metrics exported
+- pnl, drawdown, exposure_notional
+- fees_paid, funding_paid, slippage_bps
+- allocator_weight_*
+- compliance_veto_state, kill_switch_state, reconciliation_mismatch_total

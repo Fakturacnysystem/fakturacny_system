@@ -1,11 +1,20 @@
 {
   "mode": "paper",
   "safe_mode_default": false,
-  "provider_whitelist": ["paper_sim_provider"],
-  "universe": ["BTCUSDT"],
+  "provider_whitelist": [
+    "paper_sim_provider"
+  ],
+  "universe": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
   "timeframe": "5m",
-  "replay": {"source": "fixtures"},
-  "fixtures": {"ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"},
+  "replay": {
+    "source": "fixtures"
+  },
+  "fixtures": {
+    "ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"
+  },
   "execution": {
     "mode": "paper",
     "fee_bps": 2.0,
@@ -13,10 +22,24 @@
     "partial_fill_ratio": 0.8,
     "maker_preference": true,
     "max_participation_rate": 0.12,
-    "slicing_parts": 3
+    "slicing_parts": 3,
+    "maker_timeout_s": 20,
+    "max_pct_volume": 0.1,
+    "max_pct_top_depth": 0.12,
+    "max_child_orders": 5
   },
-  "policy": {"confidence_threshold": 0.52, "estimated_cost_bps": 4.0, "base_risk_budget": 1200.0},
-  "allocator": {"max_weight_per_strategy": 0.7, "decay": 0.9, "min_samples": 2, "fatal_sigma_loss": 2.5, "cooldown_steps": 3},
+  "policy": {
+    "confidence_threshold": 0.52,
+    "estimated_cost_bps": 4.0,
+    "base_risk_budget": 1200.0
+  },
+  "allocator": {
+    "max_weight_per_strategy": 0.7,
+    "decay": 0.9,
+    "min_samples": 2,
+    "fatal_sigma_loss": 2.5,
+    "cooldown_steps": 3
+  },
   "risk": {
     "max_daily_loss_pct": 5.0,
     "max_drawdown_pct": 10.0,
@@ -35,7 +58,22 @@
     "max_liquidation_spike": 180000.0,
     "divergence_threshold_bps": 30.0
   },
-  "mlops": {"retrain_enabled": true, "canary_risk_pct": 0.05, "rollback_dd_threshold_pct": 2.0, "drift_psi_threshold": 0.2},
-  "storage": {"run_dir": "runs/perps_intraday"},
-  "monitoring": {"metrics_port": 9108}
+  "mlops": {
+    "retrain_enabled": true,
+    "canary_risk_pct": 0.05,
+    "rollback_dd_threshold_pct": 2.0,
+    "drift_psi_threshold": 0.2
+  },
+  "storage": {
+    "run_dir": "runs/perps_intraday"
+  },
+  "monitoring": {
+    "metrics_port": 9108
+  },
+  "timeframes": [
+    "1m",
+    "5m",
+    "15m",
+    "1h"
+  ]
 }

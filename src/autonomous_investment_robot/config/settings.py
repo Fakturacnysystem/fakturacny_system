@@ -42,7 +42,11 @@ class ExecutionSettings:
     slippage_bps: float = 1.0
     partial_fill_ratio: float = 0.7
     maker_preference: bool = True
+    maker_timeout_s: int = 30
     max_participation_rate: float = 0.1
+    max_pct_volume: float = 0.1
+    max_pct_top_depth: float = 0.12
+    max_child_orders: int = 5
     slicing_parts: int = 2
 
 
