@@ -1,12 +1,12 @@
-CREATE TABLE IF NOT EXISTS raw_ticks (
-  venue String,
-  symbol String,
+CREATE TABLE IF NOT EXISTS market_events (
   ts DateTime,
-  mid Float64,
-  bid Float64,
-  ask Float64,
-  spread Float64
-) ENGINE = MergeTree ORDER BY (symbol, ts);
+  event_type String,
+  symbol String,
+  venue String,
+  seq UInt64,
+  checksum String,
+  payload String
+) ENGINE = MergeTree ORDER BY (symbol, seq);
 
 CREATE TABLE IF NOT EXISTS features (
   symbol String,
@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS forecasts (
   model_version String,
   symbol String,
   ts DateTime,
+  regime String,
+  liquidity_regime String,
   mu Float64,
   sigma Float64,
   confidence Float64

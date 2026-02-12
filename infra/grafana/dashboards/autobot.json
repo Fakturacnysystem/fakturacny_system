@@ -1,0 +1,11 @@
+{
+  "title": "Autonomous Investment Robot - Paper MVP",
+  "panels": [
+    {"type": "stat", "title": "PnL", "targets": [{"expr": "pnl"}]},
+    {"type": "stat", "title": "Drawdown", "targets": [{"expr": "drawdown"}]},
+    {"type": "stat", "title": "Exposure", "targets": [{"expr": "exposure_notional"}]},
+    {"type": "stat", "title": "Kill Switch", "targets": [{"expr": "kill_switch_state"}]}
+  ],
+  "schemaVersion": 36,
+  "version": 1
+}

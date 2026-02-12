@@ -1,42 +1,53 @@
-# Autonomous Investment Robot (Paper-First MVP)
+# Autonomous Investment Robot (Paper-First, Deterministic MVP+)
 
-Safe-first autonomous crypto robot scaffold with deterministic risk/compliance guardrails.
+Safe-first autonomous crypto robot scaffold with deterministic replay, OMS lifecycle, portfolio risk guardrails, reconciliation hard-stop, and offline paper execution.
 
-## Why `run_paper.py` previously vetoed
-The previous run vetoed because compliance requires provider authorization and the whitelist was empty. In this MVP, `config.paper.yaml` contains `provider_whitelist: [paper_sim_provider]`, and the replay provider uses that exact id, so compliance passes in paper mode.
+## Why paper run previously vetoed
+Compliance required an authorized provider and whitelist was empty. The provided `config.paper.yaml` now includes `paper_sim_provider`, so paper runs pass compliance gate.
 
 ## HARD safety invariants
-- Default is paper-only / safe behavior.
-- Live mode requires **double unlock**: `ENABLE_LIVE_TRADING=true` and `ACK_I_UNDERSTAND_RISKS=true`.
-- Live mode also requires all mandatory risk limits (otherwise hard reject).
-- Any missing/`UNSPECIFIED` critical risk config => no-trade.
+- safe-mode default supported (`safe_mode_default=true` blocks trading)
+- no-trade if required limits are missing / `UNSPECIFIED`
+- integrity kill path (stale/liq hole/spread explosion/reconciliation mismatch)
+- live trading hard-blocked unless: `ENABLE_LIVE_TRADING=true` + `ACK_I_UNDERSTAND_RISKS=true` + `CANARY_MODE=true` + complete risk limits
+- no secrets in repo
 
-## Infra Quickstart
+## One-command local flow
 ```bash
+make up
+make init
+make paper
+```
+
+## Commands
+```bash
+# infra
 docker compose -f infra/docker-compose.yml up -d
 ./scripts/init_db.sh
-```
 
-Services:
-- Postgres 5432 (init via `infra/postgres-init/001_init.sql`)
-- ClickHouse 8123/9000 (init via `infra/clickhouse-init/001_init.sql`)
-- NATS, Redis, MinIO, Prometheus, Grafana
-
-## Paper run (offline, deterministic fixture replay)
-```bash
+# paper run (offline fixtures)
 PYTHONPATH=src python scripts/run_paper.py --config config.paper.yaml
-```
-Outputs are written to `runs/latest/`:
-- `raw_bars.json`, `features.json`, `forecasts.json`, `order_plans.json`, `fills.json`, `positions.json`, `risk_events.json`, `report.json`
-- `metrics.prom` (Prometheus text format)
-- `audit.log`
 
-## Tests
-```bash
+# deterministic replay CLI
+PYTHONPATH=src python -m autonomous_investment_robot replay --config config.paper.yaml --source fixtures
+
+# tests
 pytest -q
 ```
 
-## Architecture
+## Outputs (`runs/latest`)
+- `order_plans.json`, `fills.json`, `report.json`, `checksums.json`
+- `events_*.jsonl` immutable event streams (market/orders/fills/risk/compliance/positions)
+- `metrics.prom` Prometheus export
+- `audit.log`, `config_history.jsonl`
+
+## Monitoring
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000
+- Alert rules: `infra/alerts/alerts.yml`
+- Dashboard: `infra/grafana/dashboards/autobot.json`
+
+## Mermaid architecture (required)
 ```mermaid
 flowchart LR
  subgraph Market["Trhy a externé zdroje"]
@@ -80,128 +91,4 @@ flowchart LR
  OPS --> ING
  OPS --> OMS
  OPS --> RISK
-```
-
-## Data model ERD
-```mermaid
-erDiagram
- raw_tick ||--o{ raw_trade : contains
- raw_tick {
- string venue
- string symbol
- datetime ts
- float mid
- float bid
- float ask
- float spread
- }
- orderbook_snapshot ||--o{ orderbook_level : has
- orderbook_snapshot {
- string venue
- string symbol
- datetime ts
- int depth
- string checksum
- int sequence
- }
- orderbook_level {
- string side
- float price
- float qty
- int num_orders
- }
- featureset ||--o{ feature_value : includes
- featureset {
- string feature_version
- string symbol
- datetime ts
- }
- feature_value {
- string name
- float value
- }
- forecast ||--o{ forecast_quantile : provides
- forecast {
- string model_version
- string symbol
- datetime ts
- string horizon
- float mu
- float sigma
- float entropy
- }
- forecast_quantile {
- float q
- float value
- }
- order_intent ||--o{ order : spawns
- order {
- string venue
- string symbol
- string side
- float qty
- float limit_price
- string status
- }
- order ||--o{ fill : results_in
- fill {
- datetime ts
- float qty
- float price
- float fee
- }
- position {
- string symbol
- float qty
- float avg_price
- float unrealized_pnl
- }
- risk_event {
- datetime ts
- string type
- string severity
- string action
- }
-```
-
-## Reporting format examples
-```mermaid
-xychart-beta
- title "Ilustračné equity curves (normalized) – reportovací formát"
- x-axis ["M1","M2","M3","M4","M5","M6","M7","M8","M9","M10","M11","M12"]
- y-axis "Equity" 80 --> 130
- line [100,101,103,104,106,108,107,109,112,115,118,120]
- line [100,99,100,102,101,103,104,105,104,106,107,108]
- line [100,102,101,103,105,104,106,108,110,109,111,113]
-```
-
-```mermaid
-pie title Ilustračné rizikové budgety portfólia (example)
- "Trend engine" : 35
- "Mean-reversion engine" : 25
- "Carry/Basis" : 20
- "Tail hedge" : 10
- "Cash/Safety buffer" : 10
-```
-
-## MVP roadmap
-```mermaid
-gantt
- title MVP roadmap autonómneho robota (30/90/180 dní)
- dateFormat YYYY-MM-DD
- axisFormat %d.%m
- section 30 dní
- Data ingestion + QA + raw store :a1, 2026-02-11, 30d
- OMS/EMS minimum + paper trading :a2, 2026-02-11, 30d
- Risk engine v1 (hard limits, kill) :a3, 2026-02-11, 30d
- section 90 dní
- Feature store + baseline forecast :b1, 2026-03-13, 60d
- Regime detector + strategy engines :b2, 2026-03-13, 60d
- Backtest (fees+slip+funding+latency) :b3, 2026-03-13, 60d
- Canary live (malé limity) :b4, 2026-04-15, 30d
- section 180 dní
- SOR + advanced execution algos :c1, 2026-05-15, 60d
- Options/hedging module (ak dostupné) :c2, 2026-05-15, 60d
- Compliance + reporting automation :c3, 2026-05-15, 60d
- Model governance + auto-rollback :c4, 2026-06-15, 60d
 ```

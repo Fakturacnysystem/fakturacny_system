@@ -11,8 +11,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.paper.yaml")
     args = parser.parse_args()
-    result = run_with_config(args.config)
-    print(json.dumps(result, indent=2))
+    print(json.dumps(run_with_config(args.config), indent=2))
 
 
 if __name__ == "__main__":

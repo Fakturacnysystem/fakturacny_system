@@ -3,6 +3,7 @@ services:
   nats:
     image: nats:2.10
     ports: ["4222:4222"]
+
   redis:
     image: redis:7
     ports: ["6379:6379"]
@@ -54,7 +55,13 @@ services:
   prometheus:
     image: prom/prometheus:latest
     ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts:/etc/prometheus/alerts:ro
 
   grafana:
     image: grafana/grafana:latest
     ports: ["3000:3000"]
+    volumes:
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro

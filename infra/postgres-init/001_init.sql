@@ -3,26 +3,34 @@ CREATE TABLE IF NOT EXISTS orders (
   venue TEXT,
   symbol TEXT,
   side TEXT,
-  qty DOUBLE PRECISION,
-  limit_price DOUBLE PRECISION,
-  status TEXT,
+  notional DOUBLE PRECISION,
+  state TEXT,
+  idempotency_key TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS order_events (
+  ts TIMESTAMPTZ DEFAULT now(),
+  order_id TEXT,
+  state TEXT,
+  payload JSONB
 );
 
 CREATE TABLE IF NOT EXISTS fills (
   fill_id TEXT PRIMARY KEY,
   order_id TEXT,
+  venue TEXT,
   ts TIMESTAMPTZ,
-  qty DOUBLE PRECISION,
-  price DOUBLE PRECISION,
-  fee DOUBLE PRECISION
+  notional DOUBLE PRECISION,
+  fee DOUBLE PRECISION,
+  slippage_cost DOUBLE PRECISION,
+  idempotency_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS positions (
   symbol TEXT PRIMARY KEY,
-  qty DOUBLE PRECISION,
-  avg_price DOUBLE PRECISION,
-  unrealized_pnl DOUBLE PRECISION
+  exposure_notional DOUBLE PRECISION,
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS risk_events (
@@ -33,10 +41,9 @@ CREATE TABLE IF NOT EXISTS risk_events (
   payload JSONB
 );
 
-CREATE TABLE IF NOT EXISTS reports (
+CREATE TABLE IF NOT EXISTS compliance_events (
   ts TIMESTAMPTZ DEFAULT now(),
-  equity DOUBLE PRECISION,
-  drawdown DOUBLE PRECISION,
-  exposure DOUBLE PRECISION,
-  notes TEXT
+  provider TEXT,
+  allowed BOOLEAN,
+  reason TEXT
 );

@@ -23,6 +23,11 @@ class RiskLimits:
     max_exposure_notional: float | str = UNSPECIFIED
     max_orders_per_min: int | str = UNSPECIFIED
     leverage: int | str = UNSPECIFIED
+    target_portfolio_vol: float | str = UNSPECIFIED
+    cvar_limit_pct: float | str = UNSPECIFIED
+    max_spread_bps: float | str = UNSPECIFIED
+    min_depth_notional: float | str = UNSPECIFIED
+    stale_data_seconds: float | str = UNSPECIFIED
 
 
 @dataclass
@@ -56,10 +61,16 @@ class FixtureSettings:
 
 
 @dataclass
+class ReplaySettings:
+    source: str = "fixtures"
+
+
+@dataclass
 class RobotSettings:
     trading_mode: TradingMode = TradingMode.PAPER
     explicit_live_enable: bool = False
     ack_live_risks: bool = False
+    canary_mode: bool = False
     safe_mode_default: bool = True
     provider_whitelist: list[str] = field(default_factory=list)
     universe: list[str] = field(default_factory=lambda: ["BTCUSDT"])
@@ -70,40 +81,38 @@ class RobotSettings:
     monitoring: MonitoringSettings = field(default_factory=MonitoringSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
+    replay: ReplaySettings = field(default_factory=ReplaySettings)
 
     @classmethod
     def from_env(cls) -> "RobotSettings":
         mode = TradingMode(os.getenv("ROBOT_TRADING_MODE", "paper"))
         explicit = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
         ack = os.getenv("ACK_I_UNDERSTAND_RISKS", "false").lower() == "true"
+        canary = os.getenv("CANARY_MODE", "false").lower() == "true"
         safe = os.getenv("ROBOT_SAFE_MODE_DEFAULT", "true").lower() == "true"
         providers = [p for p in os.getenv("ROBOT_PROVIDER_WHITELIST", "").split(",") if p]
-        return cls(trading_mode=mode, explicit_live_enable=explicit, ack_live_risks=ack, safe_mode_default=safe, provider_whitelist=providers)
+        return cls(trading_mode=mode, explicit_live_enable=explicit, ack_live_risks=ack, canary_mode=canary, safe_mode_default=safe, provider_whitelist=providers)
 
     @classmethod
     def from_file(cls, path: str) -> "RobotSettings":
         data = _load_yaml_like(path)
-        risk = RiskLimits(**data.get("risk", {}))
-        execution = ExecutionSettings(**data.get("execution", {}))
-        policy = PolicySettings(**data.get("policy", {}))
-        monitoring = MonitoringSettings(**data.get("monitoring", {}))
-        storage = StorageSettings(**data.get("storage", {}))
-        fixtures = FixtureSettings(**data.get("fixtures", {}))
-        mode = TradingMode(data.get("mode", "paper"))
         cfg = cls(
-            trading_mode=mode,
+            trading_mode=TradingMode(data.get("mode", "paper")),
+            explicit_live_enable=bool(data.get("enable_live_trading", False)),
+            ack_live_risks=bool(data.get("ack_i_understand_risks", False)),
+            canary_mode=bool(data.get("canary_mode", False)),
             safe_mode_default=bool(data.get("safe_mode_default", True)),
             provider_whitelist=list(data.get("provider_whitelist", [])),
             universe=list(data.get("universe", ["BTCUSDT"])),
             timeframe=data.get("timeframe", "1h"),
-            risk=risk,
-            execution=execution,
-            policy=policy,
-            monitoring=monitoring,
-            storage=storage,
-            fixtures=fixtures,
+            risk=RiskLimits(**data.get("risk", {})),
+            execution=ExecutionSettings(**data.get("execution", {})),
+            policy=PolicySettings(**data.get("policy", {})),
+            monitoring=MonitoringSettings(**data.get("monitoring", {})),
+            storage=StorageSettings(**data.get("storage", {})),
+            fixtures=FixtureSettings(**data.get("fixtures", {})),
+            replay=ReplaySettings(**data.get("replay", {})),
         )
-        cfg._validate()
         return cfg
 
     def __post_init__(self) -> None:
@@ -112,28 +121,36 @@ class RobotSettings:
         self._validate()
 
     def _validate(self) -> None:
+        required = [
+            self.risk.max_daily_loss_pct,
+            self.risk.max_drawdown_pct,
+            self.risk.max_position_notional,
+            self.risk.max_exposure_notional,
+            self.risk.max_orders_per_min,
+            self.risk.leverage,
+            self.risk.max_spread_bps,
+            self.risk.min_depth_notional,
+            self.risk.stale_data_seconds,
+        ]
         if self.trading_mode == TradingMode.LIVE:
             missing = []
             if not self.explicit_live_enable:
                 missing.append("ENABLE_LIVE_TRADING")
             if not self.ack_live_risks:
                 missing.append("ACK_I_UNDERSTAND_RISKS")
-            critical = [
-                self.risk.max_daily_loss_pct,
-                self.risk.max_drawdown_pct,
-                self.risk.max_position_notional,
-                self.risk.max_exposure_notional,
-                self.risk.max_orders_per_min,
-            ]
-            if any(v == UNSPECIFIED for v in critical):
+            if not self.canary_mode:
+                missing.append("CANARY_MODE")
+            if any(v == UNSPECIFIED for v in required):
                 missing.append("critical risk limits")
+            if self.universe and len(self.universe) > 1:
+                missing.append("canary requires max 1 symbol")
             if missing:
                 raise ValueError(f"Live trading blocked until configured: {missing}")
 
 
 def _load_yaml_like(path: str) -> dict[str, Any]:
     p = Path(path)
-    text = p.read_text()
+    text = p.read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore
 
@@ -142,5 +159,4 @@ def _load_yaml_like(path: str) -> dict[str, Any]:
             return out
     except Exception:
         pass
-    # Fallback: JSON syntax subset
     return json.loads(text)
