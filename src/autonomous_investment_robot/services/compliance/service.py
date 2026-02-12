@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from autonomous_investment_robot.config.settings import ComplianceSettings
-
 
 @dataclass
 class ComplianceDecision:
@@ -10,10 +8,10 @@ class ComplianceDecision:
 
 
 class ComplianceService:
-    def __init__(self, settings: ComplianceSettings) -> None:
-        self.settings = settings
+    def __init__(self, provider_whitelist: list[str]) -> None:
+        self.provider_whitelist = provider_whitelist
 
-    def check_provider_authorization(self) -> ComplianceDecision:
-        if self.settings.require_authorized_provider and not self.settings.allowed_providers:
-            return ComplianceDecision(False, "no_authorized_provider_configured")
+    def check_provider_authorization(self, provider: str) -> ComplianceDecision:
+        if provider not in self.provider_whitelist:
+            return ComplianceDecision(False, "provider_not_authorized")
         return ComplianceDecision(True, "authorized")

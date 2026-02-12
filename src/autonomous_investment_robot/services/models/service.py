@@ -1,23 +1,28 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from math import log
+from dataclasses import dataclass
+from math import exp
 
-from autonomous_investment_robot.core.contracts import ForecastDistribution, RegimeProbabilities
+from autonomous_investment_robot.services.feature_store.service import FeatureVector
+
+
+@dataclass
+class Forecast:
+    symbol: str
+    ts: object
+    mu: float
+    sigma: float
+    confidence: float
+    model_version: str
 
 
 class ModelsService:
-    def make_snapshot(self) -> dict:
-        ts = datetime.now(timezone.utc)
-        forecast = ForecastDistribution(
-            model_version="ensemble-UNSPECIFIED",
-            symbol="BTCUSDT",
-            ts=ts,
-            horizon="5m",
-            mu=0.0,
-            sigma=0.01,
-            entropy=log(0.01 + 1e-9),
-            quantiles={0.05: -0.01, 0.5: 0.0, 0.95: 0.01},
-        )
-        regime = RegimeProbabilities(ts=ts, probabilities={"trend": 0.4, "range": 0.6}, selected="range")
-        return {"forecast": forecast, "regime": regime, "calibration": {"crps": 0.5, "pit_ok": True}}
+    def __init__(self, model_version: str = "baseline-prob-v1") -> None:
+        self.model_version = model_version
+
+    def forecast(self, fv: FeatureVector) -> Forecast:
+        edge = 0.6 * fv.values["ret_1"] + 0.4 * fv.values["ret_3"]
+        sigma = max(fv.values["realized_vol"], 1e-6)
+        raw = abs(edge) / (sigma + 1e-6)
+        confidence = 1.0 / (1.0 + exp(-raw))
+        return Forecast(symbol=fv.symbol, ts=fv.ts, mu=edge, sigma=sigma, confidence=confidence, model_version=self.model_version)

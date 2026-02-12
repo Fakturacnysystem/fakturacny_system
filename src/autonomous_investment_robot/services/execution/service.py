@@ -1,30 +1,37 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
-from autonomous_investment_robot.core.contracts import OrderIntent, RiskDecision
+from autonomous_investment_robot.config.settings import ExecutionSettings
+from autonomous_investment_robot.services.policy.service import OrderIntent
 
 
 @dataclass
-class ExecutionResult:
-    status: str
-    venue: str
+class Fill:
     symbol: str
-    qty: float
-    slippage_bps: float
+    side: str
+    notional: float
+    fee: float
+    slippage_cost: float
+    status: str
 
 
 class ExecutionService:
-    def __init__(self, paper_mode: bool = True) -> None:
-        self.paper_mode = paper_mode
+    def __init__(self, settings: ExecutionSettings) -> None:
+        self.settings = settings
 
-    def pre_trade_checks(self, intent: OrderIntent) -> tuple[bool, list[str]]:
-        issues = []
-        if intent.max_slippage_bps <= 0:
-            issues.append("invalid_slippage_cap")
-        return (len(issues) == 0, issues)
-
-    def execute(self, intent: OrderIntent, risk: RiskDecision) -> ExecutionResult:
-        ok, issues = self.pre_trade_checks(intent)
-        if not ok or not risk.allowed:
-            return ExecutionResult(status=f"blocked:{','.join(issues) or risk.reason}", venue="paper", symbol=intent.symbol, qty=0.0, slippage_bps=0.0)
-        mode = "paper" if self.paper_mode else "live"
-        return ExecutionResult(status=f"executed_{mode}", venue=mode, symbol=intent.symbol, qty=intent.qty * risk.throttle, slippage_bps=2.0)
+    def execute_paper(self, intent: OrderIntent, mid_price: float) -> list[Fill]:
+        partial = max(0.0, min(1.0, self.settings.partial_fill_ratio))
+        filled_notional = intent.target_notional * partial
+        fee = filled_notional * (self.settings.fee_bps / 10000)
+        slip = filled_notional * (self.settings.slippage_bps / 10000)
+        return [
+            Fill(
+                symbol=intent.symbol,
+                side=intent.side,
+                notional=filled_notional,
+                fee=fee,
+                slippage_cost=slip,
+                status="filled_partial" if partial < 1.0 else "filled",
+            )
+        ]
