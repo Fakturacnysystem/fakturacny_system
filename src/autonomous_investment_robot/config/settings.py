@@ -28,6 +28,11 @@ class RiskLimits:
     max_spread_bps: float | str = UNSPECIFIED
     min_depth_notional: float | str = UNSPECIFIED
     stale_data_seconds: float | str = UNSPECIFIED
+    min_margin_buffer: float | str = UNSPECIFIED
+    max_funding_cost_per_day: float | str = UNSPECIFIED
+    max_oi_spike_pct: float | str = UNSPECIFIED
+    max_liquidation_spike: float | str = UNSPECIFIED
+    divergence_threshold_bps: float | str = UNSPECIFIED
 
 
 @dataclass
@@ -36,6 +41,9 @@ class ExecutionSettings:
     fee_bps: float = 2.0
     slippage_bps: float = 1.0
     partial_fill_ratio: float = 0.7
+    maker_preference: bool = True
+    max_participation_rate: float = 0.1
+    slicing_parts: int = 2
 
 
 @dataclass
@@ -43,6 +51,15 @@ class PolicySettings:
     confidence_threshold: float = 0.55
     estimated_cost_bps: float = 3.0
     base_risk_budget: float = 1000.0
+
+
+@dataclass
+class AllocatorSettings:
+    max_weight_per_strategy: float = 0.7
+    decay: float = 0.9
+    min_samples: int = 3
+    fatal_sigma_loss: float = 3.0
+    cooldown_steps: int = 5
 
 
 @dataclass
@@ -66,6 +83,14 @@ class ReplaySettings:
 
 
 @dataclass
+class MLOpsSettings:
+    retrain_enabled: bool = True
+    canary_risk_pct: float = 0.05
+    rollback_dd_threshold_pct: float = 2.0
+    drift_psi_threshold: float = 0.2
+
+
+@dataclass
 class RobotSettings:
     trading_mode: TradingMode = TradingMode.PAPER
     explicit_live_enable: bool = False
@@ -78,10 +103,12 @@ class RobotSettings:
     risk: RiskLimits = field(default_factory=RiskLimits)
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     policy: PolicySettings = field(default_factory=PolicySettings)
+    allocator: AllocatorSettings = field(default_factory=AllocatorSettings)
     monitoring: MonitoringSettings = field(default_factory=MonitoringSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
+    mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
 
     @classmethod
     def from_env(cls) -> "RobotSettings":
@@ -96,7 +123,7 @@ class RobotSettings:
     @classmethod
     def from_file(cls, path: str) -> "RobotSettings":
         data = _load_yaml_like(path)
-        cfg = cls(
+        return cls(
             trading_mode=TradingMode(data.get("mode", "paper")),
             explicit_live_enable=bool(data.get("enable_live_trading", False)),
             ack_live_risks=bool(data.get("ack_i_understand_risks", False)),
@@ -108,12 +135,13 @@ class RobotSettings:
             risk=RiskLimits(**data.get("risk", {})),
             execution=ExecutionSettings(**data.get("execution", {})),
             policy=PolicySettings(**data.get("policy", {})),
+            allocator=AllocatorSettings(**data.get("allocator", {})),
             monitoring=MonitoringSettings(**data.get("monitoring", {})),
             storage=StorageSettings(**data.get("storage", {})),
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),
+            mlops=MLOpsSettings(**data.get("mlops", {})),
         )
-        return cfg
 
     def __post_init__(self) -> None:
         if isinstance(self.trading_mode, str):
@@ -131,7 +159,15 @@ class RobotSettings:
             self.risk.max_spread_bps,
             self.risk.min_depth_notional,
             self.risk.stale_data_seconds,
+            self.risk.min_margin_buffer,
+            self.risk.max_funding_cost_per_day,
+            self.risk.max_oi_spike_pct,
+            self.risk.max_liquidation_spike,
+            self.risk.divergence_threshold_bps,
         ]
+        if any(v == UNSPECIFIED for v in required):
+            # fail-closed always for trading path
+            pass
         if self.trading_mode == TradingMode.LIVE:
             missing = []
             if not self.explicit_live_enable:
@@ -142,15 +178,14 @@ class RobotSettings:
                 missing.append("CANARY_MODE")
             if any(v == UNSPECIFIED for v in required):
                 missing.append("critical risk limits")
-            if self.universe and len(self.universe) > 1:
+            if len(self.universe) > 1:
                 missing.append("canary requires max 1 symbol")
             if missing:
                 raise ValueError(f"Live trading blocked until configured: {missing}")
 
 
 def _load_yaml_like(path: str) -> dict[str, Any]:
-    p = Path(path)
-    text = p.read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore
 

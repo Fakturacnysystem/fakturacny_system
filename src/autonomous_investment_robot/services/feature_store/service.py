@@ -16,7 +16,7 @@ class FeatureVector:
 
 
 class FeatureStoreService:
-    def __init__(self, feature_version: str = "v2-paper") -> None:
+    def __init__(self, feature_version: str = "v3-perps") -> None:
         self.feature_version = feature_version
 
     def build_from_bars(self, bars: list[IngestedBar]) -> list[FeatureVector]:
@@ -29,7 +29,10 @@ class FeatureStoreService:
             mean = sum(window) / len(window)
             rv = sqrt(sum((x - mean) ** 2 for x in window) / len(window)) / mean if mean else 0.0
             atr = (bar.high - bar.low) / bar.close if bar.close else 0.0
-            spread_proxy = (bar.high - bar.low) / ((bar.high + bar.low) / 2)
+            spread_proxy = bar.spread_bps / 10000 if bar.spread_bps else (bar.high - bar.low) / ((bar.high + bar.low) / 2)
+            imbalance = min(1.0, max(-1.0, (bar.depth_notional - 1_000_000) / 1_000_000))
+            microprice_proxy = (bar.mark_price + bar.index_price) / 2
+            flow_imbalance = (bar.close - bar.open) / max(bar.open, 1e-9)
             out.append(
                 FeatureVector(
                     symbol=bar.symbol,
@@ -41,6 +44,13 @@ class FeatureStoreService:
                         "realized_vol": rv,
                         "atr_proxy": atr,
                         "spread_proxy": spread_proxy,
+                        "funding_rate": bar.funding_rate,
+                        "oi": bar.oi,
+                        "liquidations": bar.liquidations,
+                        "depth_notional": bar.depth_notional,
+                        "orderbook_imbalance": imbalance,
+                        "microprice_proxy": microprice_proxy,
+                        "flow_imbalance": flow_imbalance,
                     },
                 )
             )

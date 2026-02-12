@@ -1,4 +1,4 @@
-.PHONY: up down init paper test replay
+.PHONY: up down init paper paper-perps test replay
 
 up:
 	docker compose -f infra/docker-compose.yml up -d
@@ -12,8 +12,11 @@ init:
 paper:
 	PYTHONPATH=src python scripts/run_paper.py --config config.paper.yaml
 
+paper-perps:
+	PYTHONPATH=src python scripts/run_paper.py --config config.perps_intraday.paper.yaml
+
 replay:
-	PYTHONPATH=src python -m autonomous_investment_robot replay --config config.paper.yaml --source fixtures
+	PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perps_intraday.paper.yaml --source fixtures
 
 test:
 	pytest -q

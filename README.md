@@ -1,94 +1,58 @@
-# Autonomous Investment Robot (Paper-First, Deterministic MVP+)
+# Autonomous Investment Robot (Perps Intraday Paper, Safe-First)
 
-Safe-first autonomous crypto robot scaffold with deterministic replay, OMS lifecycle, portfolio risk guardrails, reconciliation hard-stop, and offline paper execution.
+Offline, deterministic autonomous crypto robot scaffold for intraday + perpetual futures paper trading.
 
-## Why paper run previously vetoed
-Compliance required an authorized provider and whitelist was empty. The provided `config.paper.yaml` now includes `paper_sim_provider`, so paper runs pass compliance gate.
+## Safety invariants (hard)
+- Safe-mode default.
+- Missing/`UNSPECIFIED` critical limits => fail-closed no-trade.
+- Integrity kill paths (stale/divergence/reconciliation) => stop + safe mode + flatten (paper).
+- Live is hard-locked unless ALL are true: `ENABLE_LIVE_TRADING=true`, `ACK_I_UNDERSTAND_RISKS=true`, `CANARY_MODE=true`, and all required limits set.
 
-## HARD safety invariants
-- safe-mode default supported (`safe_mode_default=true` blocks trading)
-- no-trade if required limits are missing / `UNSPECIFIED`
-- integrity kill path (stale/liq hole/spread explosion/reconciliation mismatch)
-- live trading hard-blocked unless: `ENABLE_LIVE_TRADING=true` + `ACK_I_UNDERSTAND_RISKS=true` + `CANARY_MODE=true` + complete risk limits
-- no secrets in repo
-
-## One-command local flow
+## Quickstart (offline)
 ```bash
 make up
 make init
 make paper
 ```
 
-## Commands
+## Paper profiles
+- Baseline: `config.paper.yaml`
+- Perps intraday: `config.perps_intraday.paper.yaml`
+
+Run:
 ```bash
-# infra
-docker compose -f infra/docker-compose.yml up -d
-./scripts/init_db.sh
-
-# paper run (offline fixtures)
-PYTHONPATH=src python scripts/run_paper.py --config config.paper.yaml
-
-# deterministic replay CLI
-PYTHONPATH=src python -m autonomous_investment_robot replay --config config.paper.yaml --source fixtures
-
-# tests
-pytest -q
+PYTHONPATH=src python scripts/run_paper.py --config config.perps_intraday.paper.yaml
+PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perps_intraday.paper.yaml --source fixtures
 ```
 
-## Outputs (`runs/latest`)
-- `order_plans.json`, `fills.json`, `report.json`, `checksums.json`
-- `events_*.jsonl` immutable event streams (market/orders/fills/risk/compliance/positions)
-- `metrics.prom` Prometheus export
-- `audit.log`, `config_history.jsonl`
+## What is implemented
+- Strategy ensemble plugins (trend, mean-reversion, carry stub) + regime controller (TREND/RANGE/PANIC, GOOD/THIN).
+- Bandit allocator with decay, cooldown, fatal-loss kill, max strategy weight.
+- Cost-aware policy (TCO gate: fees + slippage + funding + spread component).
+- Execution v2: anti-toxic filter, participation cap, slicing (POV/TWAP-like), partial fills.
+- Risk v2: perps constraints (funding/OI/liquidations/margin buffer/divergence), DD throttle, CVaR approx, flatten triggers.
+- Deterministic append-only event log with checksum/idempotency.
+- Incident policy engine + notifier stub.
+- MLOps stubs: registry, drift detector, canary/rollback trigger logic.
 
 ## Monitoring
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000
-- Alert rules: `infra/alerts/alerts.yml`
-- Dashboard: `infra/grafana/dashboards/autobot.json`
+- Prometheus: `infra/prometheus.yml`
+- Alerts: `infra/alerts/alerts.yml`
+- Grafana dashboard: `infra/grafana/dashboards/autobot.json`
 
-## Mermaid architecture (required)
-```mermaid
-flowchart LR
- subgraph Market["Trhy a externé zdroje"]
- CEX["CEX feedy (tick, L2/L3, trades, funding, OI)"]
- DEX["DEX/aggregátory (quotes, routes, gas, MEV)"]
- ONC["On-chain (RPC, indexery, labelované entity)"]
- MAC["Makro (FX, sadzby, kalendár udalostí)"]
- NEWS["News/sentiment (event stream)"]
- end
- subgraph Data["Data layer"]
- ING["Data ingestion + normalizácia + deduplikácia"]
- QA["Data QA: outliers, gaps, checksum, sequence"]
- RAW["Raw store (immutabilné dáta)"]
- FS["Feature store (verzionované featury)"]
- end
- subgraph Models["Modely"]
- REG["Regime detector"]
- FCAST["Forecast engine (probabilistic ensemble)"]
- CAL["Calibration + uncertainty (PIT/CRPS/Conformal)"]
- end
- subgraph Decision["Rozhodovanie"]
- POL["Policy/portfolio optimizer (utility + constraints)"]
- RISK["Risk engine (VaR/CVaR, limity, kill-switch)"]
- end
- subgraph Exec["Exekúcia"]
- OMS["OMS/EMS + SOR"]
- ALG["Execution algos (TWAP/VWAP/POV/iceberg)"]
- REC["Reconciliation (orders↔fills↔balances)"]
- end
- subgraph Gov["Governance"]
- COMP["Compliance + reporting"]
- SEC["Security (keys, secrets, custody policy)"]
- OPS["Ops/monitoring (SLO, alerting, incident)"]
- end
- Market --> ING --> QA --> RAW --> FS
- FS --> REG --> POL
- FS --> FCAST --> CAL --> POL
- POL --> RISK --> OMS --> ALG --> REC --> RAW
- COMP --> RISK
- SEC --> OMS
- OPS --> ING
- OPS --> OMS
- OPS --> RISK
-```
+## Incident automation mapping
+- DataStale -> safe_mode
+- RejectStorm -> cooldown
+- ReconciliationMismatch -> flatten
+- HighSlippage -> reduce_size
+
+## Outputs
+`runs/*` include:
+- `order_plans.json`, `fills.json`, `report.json`, `checksums.json`
+- `events_*.jsonl` (append-only)
+- `metrics.prom`
+- `audit.log`, `config_history.jsonl`
+
+## Security hygiene
+- Secrets via env vars only.
+- Never commit API keys.
