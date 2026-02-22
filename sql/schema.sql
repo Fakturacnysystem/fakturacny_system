@@ -1,0 +1,4 @@
+-- Split schemas:
+--   Postgres:   sql/postgres.sql
+--   ClickHouse: sql/clickhouse.sql
+-- This file kept as pointer for compatibility.

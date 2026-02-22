@@ -1,0 +1,72 @@
+{
+  "mode": "paper",
+  "safe_mode_default": false,
+  "provider_whitelist": ["binance_um_perps"],
+  "universe": ["BTCUSDT"],
+  "timeframe": "1m",
+  "execution": {
+    "mode": "live_readonly",
+    "fee_bps": 2.0,
+    "slippage_bps": 1.0,
+    "partial_fill_ratio": 0.0,
+    "maker_preference": true,
+    "maker_timeout_s": 20,
+    "max_participation_rate": 0.02,
+    "max_pct_volume": 0.02,
+    "max_pct_top_depth": 0.03,
+    "max_child_orders": 2,
+    "slicing_parts": 1,
+    "binance": {
+      "rest_base_url": "https://fapi.binance.com",
+      "ws_stream_base_url": "wss://fstream.binance.com",
+      "ws_user_base_url": "wss://fstream.binance.com",
+      "api_key_env": "EXCHANGE_API_KEY",
+      "api_secret_env": "EXCHANGE_API_SECRET",
+      "recv_window_ms": 5000,
+      "request_timeout_s": 10.0,
+      "rate_limit_rps": 8.0,
+      "max_retries": 3,
+      "backoff_base_ms": 200,
+      "backoff_max_ms": 3000,
+      "account_mode": "one_way",
+      "leverage_target": 1,
+      "reduce_only_on_flatten": true,
+      "maker_preference": true,
+      "maker_timeout_s": 20,
+      "taker_fallback": false,
+      "allow_unknown_permissions": false
+    }
+  },
+  "safety": {
+    "live_unlock": {
+      "enable_live_trading": false,
+      "ack_i_understand_risks": false,
+      "require_testnet_passed": true,
+      "canary_required_before_full": true
+    }
+  },
+  "policy": {"confidence_threshold": 0.55, "estimated_cost_bps": 3.0, "base_risk_budget": 1000.0},
+  "allocator": {"max_weight_per_strategy": 0.7, "decay": 0.9, "min_samples": 2, "fatal_sigma_loss": 2.5, "cooldown_steps": 3},
+  "risk": {
+    "max_daily_loss_pct": 2.0,
+    "max_drawdown_pct": 3.0,
+    "max_position_notional": 200.0,
+    "max_exposure_notional": 200.0,
+    "max_orders_per_min": 10,
+    "leverage": 0,
+    "target_portfolio_vol": 0.1,
+    "cvar_limit_pct": 2.0,
+    "max_spread_bps": 30.0,
+    "min_depth_notional": 100000.0,
+    "stale_data_seconds": 10.0,
+    "min_margin_buffer": 2.0,
+    "max_funding_cost_per_day": 0.2,
+    "max_oi_spike_pct": 1.5,
+    "max_liquidation_spike": 50000.0,
+    "divergence_threshold_bps": 15.0,
+    "crowding_score_kill": 20.0
+  },
+  "tco": {"max_total_cost_bps": 10.0, "max_impact_bps": 10.0},
+  "storage": {"run_dir": "runs/live_readonly"},
+  "monitoring": {"metrics_port": 9108}
+}

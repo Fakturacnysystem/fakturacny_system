@@ -1,0 +1,16 @@
+groups:
+  - name: autobot-alerts
+    rules:
+      - alert: DataStale
+        expr: data_lag_seconds > 60
+        for: 1m
+      - alert: KillSwitchEngaged
+        expr: kill_switch_state > 0
+      - alert: ReconciliationMismatch
+        expr: reconciliation_mismatch_total > 0
+      - alert: DailyLossLimitHit
+        expr: pnl < -5
+      - alert: TooManyOrderRejects
+        expr: orders_rejected_total > 10
+      - alert: HighSlippage
+        expr: slippage_bps > 20

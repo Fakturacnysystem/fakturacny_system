@@ -1,0 +1,57 @@
+{
+  "mode": "paper",
+  "safe_mode_default": false,
+  "provider_whitelist": [
+    "paper_sim_provider"
+  ],
+  "universe": [
+    "BTCUSDT"
+  ],
+  "timeframe": "1h",
+  "replay": {
+    "source": "fixtures"
+  },
+  "risk": {
+    "max_daily_loss_pct": 5.0,
+    "max_drawdown_pct": 10.0,
+    "max_position_notional": 5000.0,
+    "max_exposure_notional": 10000.0,
+    "max_orders_per_min": 20,
+    "leverage": 0,
+    "target_portfolio_vol": 0.2,
+    "cvar_limit_pct": 4.0,
+    "max_spread_bps": 120.0,
+    "min_depth_notional": 1000.0,
+    "stale_data_seconds": 3600.0,
+    "min_margin_buffer": 2.0,
+    "max_funding_cost_per_day": 1.0,
+    "max_oi_spike_pct": 3.0,
+    "max_liquidation_spike": 200000.0,
+    "divergence_threshold_bps": 30.0,
+    "crowding_score_kill": 25.0
+  },
+  "execution": {
+    "mode": "paper",
+    "fee_bps": 2.0,
+    "slippage_bps": 1.0,
+    "partial_fill_ratio": 0.7
+  },
+  "policy": {
+    "confidence_threshold": 0.55,
+    "estimated_cost_bps": 3.0,
+    "base_risk_budget": 1000.0
+  },
+  "monitoring": {
+    "metrics_port": 9108
+  },
+  "storage": {
+    "run_dir": "runs/latest"
+  },
+  "fixtures": {
+    "ohlcv_csv": "data/fixtures/btcusdt_1h.csv"
+  },
+  "tco": {
+    "max_total_cost_bps": 15.0,
+    "max_impact_bps": 15.0
+  }
+}
