@@ -115,7 +115,8 @@ class RobotOrchestrator:
 
         equity, peak, exposure = 1.0, 1.0, 0.0
         funding_paid_pct = 0.0
-        fills_all, plans, trade_log, strategy_perf = [], [], [], {"trend": 0.0, "mean_reversion": 0.0, "carry": 0.0}
+        strategy_perf = {s.name: 0.0 for s in self.policy.strategies}
+        fills_all, plans, trade_log = [], [], []
 
         for i in range(1, len(fvs)):
             fv = fvs[i - 1]
