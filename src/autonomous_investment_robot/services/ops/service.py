@@ -45,3 +45,17 @@ class OpsService:
         lines = [f"{k} {v}" for k, v in sorted(self.metrics.items())]
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return str(p)
+
+    def export_dashboard_snapshot(self) -> str:
+        groups = {
+            "risk": ["drawdown", "exposure_notional", "kill_switch_state", "reconciliation_mismatch_total"],
+            "costs": ["cost_total_bps", "slippage_bps", "funding_paid", "funding_budget_utilization"],
+            "policy": ["crowding_score", "crowding_level"],
+        }
+        payload = {
+            "groups": {g: {k: self.metrics.get(k, 0.0) for k in keys} for g, keys in groups.items()},
+            "metrics_count": len(self.metrics),
+        }
+        p = self.run_dir / "dashboard_snapshot.json"
+        p.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        return str(p)

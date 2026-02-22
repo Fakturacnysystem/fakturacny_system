@@ -10,6 +10,16 @@ class IncidentAction:
     reason: str
 
 
+@dataclass
+class IncidentExecutionResult:
+    action: str
+    reason: str
+    kill: bool
+    safe_mode: bool
+    flatten_requested: bool
+    cooldown_applied: bool
+
+
 class IncidentPolicy:
     def evaluate(self, metrics: dict[str, float]) -> IncidentAction | None:
         if metrics.get("data_lag_seconds", 0) > 60:
@@ -43,11 +53,58 @@ class IncidentPolicy:
         return None
 
 
+class IncidentResponder:
+    def execute(self, incident: IncidentAction, *, risk_engine=None, live_service=None) -> IncidentExecutionResult:
+        action = incident.action
+        kill = False
+        safe_mode = False
+        flatten_requested = False
+        cooldown_applied = False
+
+        if risk_engine is not None and hasattr(risk_engine, "state"):
+            if any(x in action for x in ["kill", "no_open", "stop"]):
+                risk_engine.state.safe_mode = True
+                safe_mode = True
+            if "kill" in action:
+                setattr(risk_engine.state, "kill_switch", True)
+                kill = True
+            if "cooldown" in action and hasattr(risk_engine, "_enter_cooldown"):
+                risk_engine._enter_cooldown(10)  # noqa: SLF001 - explicit ops automation hook
+                cooldown_applied = True
+            if "flatten" in action:
+                flatten_requested = True
+
+        if live_service is not None:
+            if any(x in action for x in ["kill", "stop"]):
+                if hasattr(live_service, "request_kill"):
+                    live_service.request_kill(f"incident:{incident.reason}")
+                else:
+                    live_service.killed = True
+                    live_service.safe_mode = True
+                kill = True
+                safe_mode = True
+                cooldown_applied = True
+            if "flatten" in action and hasattr(live_service, "flatten_all_positions"):
+                flatten_requested = True
+
+        return IncidentExecutionResult(
+            action=incident.action,
+            reason=incident.reason,
+            kill=kill,
+            safe_mode=safe_mode,
+            flatten_requested=flatten_requested,
+            cooldown_applied=cooldown_applied,
+        )
+
+
 class Notifier:
     def notify(self, title: str, body: str) -> None:
         # Optional Telegram notifier. Defaults to noop if env is missing.
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        signal_recipient = os.getenv("SIGNAL_RECIPIENT", "")
         if not token or not chat_id:
+            if signal_recipient:
+                print(f"SIGNAL {signal_recipient} {title}: {body}")
             return
         print(f"TELEGRAM {chat_id} {title}: {body}")
