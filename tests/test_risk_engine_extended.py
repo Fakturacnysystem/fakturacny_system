@@ -7,11 +7,15 @@ def _risk() -> RiskEngineService:
     return RiskEngineService(
         limits=RiskLimits(
             max_daily_loss_pct=5.0,
+            max_weekly_loss_pct=10.0,
             max_drawdown_pct=10.0,
             max_position_notional=1000.0,
             max_exposure_notional=5000.0,
+            max_symbol_exposure_notional=2000.0,
+            max_cluster_exposure_notional=3000.0,
             max_orders_per_min=1,
             leverage=0,
+            stress_loss_limit_pct=5.0,
             max_spread_bps=20.0,
             min_depth_notional=100.0,
             stale_data_seconds=60.0,
@@ -45,3 +49,151 @@ def test_max_orders_per_min_enforced():
     d2 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
     assert d1.allowed is True
     assert d2.allowed is False
+
+
+def test_weekly_loss_triggers_stop_and_safe_mode():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+        weekly_loss_pct=-12.0,
+    )
+    assert d.allowed is False
+    assert d.reason == "weekly_loss_stop"
+    assert d.flatten is True
+    assert r.state.weekly_stop is True
+    assert r.state.safe_mode is True
+
+
+def test_regime_thin_blocks_opens_but_reduce_only_can_pass():
+    r = _risk()
+    d_block = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+        market_regime="RANGE",
+        liquidity_regime="THIN",
+        is_reduce_only=False,
+    )
+    assert d_block.allowed is False
+    assert d_block.reason == "regime_open_block_reduce_only"
+
+    r.reset_periodic_limits()
+    d_ro = r.evaluate(
+        OrderIntent("BTCUSDT", "sell", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+        market_regime="RANGE",
+        liquidity_regime="THIN",
+        is_reduce_only=True,
+    )
+    assert d_ro.allowed is True
+
+
+def test_symbol_and_cluster_exposure_caps_enforced():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 500.0, {}),
+        500.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+        symbol_exposure=1800.0,
+        cluster_exposure=2800.0,
+    )
+    assert d.allowed is False
+    assert d.reason in {"symbol_exposure_notional_exceeded", "cluster_exposure_notional_exceeded"}
+
+
+def test_stress_guard_blocks_before_order():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        4500.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=40.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=20.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is False
+    assert d.reason == "spread_explosion_kill" or d.reason == "stress_guard"
+
+
+def test_drawdown_safe_mode_recovers_after_cooldown_and_stability():
+    r = _risk()
+    r.limits.drawdown_cooldown_steps = 2
+    r.limits.drawdown_recovery_stable_steps = 2
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        -11.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is False
+    assert d.reason == "drawdown_safe_mode"
+    assert r.state.safe_mode is True
+    assert r.state.kill_switch is False
+
+    r.record_return(0.1)
+    r.record_return(0.1)
+    b1 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+    b2 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+    b3 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+    assert b1.allowed is False
+    assert b2.allowed is False
+    assert b3.allowed is True

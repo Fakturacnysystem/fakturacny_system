@@ -25,13 +25,17 @@ class ExecutionMode(str, Enum):
 @dataclass
 class RiskLimits:
     max_daily_loss_pct: float | str = UNSPECIFIED
+    max_weekly_loss_pct: float | str = UNSPECIFIED
     max_drawdown_pct: float | str = UNSPECIFIED
     max_position_notional: float | str = UNSPECIFIED
     max_exposure_notional: float | str = UNSPECIFIED
+    max_symbol_exposure_notional: float | str = UNSPECIFIED
+    max_cluster_exposure_notional: float | str = UNSPECIFIED
     max_orders_per_min: int | str = UNSPECIFIED
     leverage: int | str = UNSPECIFIED
     target_portfolio_vol: float | str = UNSPECIFIED
     cvar_limit_pct: float | str = UNSPECIFIED
+    stress_loss_limit_pct: float | str = UNSPECIFIED
     max_spread_bps: float | str = UNSPECIFIED
     min_depth_notional: float | str = UNSPECIFIED
     stale_data_seconds: float | str = UNSPECIFIED
@@ -41,6 +45,8 @@ class RiskLimits:
     max_liquidation_spike: float | str = UNSPECIFIED
     divergence_threshold_bps: float | str = UNSPECIFIED
     crowding_score_kill: float | str = UNSPECIFIED
+    drawdown_cooldown_steps: int = 10
+    drawdown_recovery_stable_steps: int = 5
 
 
 @dataclass
