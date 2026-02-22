@@ -200,15 +200,15 @@ class RiskEngineService:
         liquidity_regime: str = "GOOD",
         is_reduce_only: bool = False,
     ) -> RiskDecision:
-        self._tick_cooldown()
-        self._maybe_recover_from_dd_safe_mode()
-
         if self.state.weekly_stop:
             return RiskDecision(False, "weekly_stop_safe_mode")
         if self.state.safe_mode:
             if self.state.cooldown_steps_remaining > 0:
+                self._tick_cooldown()
                 return RiskDecision(False, "cooldown_active")
-            return RiskDecision(False, "safe_mode_default")
+            self._maybe_recover_from_dd_safe_mode()
+            if self.state.safe_mode:
+                return RiskDecision(False, "safe_mode_default")
         if not self._limits_complete():
             return RiskDecision(False, "risk_limits_unspecified")
 

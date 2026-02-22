@@ -54,6 +54,7 @@ class LiveBinanceService:
         self.rate_limits = RateLimitTracker()
         self.safe_mode = False
         self.killed = False
+        self.kill_reason = ""
         self.cooldown_until_s = 0.0
         self._recent_cids: dict[str, float] = {}
         self._dedupe_ttl_s = 600.0  # 10 min
@@ -136,6 +137,7 @@ class LiveBinanceService:
     def request_kill(self, reason: str = "operator_kill") -> None:
         self.killed = True
         self.safe_mode = True
+        self.kill_reason = reason
         self.cooldown_until_s = max(self.cooldown_until_s, time.time() + 300)
 
     def _rate_limit_guard(self, reason: str, cid: str | None = None) -> LiveExecutionResult:
@@ -183,7 +185,7 @@ class LiveBinanceService:
     def execute_intent(self, intent: OrderIntent, user_stream: BinanceUserStream | None = None) -> LiveExecutionResult:
         now = time.time()
         if self.killed:
-            return LiveExecutionResult(status="killed", reason="kill_switch_active")
+            return LiveExecutionResult(status="killed", reason=self.kill_reason or "kill_switch_active")
         if self.safe_mode:
             return LiveExecutionResult(status="blocked", reason="safe_mode")
         if now < self.cooldown_until_s:

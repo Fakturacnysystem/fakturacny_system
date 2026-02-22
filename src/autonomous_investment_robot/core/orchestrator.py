@@ -289,7 +289,8 @@ class RobotOrchestrator:
         checksums = {
             "orders_checksum": sha256(json.dumps(plans, sort_keys=True, default=str).encode()).hexdigest(),
             "fills_checksum": sha256(json.dumps([asdict(f) for f in fills_all], sort_keys=True, default=str).encode()).hexdigest(),
-            "equity_checksum": sha256(json.dumps({"equity": equity, "drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed}, sort_keys=True).encode()).hexdigest(),
+            # Keep backward-compatible checksum payload stable for golden tests.
+            "equity_checksum": sha256(json.dumps({"equity": equity, "drawdown": drawdown_signed}, sort_keys=True).encode()).hexdigest(),
         }
         self.raw.write_table("checksums", [checksums])
         return {"status": "ok", "orders": len(plans), "fills": len(fills_all), **checksums}

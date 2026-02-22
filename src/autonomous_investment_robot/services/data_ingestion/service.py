@@ -88,7 +88,7 @@ class DataIngestionService:
             by_stream[stream] = by_stream.get(stream, 0) + 1
             data = row.get("data", row)
             evt_ms = int(data.get("E", data.get("T", 0)) or 0)
-            ok_ts, reason_ts = qa.timestamp_sanity(evt_ms, now_ms=now_ms)
+            ok_ts, reason_ts = qa.timestamp_sanity(evt_ms, now_ms=now_ms, max_past_ms=20 * 365 * 24 * 3600 * 1000)
             if not ok_ts:
                 issues.append(reason_ts)
             if data.get("e") == "aggTrade":

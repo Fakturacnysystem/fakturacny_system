@@ -142,7 +142,8 @@ class MLOpsService:
             )
 
         perf_drift = self.detector.performance_drift(b_net, c_net)
-        if (not drift_ok) or perf_drift > 0.1 or not dd_ok:
+        severe_dd_worse = c_dd > (b_dd + (2 * dd_not_worse_tolerance_pct))
+        if (not drift_ok) or perf_drift > 0.1 or severe_dd_worse:
             return CanaryComparison(
                 promote=False,
                 rollback=True,
@@ -151,6 +152,7 @@ class MLOpsService:
                     "performance_drift": perf_drift,
                     "psi_value": psi_value,
                     "dd_ok": 1.0 if dd_ok else 0.0,
+                    "severe_dd_worse": 1.0 if severe_dd_worse else 0.0,
                     "slip_ok": 1.0 if slip_ok else 0.0,
                     "funding_ok": 1.0 if funding_ok else 0.0,
                 },

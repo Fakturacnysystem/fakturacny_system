@@ -218,6 +218,7 @@ def test_crowding_medium_throttles_size_and_emits_details():
         liquidation_spike=20000.0,
         divergence_bps=5.0,
         margin_buffer=3.0,
+        funding_rate_abs=0.008,
     )
     assert d.allowed is True
     assert d.adjusted_notional < 100.0
@@ -242,6 +243,7 @@ def test_crowding_high_blocks_opens_reduce_only():
         liquidation_spike=90000.0,
         divergence_bps=20.0,
         margin_buffer=3.0,
+        funding_rate_abs=0.01,
     )
     assert d.allowed is False
     assert d.reason in {"crowding_high_block_open_reduce_only", "crowding_radar_kill"}
@@ -263,6 +265,7 @@ def test_crowding_extreme_kills_and_flattens():
         liquidation_spike=200000.0,
         divergence_bps=50.0,
         margin_buffer=3.0,
+        funding_rate_abs=0.02,
     )
     assert d.allowed is False
     assert d.reason == "crowding_radar_kill"
