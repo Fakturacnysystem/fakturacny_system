@@ -16,6 +16,7 @@ def main() -> None:
     p_rep = sub.add_parser("replay")
     p_rep.add_argument("--config", default="config.paper.yaml")
     p_rep.add_argument("--source", default="fixtures")
+    p_rep.add_argument("--run-id", default=None)
 
     p_ro = sub.add_parser("live-readonly")
     p_ro.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
@@ -39,7 +40,7 @@ def main() -> None:
         return
 
     if args.cmd == "replay":
-        out = run_replay(args.config, source=args.source)
+        out = run_replay(args.config, source=args.source, run_id=args.run_id)
     elif args.cmd == "live-readonly":
         out = run_with_config(args.config)
     elif args.cmd == "live":

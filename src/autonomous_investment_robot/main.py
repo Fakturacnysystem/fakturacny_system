@@ -4,9 +4,9 @@ from autonomous_investment_robot.config.settings import RobotSettings
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceConnectorError, BinanceUMPerpsConnector
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.services.data_ingestion.binance_ws_streams import BinanceWSStreams
-from autonomous_investment_robot.services.replay.engine import ReplayEngine
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
+from autonomous_investment_robot.services.replay.engine import ReplayEngine
 
 
 def run_with_config(config_path: str) -> dict:
@@ -15,14 +15,24 @@ def run_with_config(config_path: str) -> dict:
     return orchestrator.boot()
 
 
-def run_replay(config_path: str, source: str = "fixtures") -> dict:
+def run_replay(config_path: str, source: str = "fixtures", run_id: str | None = None) -> dict:
     settings = RobotSettings.from_file(config_path)
     symbol = settings.universe[0]
     if source == "recordings":
         ing = DataIngestionService()
-        run_id = settings.storage.run_dir.rstrip("/").split("/")[-1]
-        bars = ing.replay_recordings(settings.storage.run_dir, run_id=run_id, symbol=symbol, source=source)
-        return {"events": len(bars), "source": source}
+        resolved_run_id = ing.resolve_recording_run_id(settings.storage.run_dir, run_id=run_id)
+        if resolved_run_id is None:
+            return {"events": 0, "source": source, "status": "blocked", "reason": "recordings_missing"}
+        health = ing.recordings_health(settings.storage.run_dir, resolved_run_id)
+        bars = ing.replay_recordings(settings.storage.run_dir, run_id=resolved_run_id, symbol=symbol, source=source)
+        return {
+            "events": len(bars),
+            "source": source,
+            "run_id": resolved_run_id,
+            "recording_health": health,
+            "recording_index": ing.recordings_index(settings.storage.run_dir, resolved_run_id),
+            "recording_meta": ing.replay_recordings_meta(settings.storage.run_dir, resolved_run_id),
+        }
     engine = ReplayEngine()
     events = engine.from_csv(settings.fixtures.ohlcv_csv, symbol=symbol, venue=source)
     return {"events": len(events), "source": source}
@@ -136,6 +146,10 @@ def run_record(
     out["status"] = "ok"
     out["events_recorded"] = recorded
     out["duration_seconds"] = int(duration_seconds)
+    ing = DataIngestionService()
+    out["recording_health"] = ing.recordings_health(settings.storage.run_dir, run_id)
+    out["recording_index"] = ing.recordings_index(settings.storage.run_dir, run_id)
+    out["recording_meta"] = ing.replay_recordings_meta(settings.storage.run_dir, run_id)
     return out
 
 

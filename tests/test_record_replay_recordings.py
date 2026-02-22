@@ -54,6 +54,9 @@ def test_record_then_replay_recordings_events_gt_zero(tmp_path, monkeypatch):
 
     out = run_record(str(cfg_path), run_id="sample", duration_seconds=1, poll_interval_seconds=0.2)
     assert out["events_recorded"] > 0
+    assert out["recording_health"]["events"] > 0
+    assert out["recording_index"]["events"] > 0
+    assert out["recording_meta"]["schema_version"] == 1
 
     market = Path(cfg["storage"]["run_dir"]) / "recordings" / "sample" / "market.jsonl"
     assert market.exists()
@@ -61,4 +64,40 @@ def test_record_then_replay_recordings_events_gt_zero(tmp_path, monkeypatch):
 
     replay = run_replay(str(cfg_path), source="recordings")
     assert replay["events"] > 0
+    assert replay["run_id"] == "sample"
+    assert replay["recording_health"]["ok"] is True
 
+
+def test_replay_recordings_latest_run_id_autodetect(tmp_path):
+    base = tmp_path / "runs"
+    r1 = base / "recordings" / "old"
+    r2 = base / "recordings" / "new"
+    r1.mkdir(parents=True)
+    r2.mkdir(parents=True)
+    (r1 / "market.jsonl").write_text("", encoding="utf-8")
+    (r2 / "market.jsonl").write_text(
+        '{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","s":"BTCUSDT","a":1,"E":1700000000000,"T":1700000000000,"p":"100","q":"0.1","m":false}}\n',
+        encoding="utf-8",
+    )
+    (r2 / "market.index.json").write_text('{"events":1,"schema_version":1,"streams":{"btcusdt@aggTrade":1}}', encoding="utf-8")
+    (r2 / "market.meta.json").write_text('{"schema_version":1,"format":"binance_ws_market_jsonl"}', encoding="utf-8")
+    cfg = {
+        "mode": "paper",
+        "provider_whitelist": ["binance_um_perps"],
+        "universe": ["BTCUSDT"],
+        "execution": {"mode": "live_readonly"},
+        "risk": {
+            "max_daily_loss_pct": 1.0, "max_drawdown_pct": 2.0, "max_position_notional": 10.0, "max_exposure_notional": 10.0,
+            "max_orders_per_min": 5, "leverage": 0, "max_spread_bps": 10.0, "min_depth_notional": 10.0, "stale_data_seconds": 10.0,
+            "min_margin_buffer": 2.0, "max_funding_cost_per_day": 1.0, "max_oi_spike_pct": 1.0, "max_liquidation_spike": 1.0,
+            "divergence_threshold_bps": 10.0, "crowding_score_kill": 10.0
+        },
+        "tco": {"max_total_cost_bps": 20.0, "max_impact_bps": 20.0},
+        "storage": {"run_dir": str(base)},
+        "fixtures": {"ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"},
+    }
+    cfg_path = tmp_path / "cfg2.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    replay = run_replay(str(cfg_path), source="recordings")
+    assert replay["run_id"] == "new"
+    assert replay["events"] > 0

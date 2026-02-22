@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 
 
 @dataclass
@@ -28,6 +29,85 @@ class IngestedBar:
 
 
 class DataIngestionService:
+    def resolve_recording_run_id(self, run_dir: str, run_id: str | None = None) -> str | None:
+        if run_id:
+            return run_id
+        root = Path(run_dir) / "recordings"
+        if not root.exists():
+            return None
+        candidates = [p for p in root.iterdir() if p.is_dir()]
+        if not candidates:
+            return None
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return latest.name
+
+    def recordings_index(self, run_dir: str, run_id: str) -> dict:
+        p = Path(run_dir) / "recordings" / run_id / "market.index.json"
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def replay_recordings_meta(self, run_dir: str, run_id: str) -> dict:
+        p = Path(run_dir) / "recordings" / run_id / "market.meta.json"
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def recordings_health(self, run_dir: str, run_id: str) -> dict:
+        from autonomous_investment_robot.services.data_qa.service import DataQAService
+
+        qa = DataQAService()
+        p = Path(run_dir) / "recordings" / run_id / "market.jsonl"
+        if not p.exists():
+            return {"ok": False, "issues": ["missing_market_jsonl"], "events": 0}
+        issues: list[str] = []
+        events = 0
+        agg_prev: dict[str, int] = {}
+        now_ms = int(time.time() * 1000)
+        by_stream: dict[str, int] = {}
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            events += 1
+            try:
+                row = json.loads(line)
+            except Exception:
+                issues.append("invalid_json")
+                continue
+            ok_schema, reason_schema = qa.ws_schema_guard(row)
+            if not ok_schema:
+                issues.append(reason_schema)
+                continue
+            stream = row.get("stream", "")
+            by_stream[stream] = by_stream.get(stream, 0) + 1
+            data = row.get("data", row)
+            evt_ms = int(data.get("E", data.get("T", 0)) or 0)
+            ok_ts, reason_ts = qa.timestamp_sanity(evt_ms, now_ms=now_ms)
+            if not ok_ts:
+                issues.append(reason_ts)
+            if data.get("e") == "aggTrade":
+                agg_id = data.get("a")
+                symbol = str(data.get("s", ""))
+                if isinstance(agg_id, int):
+                    gap, reason_gap = qa.ws_gap_detector(agg_prev.get(symbol), agg_id)
+                    if gap and reason_gap == "gap_detected":
+                        issues.append(f"aggtrade_gap:{symbol}")
+                    agg_prev[symbol] = agg_id
+
+        uniq_issues = sorted(set(issues))
+        return {
+            "ok": len(uniq_issues) == 0 and events > 0,
+            "issues": uniq_issues,
+            "events": events,
+            "streams": by_stream,
+        }
+
     def replay_csv(self, symbol: str, csv_path: str, source: str = "fixture") -> list[IngestedBar]:
         bars: list[IngestedBar] = []
         with open(csv_path, "r", encoding="utf-8") as fh:
@@ -67,6 +147,8 @@ class DataIngestionService:
                 continue
             row = json.loads(line)
             data = row.get("data", row)
+            if str(data.get("s", symbol)).upper() != symbol.upper():
+                continue
             evt = int(data.get("E", data.get("T", 0)))
             ts = datetime.fromtimestamp(evt / 1000.0, tz=timezone.utc) if evt > 0 else datetime.now(timezone.utc)
             if data.get("e") == "aggTrade":
@@ -83,9 +165,10 @@ class DataIngestionService:
                     low=close,
                     close=close,
                     volume=float(data.get("q", 0.0)),
-                    mark_price=close,
-                    index_price=close,
-                    secondary_price=close,
+                    mark_price=float(data.get("p", close)) if data.get("e") == "markPriceUpdate" else close,
+                    index_price=float(data.get("i", close)) if data.get("e") == "markPriceUpdate" else close,
+                    funding_rate=float(data.get("r", 0.0)) if data.get("e") == "markPriceUpdate" else 0.0,
+                    secondary_price=float(data.get("i", close)) if data.get("e") == "markPriceUpdate" else close,
                 )
             )
         return out

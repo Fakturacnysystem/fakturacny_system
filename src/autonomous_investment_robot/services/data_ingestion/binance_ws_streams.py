@@ -74,15 +74,25 @@ class BinanceWSStreams:
         base.mkdir(parents=True, exist_ok=True)
         market = base / "market.jsonl"
         index = base / "market.index.json"
+        meta = base / "market.meta.json"
 
         with market.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(raw, sort_keys=True, default=str) + "\n")
 
-        idx = {"events": 0}
+        idx = {"events": 0, "streams": {}, "schema_version": 1}
         if index.exists():
             idx = json.loads(index.read_text(encoding="utf-8"))
+            idx.setdefault("streams", {})
+            idx.setdefault("schema_version", 1)
         idx["events"] = int(idx.get("events", 0)) + 1
+        stream = str(raw.get("stream", ""))
+        streams = idx.get("streams", {})
+        if isinstance(streams, dict):
+            streams[stream] = int(streams.get(stream, 0)) + 1
+            idx["streams"] = streams
         index.write_text(json.dumps(idx, sort_keys=True), encoding="utf-8")
+        if not meta.exists():
+            meta.write_text(json.dumps({"schema_version": 1, "format": "binance_ws_market_jsonl"}, sort_keys=True), encoding="utf-8")
 
     def replay_events(self, run_id: str) -> Iterator[MarketStreamEvent]:
         market = self.record_dir / run_id / "market.jsonl"
