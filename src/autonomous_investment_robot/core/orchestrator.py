@@ -33,7 +33,7 @@ class RobotOrchestrator:
         self.raw = RawStoreService(settings.storage.run_dir)
         self.event_store = EventStore(settings.storage.run_dir)
         self.features = FeatureStoreService()
-        self.models = ModelsService()
+        self.models = ModelsService(regime_settings=settings.regime)
         self.policy = PolicyService(settings.policy, settings.allocator, settings.tco)
         self.risk = RiskEngineService(settings.risk, safe_mode=settings.safe_mode_default)
         self.execution = ExecutionService(settings.execution)
@@ -137,6 +137,8 @@ class RobotOrchestrator:
                 self.ops.inc_metric("orders_rejected_total")
                 if self.policy.last_veto_reasons:
                     self.ops.inc_metric("veto_tco_total", float(len(self.policy.last_veto_reasons)))
+                    for reason, count in self.policy.last_veto_counts.items():
+                        self.ops.inc_metric(f"veto_{reason}_total", float(count))
                 continue
 
             oi_prev = max(1.0, bars[i - 1].oi)
@@ -214,10 +216,11 @@ class RobotOrchestrator:
             fills_all.append(self.execution.flatten_worst_case(symbol, exposure))
             exposure = 0.0
 
-        drawdown = (equity / peak - 1) * 100
+        drawdown_signed = (equity / peak - 1) * 100
+        drawdown = max(0.0, (1.0 - (equity / peak)) * 100)
         psi = self.mlops.detector.psi([x.values["ret_1"] for x in fvs[: max(1, len(fvs)//2)]], [x.values["ret_1"] for x in fvs[max(1, len(fvs)//2):]])
         if self.mlops.should_rollback(drawdown, psi):
-            self.event_store.append("risk", make_event(RiskEvent, "AUTO_ROLLBACK", symbol, "paper", self.event_store.next_seq("risk"), {"drawdown": drawdown, "psi": psi}))
+            self.event_store.append("risk", make_event(RiskEvent, "AUTO_ROLLBACK", symbol, "paper", self.event_store.next_seq("risk"), {"drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed, "psi": psi}))
 
         self.event_store.append("positions", make_event(PositionEvent, "POSITION_SNAPSHOT", symbol, "paper", self.event_store.next_seq("positions"), {"exposure_notional": exposure}))
 
@@ -254,13 +257,13 @@ class RobotOrchestrator:
         self.ops.export_prometheus()
         self.raw.write_table("order_plans", plans)
         self.raw.write_table("fills", [asdict(f) for f in fills_all])
-        self.raw.write_table("report", [{"equity": equity, "drawdown": drawdown, "funding_paid_pct": funding_paid_pct}])
+        self.raw.write_table("report", [{"equity": equity, "drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed, "funding_paid_pct": funding_paid_pct}])
         self.raw.write_table("trade_log", trade_log)
 
         checksums = {
             "orders_checksum": sha256(json.dumps(plans, sort_keys=True, default=str).encode()).hexdigest(),
             "fills_checksum": sha256(json.dumps([asdict(f) for f in fills_all], sort_keys=True, default=str).encode()).hexdigest(),
-            "equity_checksum": sha256(json.dumps({"equity": equity, "drawdown": drawdown}, sort_keys=True).encode()).hexdigest(),
+            "equity_checksum": sha256(json.dumps({"equity": equity, "drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed}, sort_keys=True).encode()).hexdigest(),
         }
         self.raw.write_table("checksums", [checksums])
         return {"status": "ok", "orders": len(plans), "fills": len(fills_all), **checksums}

@@ -21,7 +21,7 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Live canary: `config.perps_intraday.live_canary.yaml`
 - Live full strict: `config.perps_intraday.live.yaml`
 
-## Amateur runbook (step-by-step)
+## Binance setup (step-by-step)
 1. Create Binance Futures API key:
 - Futures enabled.
 - Withdrawals disabled.
@@ -44,14 +44,14 @@ TESTNET_VALIDATED=false
 
 ## Commands
 ```bash
-PYTHONPATH=src python -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
-PYTHONPATH=src python -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
-PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
-PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
-PYTHONPATH=src python -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
-PYTHONPATH=src python -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml
-PYTHONPATH=src python -m autonomous_investment_robot replay --config config.perps_intraday.paper.yaml --source recordings
-PYTHONPATH=src python -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml --duration-seconds 60
+PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.perps_intraday.live_readonly.yaml --source recordings
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
 ```
 
 ## Emergency stop
@@ -72,7 +72,52 @@ PYTHONPATH=src python -m autonomous_investment_robot flatten --config config.per
 make up
 make init
 make paper
-pytest -q
+python3 -m pytest -q
+```
+
+## Quickstart (macOS)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+python3 -m pip install pytest
+python3 -m pytest -q
+
+# paper (offline deterministic)
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
+
+# live readonly preflight / preview (no order placement)
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
+```
+
+If `python` command does not exist on macOS, use `python3` everywhere (all commands above already do).
+
+If you need Python 3.12+ and Homebrew install fails, install Python directly from `python.org` and rerun the same `python3 ...` commands.
+
+## Amateur runbook (safe rollout + emergency)
+```bash
+# 1) live-readonly (24-72h) + short recording sample
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml --duration-seconds 60
+
+# 2) replay recorded market data offline
+PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.perps_intraday.live_readonly.yaml --source recordings
+
+# 3) testnet (opt-in real exchange interaction)
+RUN_TESTNET=1 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
+
+# 4) canary (strict limits)
+TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
+
+# 5) full live (after canary stability)
+TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
+
+# emergency kill / flatten
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml --kill
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
 ```
 
 ## Security hygiene

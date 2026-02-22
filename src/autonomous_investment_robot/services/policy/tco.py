@@ -19,6 +19,14 @@ class EdgeEstimate:
     uncertainty: float
 
 
+@dataclass
+class EdgeFromBpsResult:
+    estimate: EdgeEstimate
+    strategy_edge_bps_used: float
+    fc_mu_used_bps: float
+    final_edge_bps: float
+
+
 def estimate_cost(*, fee_bps: float, slippage_bps: float, funding_bps: float, spread_bps: float, impact_bps: float, maker: bool) -> CostBreakdown:
     maker_fee = fee_bps * (0.6 if maker else 1.0)
     total = maker_fee + slippage_bps + funding_bps + impact_bps + spread_bps * 0.2
@@ -36,6 +44,30 @@ def estimate_edge(*, forecast_mu: float, confidence: float, horizon_scale: float
     expected = abs(forecast_mu) * 10000 * confidence * horizon_scale
     uncertainty = max(0.0, (1.0 - confidence) * expected)
     return EdgeEstimate(expected_bps=expected, uncertainty=uncertainty)
+
+
+def edge_from_bps(
+    *,
+    strategy_edge_bps: float,
+    confidence: float,
+    fc_mu: float = 0.0,
+    fc_mu_weight: float = 0.1,
+    horizon_scale: float = 1.0,
+) -> EdgeFromBpsResult:
+    conf = max(0.0, min(1.0, confidence))
+    strategy_used = max(0.0, abs(strategy_edge_bps)) * horizon_scale
+    fc_mu_used = max(0.0, abs(fc_mu) * 10000.0 * max(0.0, fc_mu_weight) * horizon_scale)
+    final_edge = (strategy_used + fc_mu_used) * conf
+    est = EdgeEstimate(
+        expected_bps=final_edge,
+        uncertainty=max(0.0, (1.0 - conf) * final_edge),
+    )
+    return EdgeFromBpsResult(
+        estimate=est,
+        strategy_edge_bps_used=strategy_used,
+        fc_mu_used_bps=fc_mu_used,
+        final_edge_bps=final_edge,
+    )
 
 
 def should_trade(edge: EdgeEstimate, cost: CostBreakdown, safety_buffer_bps: float, min_confidence: float, confidence: float) -> bool:

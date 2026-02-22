@@ -42,4 +42,4 @@ class MLOpsService:
         return max(0.0, total_risk_budget * canary_pct)
 
     def should_rollback(self, drawdown_pct: float, psi_value: float) -> bool:
-        return drawdown_pct < -self.rollback_dd_threshold_pct or psi_value > self.drift_psi_threshold
+        return drawdown_pct > self.rollback_dd_threshold_pct or psi_value > self.drift_psi_threshold

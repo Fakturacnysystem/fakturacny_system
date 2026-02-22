@@ -6,7 +6,7 @@ from autonomous_investment_robot.config.settings import AllocatorSettings, Polic
 from autonomous_investment_robot.services.models.service import Forecast
 from autonomous_investment_robot.services.policy.allocator import BanditAllocator
 from autonomous_investment_robot.services.policy.strategy_plugins import CarryStrategy, MeanReversionStrategy, StrategySignal, TrendStrategy
-from autonomous_investment_robot.services.policy.tco import estimate_cost, estimate_edge, should_trade
+from autonomous_investment_robot.services.policy.tco import edge_from_bps, estimate_cost, should_trade
 
 
 @dataclass
@@ -22,6 +22,7 @@ class PolicyService:
         self.settings = settings
         self.tco_settings = tco_settings
         self.last_veto_reasons: list[str] = []
+        self.last_veto_counts: dict[str, int] = {}
         self.allocator = BanditAllocator(
             decay=allocator_settings.decay,
             max_weight=allocator_settings.max_weight_per_strategy,
@@ -36,6 +37,7 @@ class PolicyService:
 
     def make_intent(self, fc: Forecast, features: dict[str, float], fee_bps: float, slippage_bps: float) -> OrderIntent | None:
         self.last_veto_reasons = []
+        self.last_veto_counts = {}
         signals = self.evaluate_strategies(features, fc)
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -51,15 +53,24 @@ class PolicyService:
                 impact_bps=impact_bps,
                 maker=True,
             )
-            edge = estimate_edge(forecast_mu=s.expected_edge_bps / 10000, confidence=s.confidence)
+            edge_info = edge_from_bps(
+                strategy_edge_bps=s.expected_edge_bps,
+                confidence=s.confidence,
+                fc_mu=fc.mu,
+                fc_mu_weight=0.1,
+            )
+            edge = edge_info.estimate
             if self.tco_settings.max_impact_bps != UNSPECIFIED and cost.impact_bps > float(self.tco_settings.max_impact_bps):
                 self.last_veto_reasons.append("impact_cap")
+                self.last_veto_counts["impact_cap"] = self.last_veto_counts.get("impact_cap", 0) + 1
                 continue
             if self.tco_settings.max_total_cost_bps != UNSPECIFIED and cost.total_bps > float(self.tco_settings.max_total_cost_bps):
                 self.last_veto_reasons.append("total_cost_cap")
+                self.last_veto_counts["total_cost_cap"] = self.last_veto_counts.get("total_cost_cap", 0) + 1
                 continue
             if not should_trade(edge, cost, safety_buffer_bps=self.settings.safety_buffer_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
                 self.last_veto_reasons.append("edge_le_cost")
+                self.last_veto_counts["edge_le_cost"] = self.last_veto_counts.get("edge_le_cost", 0) + 1
                 continue
             contrib = s.target_notional * weights.get(s.name, 0.0)
             combined += contrib
@@ -68,6 +79,9 @@ class PolicyService:
                     "strategy": s.name,
                     "weight": weights.get(s.name, 0.0),
                     "edge_bps": edge.expected_bps,
+                    "strategy_edge_bps_used": edge_info.strategy_edge_bps_used,
+                    "fc_mu_used": edge_info.fc_mu_used_bps,
+                    "final_edge_bps": edge_info.final_edge_bps,
                     "cost_total_bps": cost.total_bps,
                     "cost_breakdown": {
                         "fees_bps": cost.fees_bps,
@@ -94,6 +108,7 @@ class PolicyService:
                 "regime": fc.regime,
                 "liquidity_regime": fc.liquidity_regime,
                 "weights": weights,
+                "veto_counts": dict(self.last_veto_counts),
                 "components": why_parts,
             },
         )

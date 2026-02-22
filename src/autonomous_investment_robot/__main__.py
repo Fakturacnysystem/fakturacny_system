@@ -27,6 +27,8 @@ def main() -> None:
     p_record = sub.add_parser("record")
     p_record.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
     p_record.add_argument("--run-id", default="latest")
+    p_record.add_argument("--duration-seconds", type=int, default=0)
+    p_record.add_argument("--poll-interval-seconds", type=float, default=1.0)
 
     p_flatten = sub.add_parser("flatten")
     p_flatten.add_argument("--config", default="config.perps_intraday.live.yaml")
@@ -43,7 +45,12 @@ def main() -> None:
     elif args.cmd == "live":
         out = run_with_config(args.config)
     elif args.cmd == "record":
-        out = run_record(args.config, run_id=args.run_id)
+        out = run_record(
+            args.config,
+            run_id=args.run_id,
+            duration_seconds=args.duration_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+        )
     elif args.cmd == "flatten":
         out = emergency_flatten(args.config)
     else:

@@ -111,6 +111,12 @@ class LiveBinanceService:
             )
         return LiveExecutionResult(status="rejected", reason=reason)
 
+    def _taker_fallback_edge_ok(self, intent: OrderIntent) -> bool:
+        comps = intent.why.get("components", []) if isinstance(intent.why, dict) else []
+        if not comps:
+            return True
+        return any(float(c.get("final_edge_bps", c.get("edge_bps", 0.0))) > float(c.get("cost_total_bps", 0.0)) for c in comps)
+
     def execute_readonly(self, intent: OrderIntent) -> LiveExecutionResult:
         if self.settings.execution_mode_enum() != ExecutionMode.LIVE_READONLY:
             return LiveExecutionResult(status="error", reason="not_readonly_mode")
@@ -188,6 +194,8 @@ class LiveBinanceService:
 
         if not self.settings.execution.binance.taker_fallback:
             return LiveExecutionResult(status="timeout", reason="maker_timeout_no_fallback")
+        if not self._taker_fallback_edge_ok(intent):
+            return LiveExecutionResult(status="timeout", reason="maker_timeout_edge_le_cost")
 
         taker_cid = self._client_order_id(intent.symbol, intent.side, now, 1)
         fallback_order = {
@@ -260,4 +268,5 @@ class LiveBinanceService:
         if not rec_ok:
             self.safe_mode = True
             self.killed = True
+            self.cooldown_until_s = max(self.cooldown_until_s, time.time() + 300)
         return rec_ok, reason

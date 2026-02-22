@@ -28,6 +28,17 @@ class ExecutionService:
         self.fill_seen: set[tuple[str, str, str]] = set()
         self.live_service = None
 
+    def _paper_taker_fallback_allowed(self, intent: OrderIntent) -> bool:
+        comps = intent.why.get("components", []) if isinstance(intent.why, dict) else []
+        if not comps:
+            return True
+        for c in comps:
+            edge = float(c.get("final_edge_bps", c.get("edge_bps", 0.0)))
+            cost = float(c.get("cost_total_bps", 0.0))
+            if edge > cost:
+                return True
+        return False
+
     def attach_live_service(self, live_service: object) -> None:
         self.live_service = live_service
 
@@ -53,14 +64,26 @@ class ExecutionService:
             partial = max(0.0, min(1.0, self.settings.partial_fill_ratio))
             maker_ok = self.settings.maker_preference and regime != "PANIC" and liquidity_regime == "GOOD" and spread_bps <= 15
             if maker_ok:
-                fill_mode = "maker"
-                fee_bps = self.settings.fee_bps * 0.6
-                slippage_bps = self.settings.slippage_bps * 0.5
+                # Deterministic maker queue realism: some slices timeout and fallback.
+                timeout_score = sha256(f"{order_id}:{i}:{intent.symbol}:{regime}:{liquidity_regime}".encode()).digest()[0] / 255.0
+                maker_fill_prob = max(0.1, min(0.95, 0.75 - (spread_bps / 200.0)))
+                if timeout_score <= maker_fill_prob:
+                    fill_mode = "maker"
+                    fee_bps = self.settings.fee_bps * 0.6
+                    slippage_bps = self.settings.slippage_bps * 0.5
+                    latency_ms = 120 + i * 20
+                elif self._paper_taker_fallback_allowed(intent):
+                    fill_mode = "taker_timeout"
+                    fee_bps = self.settings.fee_bps
+                    slippage_bps = self.settings.slippage_bps * 1.5
+                    latency_ms = 1000 + int(self.settings.maker_timeout_s * 1000) + i * 20
+                else:
+                    continue
             else:
-                # maker timeout fallback to taker (deterministic)
                 fill_mode = "taker_timeout"
                 fee_bps = self.settings.fee_bps
                 slippage_bps = self.settings.slippage_bps * 1.5
+                latency_ms = 100 + i * 20
 
             filled_notional = sl * partial
             fee = filled_notional * (fee_bps / 10000)
@@ -80,7 +103,7 @@ class ExecutionService:
                     notional=filled_notional,
                     fee=fee,
                     slippage_cost=spread_slip,
-                    latency_ms=100 + i * 20,
+                    latency_ms=latency_ms,
                     status=f"filled_partial_{fill_mode}" if partial < 1.0 else f"filled_{fill_mode}",
                 )
             )

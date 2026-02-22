@@ -111,6 +111,15 @@ class TCOSettings:
 
 
 @dataclass
+class RegimeSettings:
+    panic_vol: float = 0.015
+    panic_liquidations: float = 100000.0
+    panic_funding_abs: float = 0.0005
+    trend_ret3_abs: float = 0.004
+    thin_spread: float = 0.01
+
+
+@dataclass
 class AllocatorSettings:
     max_weight_per_strategy: float = 0.7
     decay: float = 0.9
@@ -163,6 +172,7 @@ class RobotSettings:
     safety: SafetySettings = field(default_factory=SafetySettings)
     policy: PolicySettings = field(default_factory=PolicySettings)
     tco: TCOSettings = field(default_factory=TCOSettings)
+    regime: RegimeSettings = field(default_factory=RegimeSettings)
     allocator: AllocatorSettings = field(default_factory=AllocatorSettings)
     monitoring: MonitoringSettings = field(default_factory=MonitoringSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
@@ -229,6 +239,7 @@ class RobotSettings:
             safety=SafetySettings(live_unlock=LiveUnlockSettings(**live_unlock_data)),
             policy=PolicySettings(**data.get("policy", {})),
             tco=TCOSettings(**data.get("tco", {})),
+            regime=RegimeSettings(**data.get("regime", {})),
             allocator=AllocatorSettings(**data.get("allocator", {})),
             monitoring=MonitoringSettings(**data.get("monitoring", {})),
             storage=StorageSettings(**data.get("storage", {})),
