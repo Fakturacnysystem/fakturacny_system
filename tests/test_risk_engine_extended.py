@@ -25,9 +25,9 @@ def _risk() -> RiskEngineService:
             max_liquidation_spike=100000.0,
             divergence_threshold_bps=30.0,
             crowding_score_kill=25.0,
-            crowding_score_medium=10.0,
-            crowding_score_high=18.0,
-            crowding_score_extreme=25.0,
+            crowding_score_medium=8.0,
+            crowding_score_high=14.0,
+            crowding_score_extreme=16.0,
         ),
         safe_mode=False,
     )
@@ -218,7 +218,7 @@ def test_crowding_medium_throttles_size_and_emits_details():
         liquidation_spike=20000.0,
         divergence_bps=5.0,
         margin_buffer=3.0,
-        funding_rate_abs=0.008,
+        funding_rate_abs=0.012,
     )
     assert d.allowed is True
     assert d.adjusted_notional < 100.0
@@ -243,7 +243,7 @@ def test_crowding_high_blocks_opens_reduce_only():
         liquidation_spike=90000.0,
         divergence_bps=20.0,
         margin_buffer=3.0,
-        funding_rate_abs=0.01,
+        funding_rate_abs=0.02,
     )
     assert d.allowed is False
     assert d.reason in {"crowding_high_block_open_reduce_only", "crowding_radar_kill"}
@@ -261,9 +261,9 @@ def test_crowding_extreme_kills_and_flattens():
         depth_notional=1000.0,
         reconciliation_ok=True,
         funding_paid_pct=0.5,
-        oi_spike_pct=10.0,
-        liquidation_spike=200000.0,
-        divergence_bps=50.0,
+        oi_spike_pct=3.0,
+        liquidation_spike=100000.0,
+        divergence_bps=30.0,
         margin_buffer=3.0,
         funding_rate_abs=0.02,
     )
