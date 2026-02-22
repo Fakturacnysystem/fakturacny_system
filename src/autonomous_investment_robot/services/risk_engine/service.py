@@ -17,6 +17,9 @@ class RiskState:
     de_risk_multiplier: float = 1.0
     dd_throttle: float = 1.0
     last_crowding_score: float = 0.0
+    last_crowding_level: str = "none"
+    last_crowding_components: dict[str, float] = field(default_factory=dict)
+    funding_budget_utilization: float = 0.0
     cooldown_steps_remaining: int = 0
     stable_steps: int = 0
 
@@ -27,6 +30,7 @@ class RiskDecision:
     reason: str
     adjusted_notional: float = 0.0
     flatten: bool = False
+    details: dict = field(default_factory=dict)
 
 
 class RiskEngineService:
@@ -115,8 +119,63 @@ class RiskEngineService:
             self.state.safe_mode = False
             self.state.de_risk_multiplier = min(self.state.de_risk_multiplier, 0.5)
 
-    def _crowding_score(self, funding_rate_abs: float, oi_spike_pct: float, liquidation_spike: float, spread_bps: float, divergence_bps: float) -> float:
-        return funding_rate_abs * 10000 + max(0.0, oi_spike_pct) + (liquidation_spike / 50000) + spread_bps / 10 + divergence_bps / 10
+    def _crowding_thresholds(self) -> tuple[float, float, float]:
+        extreme = (
+            float(self.limits.crowding_score_extreme)
+            if self.limits.crowding_score_extreme != UNSPECIFIED
+            else float(self.limits.crowding_score_kill)
+        )
+        high = (
+            float(self.limits.crowding_score_high)
+            if self.limits.crowding_score_high != UNSPECIFIED
+            else extreme * 0.75
+        )
+        medium = (
+            float(self.limits.crowding_score_medium)
+            if self.limits.crowding_score_medium != UNSPECIFIED
+            else extreme * 0.5
+        )
+        return medium, high, extreme
+
+    def _crowding_score(
+        self,
+        funding_rate_abs: float,
+        oi_spike_pct: float,
+        liquidation_spike: float,
+        spread_bps: float,
+        divergence_bps: float,
+    ) -> tuple[float, dict[str, float]]:
+        # z-like normalized components against configured risk limits / breakers
+        c = {
+            "funding": 0.0,
+            "oi_impulse": 0.0,
+            "liquidation_velocity": 0.0,
+            "basis_widen": 0.0,
+            "spread_widen": 0.0,
+        }
+        if self.limits.max_funding_cost_per_day != UNSPECIFIED:
+            daily_budget = max(float(self.limits.max_funding_cost_per_day), 1e-9)
+            c["funding"] = min(5.0, (funding_rate_abs * 100.0) / daily_budget * 4.0)
+        if self.limits.max_oi_spike_pct != UNSPECIFIED:
+            c["oi_impulse"] = min(5.0, max(0.0, oi_spike_pct) / max(float(self.limits.max_oi_spike_pct), 1e-9) * 3.0)
+        if self.limits.max_liquidation_spike != UNSPECIFIED:
+            c["liquidation_velocity"] = min(5.0, max(0.0, liquidation_spike) / max(float(self.limits.max_liquidation_spike), 1e-9) * 3.0)
+        if self.limits.divergence_threshold_bps != UNSPECIFIED:
+            c["basis_widen"] = min(5.0, max(0.0, divergence_bps) / max(float(self.limits.divergence_threshold_bps), 1e-9) * 3.0)
+        if self.limits.max_spread_bps != UNSPECIFIED:
+            c["spread_widen"] = min(5.0, max(0.0, spread_bps) / max(float(self.limits.max_spread_bps), 1e-9) * 3.0)
+        score = c["funding"] + c["oi_impulse"] + c["liquidation_velocity"] + c["basis_widen"] + c["spread_widen"]
+        return score, c
+
+    def _crowding_level(self, score: float) -> str:
+        medium, high, extreme = self._crowding_thresholds()
+        if score >= extreme:
+            return "extreme"
+        if score >= high:
+            return "high"
+        if score >= medium:
+            return "medium"
+        return "low"
 
     def evaluate(
         self,
@@ -159,12 +218,20 @@ class RiskEngineService:
             self._enter_cooldown(getattr(self.limits, "drawdown_cooldown_steps", 10))
             return RiskDecision(False, "drawdown_safe_mode", flatten=True)
 
-        self.state.last_crowding_score = self._crowding_score(funding_rate_abs, oi_spike_pct, liquidation_spike, spread_bps, divergence_bps)
-        if self.state.last_crowding_score > float(self.limits.crowding_score_kill):
+        self.state.last_crowding_score, self.state.last_crowding_components = self._crowding_score(
+            funding_rate_abs, oi_spike_pct, liquidation_spike, spread_bps, divergence_bps
+        )
+        self.state.last_crowding_level = self._crowding_level(self.state.last_crowding_score)
+        if self.state.last_crowding_level == "extreme":
             self.state.kill_switch = True
             self.state.safe_mode = True
             self._enter_cooldown(10)
-            return RiskDecision(False, "crowding_radar_kill", flatten=True)
+            return RiskDecision(
+                False,
+                "crowding_radar_kill",
+                flatten=True,
+                details={"crowding_score": self.state.last_crowding_score, "crowding_level": self.state.last_crowding_level, "crowding_components": dict(self.state.last_crowding_components)},
+            )
 
         if data_lag_seconds > float(self.limits.stale_data_seconds):
             self.state.kill_switch = True
@@ -191,8 +258,13 @@ class RiskEngineService:
             self.state.safe_mode = True
             self._enter_cooldown(10)
             return RiskDecision(False, "reconciliation_kill", flatten=True)
-        if funding_paid_pct > float(self.limits.max_funding_cost_per_day):
-            return RiskDecision(False, "funding_cost_limit")
+        if self.limits.max_funding_cost_per_day != UNSPECIFIED:
+            max_funding = max(float(self.limits.max_funding_cost_per_day), 1e-9)
+            self.state.funding_budget_utilization = max(0.0, funding_paid_pct / max_funding)
+            if funding_paid_pct > max_funding:
+                return RiskDecision(False, "funding_cost_limit", details={"funding_budget_utilization": self.state.funding_budget_utilization})
+        else:
+            self.state.funding_budget_utilization = 0.0
         if oi_spike_pct > float(self.limits.max_oi_spike_pct) and liquidation_spike > float(self.limits.max_liquidation_spike):
             self.state.kill_switch = True
             self.state.safe_mode = True
@@ -235,8 +307,20 @@ class RiskEngineService:
 
         if (market_regime in {"PANIC", "SQUEEZE_RISK"} or liquidity_regime == "THIN") and not is_reduce_only:
             return RiskDecision(False, "regime_open_block_reduce_only")
+        if self.state.last_crowding_level == "high" and not is_reduce_only:
+            return RiskDecision(
+                False,
+                "crowding_high_block_open_reduce_only",
+                details={"crowding_score": self.state.last_crowding_score, "crowding_level": self.state.last_crowding_level, "crowding_components": dict(self.state.last_crowding_components)},
+            )
 
         adjusted = intent.target_notional * self.state.de_risk_multiplier * self.state.dd_throttle
+        if self.state.last_crowding_level == "medium":
+            adjusted *= 0.5
+        if self.state.funding_budget_utilization >= 0.8 and not is_reduce_only:
+            return RiskDecision(False, "funding_budget_throttle_block_open", details={"funding_budget_utilization": self.state.funding_budget_utilization})
+        if self.state.funding_budget_utilization >= 0.6:
+            adjusted *= 0.5
         if adjusted > float(self.limits.max_position_notional):
             return RiskDecision(False, "position_notional_exceeded")
         if current_exposure + adjusted > float(self.limits.max_exposure_notional):
@@ -253,4 +337,14 @@ class RiskEngineService:
             return RiskDecision(False, "leverage_must_be_zero_in_mvp")
 
         self.state.orders_in_current_min += 1
-        return RiskDecision(True, "passed", adjusted_notional=adjusted)
+        return RiskDecision(
+            True,
+            "passed",
+            adjusted_notional=adjusted,
+            details={
+                "crowding_score": self.state.last_crowding_score,
+                "crowding_level": self.state.last_crowding_level,
+                "crowding_components": dict(self.state.last_crowding_components),
+                "funding_budget_utilization": self.state.funding_budget_utilization,
+            },
+        )

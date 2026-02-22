@@ -45,6 +45,9 @@ class RiskLimits:
     max_liquidation_spike: float | str = UNSPECIFIED
     divergence_threshold_bps: float | str = UNSPECIFIED
     crowding_score_kill: float | str = UNSPECIFIED
+    crowding_score_medium: float | str = UNSPECIFIED
+    crowding_score_high: float | str = UNSPECIFIED
+    crowding_score_extreme: float | str = UNSPECIFIED
     drawdown_cooldown_steps: int = 10
     drawdown_recovery_stable_steps: int = 5
 

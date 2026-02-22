@@ -25,6 +25,9 @@ def _risk() -> RiskEngineService:
             max_liquidation_spike=100000.0,
             divergence_threshold_bps=30.0,
             crowding_score_kill=25.0,
+            crowding_score_medium=10.0,
+            crowding_score_high=18.0,
+            crowding_score_extreme=25.0,
         ),
         safe_mode=False,
     )
@@ -197,3 +200,113 @@ def test_drawdown_safe_mode_recovers_after_cooldown_and_stability():
     assert b1.allowed is False
     assert b2.allowed is False
     assert b3.allowed is True
+
+
+def test_crowding_medium_throttles_size_and_emits_details():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=15.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.2,
+        oi_spike_pct=2.0,
+        liquidation_spike=20000.0,
+        divergence_bps=5.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is True
+    assert d.adjusted_notional < 100.0
+    assert d.details["crowding_level"] in {"medium", "high"}
+    assert d.details["crowding_score"] > 0.0
+    assert "crowding_components" in d.details
+
+
+def test_crowding_high_blocks_opens_reduce_only():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=18.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.2,
+        oi_spike_pct=3.0,
+        liquidation_spike=90000.0,
+        divergence_bps=20.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is False
+    assert d.reason in {"crowding_high_block_open_reduce_only", "crowding_radar_kill"}
+
+
+def test_crowding_extreme_kills_and_flattens():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=20.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.5,
+        oi_spike_pct=10.0,
+        liquidation_spike=200000.0,
+        divergence_bps=50.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is False
+    assert d.reason == "crowding_radar_kill"
+    assert d.flatten is True
+    assert r.state.kill_switch is True
+    assert r.state.safe_mode is True
+
+
+def test_funding_budget_thresholds_throttle_then_block():
+    r = _risk()
+    d1 = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.7,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+    )
+    assert d1.allowed is True
+    assert d1.adjusted_notional < 100.0
+    assert d1.details["funding_budget_utilization"] >= 0.6
+
+    r.reset_periodic_limits()
+    d2 = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        0.0,
+        0.0,
+        0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.9,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+    )
+    assert d2.allowed is False
+    assert d2.reason == "funding_budget_throttle_block_open"

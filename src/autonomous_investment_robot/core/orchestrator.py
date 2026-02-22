@@ -161,7 +161,29 @@ class RobotOrchestrator:
                 divergence_bps=divergence_bps,
                 margin_buffer=margin_buffer,
                 funding_rate_abs=abs(bar.funding_rate),
+                market_regime=fc.regime,
+                liquidity_regime=fc.liquidity_regime,
             )
+            self.ops.set_metric("crowding_score", getattr(self.risk.state, "last_crowding_score", 0.0))
+            crowd_level = getattr(self.risk.state, "last_crowding_level", "none")
+            crowd_map = {"none": 0.0, "low": 1.0, "medium": 2.0, "high": 3.0, "extreme": 4.0}
+            self.ops.set_metric("crowding_level", crowd_map.get(crowd_level, 0.0))
+            self.ops.set_metric("funding_budget_utilization", getattr(self.risk.state, "funding_budget_utilization", 0.0))
+            self.ops.set_metric("liquidation_spike", bar.liquidations)
+            self.ops.set_metric("oi_spike_pct", oi_spike)
+            self.ops.set_metric("max_liquidation_spike", float(self.settings.risk.max_liquidation_spike))
+            self.ops.set_metric("max_oi_spike_pct", float(self.settings.risk.max_oi_spike_pct))
+            self.ops.set_metric("crowding_score_extreme", float(getattr(self.settings.risk, "crowding_score_extreme", self.settings.risk.crowding_score_kill) if getattr(self.settings.risk, "crowding_score_extreme", "UNSPECIFIED") != UNSPECIFIED else self.settings.risk.crowding_score_kill))
+            if decision.reason in {"crowding_radar_kill", "crowding_high_block_open_reduce_only", "funding_cost_limit", "funding_budget_throttle_block_open"}:
+                self.ops.audit_event(
+                    "risk_guard",
+                    {
+                        "reason": decision.reason,
+                        "details": decision.details,
+                        "symbol": symbol,
+                        "bar_ts": str(bar.ts),
+                    },
+                )
             if not decision.allowed:
                 self.event_store.append("risk", make_event(RiskEvent, "RISK_REJECT", symbol, "paper", self.event_store.next_seq("risk"), {"reason": decision.reason}))
                 self.ops.inc_metric("orders_rejected_total")
@@ -171,7 +193,9 @@ class RobotOrchestrator:
                     break
                 continue
 
-            adjusted = OrderIntent(intent.symbol, intent.side, decision.adjusted_notional, intent.why)
+            adjusted_why = dict(intent.why)
+            adjusted_why["risk"] = {"decision_reason": decision.reason, **decision.details}
+            adjusted = OrderIntent(intent.symbol, intent.side, decision.adjusted_notional, adjusted_why)
             idem = make_idempotency_key(asdict(adjusted), "perps-intraday", i)
             order_id = f"ord-{i}"
             self.event_store.append("orders", make_event(OrderIntentEvent, "ORDER_INTENT", symbol, "paper", self.event_store.next_seq("orders"), asdict(adjusted), idempotency_key=idem))
@@ -247,6 +271,7 @@ class RobotOrchestrator:
 
         self.ops.set_metric("cost_total_bps", avg_cost)
         self.ops.set_metric("crowding_score", getattr(self.risk.state, "last_crowding_score", 0.0))
+        self.ops.set_metric("funding_budget_utilization", getattr(self.risk.state, "funding_budget_utilization", 0.0))
         for k, v in self.policy.allocator.state.weights.items():
             self.ops.set_metric(f"allocator_weight_{k}", v)
 

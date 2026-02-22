@@ -30,6 +30,14 @@ class IncidentPolicy:
             return IncidentAction("risk_throttle_or_exit", "LiquidationSpike")
         if metrics.get("oi_spike_pct", 0) > metrics.get("max_oi_spike_pct", 0):
             return IncidentAction("risk_throttle_or_exit", "OpenInterestSpike")
+        if metrics.get("crowding_level", 0) >= 4 or metrics.get("crowding_score", 0) >= metrics.get("crowding_score_extreme", 1e9):
+            return IncidentAction("kill_flatten_cooldown", "CrowdingExtreme")
+        if metrics.get("crowding_level", 0) >= 3:
+            return IncidentAction("no_open_until_stable", "CrowdingHigh")
+        if metrics.get("funding_budget_utilization", 0) >= 1.0:
+            return IncidentAction("exit_or_block_open", "FundingBudgetExceeded")
+        if metrics.get("funding_budget_utilization", 0) >= 0.8:
+            return IncidentAction("risk_throttle_or_exit", "FundingBudgetHigh")
         if metrics.get("slippage_bps", 0) > 20:
             return IncidentAction("reduce_size", "HighSlippage")
         return None
