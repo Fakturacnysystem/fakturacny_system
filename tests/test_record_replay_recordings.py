@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from autonomous_investment_robot.main import run_record, run_replay
+from autonomous_investment_robot.main import request_kill
 
 
 class FakePublicConnector:
@@ -101,3 +102,26 @@ def test_replay_recordings_latest_run_id_autodetect(tmp_path):
     replay = run_replay(str(cfg_path), source="recordings")
     assert replay["run_id"] == "new"
     assert replay["events"] > 0
+
+
+def test_request_kill_writes_kill_marker(tmp_path):
+    cfg = {
+        "mode": "paper",
+        "provider_whitelist": ["paper_sim_provider"],
+        "risk": {
+            "max_daily_loss_pct": 1.0, "max_drawdown_pct": 2.0, "max_position_notional": 10.0, "max_exposure_notional": 10.0,
+            "max_orders_per_min": 5, "leverage": 0, "max_spread_bps": 10.0, "min_depth_notional": 10.0, "stale_data_seconds": 10.0,
+            "min_margin_buffer": 2.0, "max_funding_cost_per_day": 1.0, "max_oi_spike_pct": 1.0, "max_liquidation_spike": 1.0,
+            "divergence_threshold_bps": 10.0, "crowding_score_kill": 10.0
+        },
+        "tco": {"max_total_cost_bps": 20.0, "max_impact_bps": 20.0},
+        "storage": {"run_dir": str(tmp_path / "killrun")},
+        "fixtures": {"ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"},
+    }
+    cfg_path = tmp_path / "cfg_kill.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    out = request_kill(str(cfg_path), reason="test_kill")
+    assert out["status"] == "kill_requested"
+    kill_file = Path(out["kill_file"])
+    assert kill_file.exists()
+    assert "test_kill" in kill_file.read_text(encoding="utf-8")

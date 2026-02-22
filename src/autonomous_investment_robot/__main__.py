@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from autonomous_investment_robot.main import emergency_flatten, run_record, run_replay, run_with_config
+from autonomous_investment_robot.main import emergency_flatten, request_kill, run_record, run_replay, run_with_config
 
 
 def main() -> None:
@@ -36,7 +36,8 @@ def main() -> None:
 
     args = parser.parse_args()
     if getattr(args, "kill", False):
-        print(json.dumps({"status": "kill_requested"}, indent=2))
+        cfg = getattr(args, "config", "config.paper.yaml")
+        print(json.dumps(request_kill(cfg), indent=2))
         return
 
     if args.cmd == "replay":

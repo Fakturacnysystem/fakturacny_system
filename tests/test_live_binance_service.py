@@ -21,8 +21,10 @@ class FakeConnector:
         self.place_calls = 0
         self.cancel_calls = 0
         self.fail_place = False
+        self.fail_with_rate_limit = False
         self.next_order_status = "NEW"
         self.positions = []
+        self._open_orders = []
 
     @property
     def has_credentials(self):
@@ -47,6 +49,8 @@ class FakeConnector:
 
     def place_order(self, params):
         self.place_calls += 1
+        if self.fail_with_rate_limit:
+            raise RuntimeError("429 Too many requests")
         if self.fail_place:
             raise RuntimeError("reject")
         cid = params["newClientOrderId"]
@@ -60,6 +64,9 @@ class FakeConnector:
     def cancel_order(self, symbol, client_order_id):
         self.cancel_calls += 1
         return {"status": "CANCELED"}
+
+    def open_orders(self, symbol=None):  # noqa: ARG002
+        return list(self._open_orders)
 
     def position_risk(self, symbol=None):
         return self.positions
@@ -211,6 +218,58 @@ def test_reconciliation_mismatch_sets_safe_mode_and_flatten(monkeypatch):
     closed, reason = svc.flatten_all_positions(max_attempts=2)
     assert closed is True
     assert reason == "flat"
+
+
+def test_rate_limit_storm_triggers_kill(monkeypatch):
+    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
+    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    fake = FakeConnector()
+    fake.fail_with_rate_limit = True
+    svc = LiveBinanceService(_settings(), run_id="r1", connector=fake)
+    intent = OrderIntent(symbol="BTCUSDT", side="buy", target_notional=10.0, why={})
+    last = None
+    for _ in range(5):
+        last = svc.execute_intent(intent)
+    assert last is not None
+    assert last.status == "killed"
+    assert last.reason == "rate_limit_storm"
+    assert svc.killed is True
+    assert svc.safe_mode is True
+
+
+def test_flatten_cancels_open_orders_best_effort(monkeypatch):
+    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
+    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    fake = FakeConnector()
+    fake._open_orders = [{"symbol": "BTCUSDT", "clientOrderId": "abc"}]
+    fake.positions = []
+    svc = LiveBinanceService(_settings(), run_id="r1", connector=fake)
+    closed, reason = svc.flatten_all_positions()
+    assert closed is True
+    assert reason == "flat"
+    assert fake.cancel_calls >= 1
+
+
+def test_reconcile_and_flatten_on_mismatch(monkeypatch):
+    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
+    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    fake = FakeConnector()
+    fake.positions = [{"symbol": "BTCUSDT", "positionAmt": "1.0", "markPrice": "100.0"}]
+    svc = LiveBinanceService(_settings(), run_id="r1", connector=fake)
+
+    calls = {"n": 0}
+
+    def _position_risk(symbol=None):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"symbol": "BTCUSDT", "positionAmt": "1.0", "markPrice": "100.0"}]
+        return []
+
+    fake.position_risk = _position_risk
+    ok, reason = svc.reconcile_and_flatten_on_mismatch(internal_exposure=0.0, max_flatten_attempts=2)
+    assert ok is False
+    assert "flattened" in reason
+    assert svc.killed is True
 
 
 @pytest.mark.integration

@@ -1,3 +1,4 @@
+from pathlib import Path
 import time
 
 from autonomous_investment_robot.config.settings import RobotSettings
@@ -165,3 +166,12 @@ def emergency_flatten(config_path: str) -> dict:
         return {"status": "blocked", "reason": reason}
     closed, close_reason = live.flatten_all_positions()
     return {"status": "ok" if closed else "error", "reason": close_reason}
+
+
+def request_kill(config_path: str, reason: str = "operator_cli_kill") -> dict:
+    settings = RobotSettings.from_file(config_path)
+    run_dir = Path(settings.storage.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    marker = run_dir / "KILL"
+    marker.write_text(reason + "\n", encoding="utf-8")
+    return {"status": "kill_requested", "reason": reason, "kill_file": str(marker)}
