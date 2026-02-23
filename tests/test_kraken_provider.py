@@ -36,7 +36,7 @@ class FakeKrakenConnector:
         return True, "ok"
 
     def exchange_info(self):
-        return {"symbols": [{"symbol": "PI_XBTUSD"}]}
+        return {"symbols": [{"symbol": "PI_XBTUSD"}, {"symbol": "BTCUSDT"}]}
 
     def book_ticker(self, symbol):
         return {"bidPrice": "100", "askPrice": "101", "bidQty": "1", "askQty": "1", "symbol": symbol}

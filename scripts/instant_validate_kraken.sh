@@ -2,7 +2,7 @@
 set -euo pipefail
 . "$(dirname "$0")/_common_env.sh"
 
-python3 -m pytest -q tests/test_kraken_provider.py
+python3 -m pytest -q tests/test_kraken_provider.py tests/test_kraken_connector.py
 run_robot live-readonly --config config.kraken_derivatives.live_readonly.yaml
 
 echo
