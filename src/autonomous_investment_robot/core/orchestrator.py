@@ -24,6 +24,7 @@ from autonomous_investment_robot.services.models.service import ModelsService
 from autonomous_investment_robot.services.oms.service import ManagedOrder, OMSService
 from autonomous_investment_robot.services.ops.service import OpsService
 from autonomous_investment_robot.services.policy.service import OrderIntent, PolicyService
+from autonomous_investment_robot.services.policy.universe_builder import KrakenSpotUniverseBuilder
 from autonomous_investment_robot.services.raw_store.service import RawStoreService
 from autonomous_investment_robot.services.reconciliation.service import ReconciliationService
 from autonomous_investment_robot.services.replay.events import ComplianceEvent, FillEvent, OrderEvent, OrderIntentEvent, PositionEvent, RiskEvent, make_event, make_idempotency_key
@@ -308,10 +309,23 @@ class RobotOrchestrator:
 
         if mode != ExecutionMode.PAPER:
             if self.settings.live_provider() == "kraken_spot":
+                connector = KrakenSpotConnector(self.settings.execution.kraken_spot)
+                try:
+                    # Auto-build a broader spot universe and prefer the top trade candidate in canary/live.
+                    pairs = connector.asset_pairs()
+                    ticker_all = connector.ticker()
+                    tiers = KrakenSpotUniverseBuilder(self.settings.universe_builder).build(pairs, ticker_all if isinstance(ticker_all, dict) else {})
+                    KrakenSpotUniverseBuilder(self.settings.universe_builder).write_helpers(self.settings.storage.run_dir, tiers)
+                    if tiers.trade:
+                        symbol = tiers.trade[0]
+                    elif tiers.candidate:
+                        symbol = tiers.candidate[0]
+                except Exception as exc:
+                    self.ops.audit_event("universe_builder_error", {"error": str(exc)})
                 live = LiveKrakenSpotService(
                     settings=self.settings,
                     run_id=self.settings.storage.run_dir.replace("/", "_"),
-                    connector=KrakenSpotConnector(self.settings.execution.kraken_spot),
+                    connector=connector,
                 )
             else:
                 live = LiveBinanceService(

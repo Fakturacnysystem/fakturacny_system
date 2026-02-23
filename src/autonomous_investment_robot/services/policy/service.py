@@ -100,6 +100,7 @@ class PolicyService:
         why_parts = []
         net_scores: dict[str, float] = {}
         accepted_candidates: list[tuple[StrategySignal, float, object, object]] = []
+        candidate_debug: list[dict[str, object]] = []
         for s in signals:
             impact_bps = min(15.0, abs(s.target_notional) / max(features.get("depth_notional", 1.0), 1.0) * 10000)
             cost = estimate_cost(
@@ -117,26 +118,51 @@ class PolicyService:
                 fc_mu_weight=0.1,
             )
             edge = edge_info.estimate
+            debug_row = {
+                "strategy": s.name,
+                "confidence": s.confidence,
+                "signal_side": s.side,
+                "signal_notional": s.target_notional,
+                "edge_bps": edge.expected_bps,
+                "cost_total_bps": cost.total_bps,
+                "edge_minus_cost_bps": edge.expected_bps - cost.total_bps,
+                "impact_bps": cost.impact_bps,
+                "blocked_by_confidence": bool(fc.confidence < self.settings.confidence_threshold),
+                "blocked_by_tco_cap": False,
+                "blocked_reason": "",
+            }
             if self.tco_settings.max_impact_bps != UNSPECIFIED and cost.impact_bps > float(self.tco_settings.max_impact_bps):
                 self.last_veto_reasons.append("impact_cap")
                 self.last_veto_counts["impact_cap"] = self.last_veto_counts.get("impact_cap", 0) + 1
                 self._record_regime_veto(s.name, fc.regime)
+                debug_row["blocked_by_tco_cap"] = True
+                debug_row["blocked_reason"] = "impact_cap"
+                candidate_debug.append(debug_row)
                 continue
             if self.tco_settings.max_total_cost_bps != UNSPECIFIED and cost.total_bps > float(self.tco_settings.max_total_cost_bps):
                 self.last_veto_reasons.append("total_cost_cap")
                 self.last_veto_counts["total_cost_cap"] = self.last_veto_counts.get("total_cost_cap", 0) + 1
                 self._record_regime_veto(s.name, fc.regime)
+                debug_row["blocked_by_tco_cap"] = True
+                debug_row["blocked_reason"] = "total_cost_cap"
+                candidate_debug.append(debug_row)
                 continue
             if not should_trade(edge, cost, safety_buffer_bps=self.settings.safety_buffer_bps, min_confidence=self.settings.confidence_threshold, confidence=fc.confidence):
                 self.last_veto_reasons.append("edge_le_cost")
                 self.last_veto_counts["edge_le_cost"] = self.last_veto_counts.get("edge_le_cost", 0) + 1
                 self._record_regime_veto(s.name, fc.regime)
+                debug_row["blocked_reason"] = "edge_le_cost"
+                candidate_debug.append(debug_row)
                 continue
             self._clear_regime_veto_streak(s.name, fc.regime)
             net_after_cost_bps = edge.expected_bps - cost.total_bps
             regime_mult = self._regime_priority_multiplier(s.name, fc.regime, fc.liquidity_regime)
             net_scores[s.name] = max(0.0, net_after_cost_bps) * regime_mult
             accepted_candidates.append((s, impact_bps, cost, edge_info))
+            debug_row["blocked_reason"] = ""
+            debug_row["accepted"] = True
+            debug_row["regime_priority_mult"] = regime_mult
+            candidate_debug.append(debug_row)
             why_parts.append(
                 {
                     "strategy": s.name,
@@ -181,6 +207,7 @@ class PolicyService:
                 "signals": [s.name for s in signals],
                 "accepted_candidates": [s.name for s, *_ in accepted_candidates],
                 "veto_counts": dict(self.last_veto_counts),
+                "candidates": candidate_debug,
             }
             return None
         if fc.confidence < self.settings.confidence_threshold:
@@ -190,6 +217,7 @@ class PolicyService:
                 "confidence_threshold": self.settings.confidence_threshold,
                 "combined": combined,
                 "veto_counts": dict(self.last_veto_counts),
+                "candidates": candidate_debug,
             }
             return None
 

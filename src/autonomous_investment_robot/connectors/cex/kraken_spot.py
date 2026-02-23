@@ -173,6 +173,10 @@ class KrakenSpotConnector:
     def add_order(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/0/private/AddOrder", params=params, private=True)
 
+    def query_orders(self, txid: str | list[str]) -> dict[str, Any]:
+        ids = txid if isinstance(txid, str) else ",".join(txid)
+        return self._request("POST", "/0/private/QueryOrders", params={"txid": ids}, private=True)
+
     def cancel_order(self, txid: str) -> dict[str, Any]:
         return self._request("POST", "/0/private/CancelOrder", params={"txid": txid}, private=True)
 

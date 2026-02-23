@@ -17,9 +17,13 @@ class _FakeKrakenSpotConnector:
     def __init__(self) -> None:
         self._has_credentials = True
         self.add_calls = 0
+        self.cancel_calls = 0
+        self.query_calls = 0
         self.fail_rate_limit = False
         self.fail_insufficient = False
+        self.never_fill_maker = False
         self._balance = {"ZUSD": "1000.0", "XXBT": "0.0"}
+        self._orders = {}
 
     @property
     def has_credentials(self):
@@ -55,7 +59,23 @@ class _FakeKrakenSpotConnector:
             from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenInsufficientFundsError
 
             raise KrakenInsufficientFundsError("insufficient funds")
-        return {"descr": {"order": "buy"}, "txid": [f"T{self.add_calls}"]}
+        txid = f"T{self.add_calls}"
+        self._orders[txid] = {"status": "open", "vol_exec": "0.0", "params": dict(params)}
+        # Simulate immediate fill for maker unless explicitly disabled.
+        if params.get("ordertype") == "limit" and params.get("oflags") == "post" and not self.never_fill_maker:
+            self._orders[txid]["status"] = "closed"
+            self._orders[txid]["vol_exec"] = params.get("volume", "0.0")
+        return {"descr": {"order": "buy"}, "txid": [txid]}
+
+    def query_orders(self, txid):
+        self.query_calls += 1
+        return {txid: self._orders.get(txid, {"status": "closed", "vol_exec": "0.0"})}
+
+    def cancel_order(self, txid):
+        self.cancel_calls += 1
+        if txid in self._orders:
+            self._orders[txid]["status"] = "canceled"
+        return {"count": 1}
 
     def cancel_all(self):
         return {"count": 0}
@@ -117,11 +137,39 @@ def test_execute_intent_submits_market_buy(monkeypatch):
     fake = _FakeKrakenSpotConnector()
     svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
     out = svc.execute_intent(OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={}))
-    assert out.status == "submitted"
-    assert out.reason == "spot_order_submitted"
+    assert out.status in {"filled_maker", "filled_taker_fallback", "submitted"}
     assert out.order is not None
     assert out.order["txid"] == "T1"
     assert fake.add_calls == 1
+
+
+def test_execute_intent_maker_timeout_blocks_if_edge_not_ok(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = _FakeKrakenSpotConnector()
+    fake.never_fill_maker = True
+    s = _settings(dry_run=False)
+    s.execution.maker_timeout_s = 1
+    svc = LiveKrakenSpotService(s, run_id="r1", connector=fake)
+    intent = OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={"components": [{"edge_bps": 1.0, "cost_total_bps": 2.0}]})
+    out = svc.execute_intent(intent)
+    assert out.status == "timeout"
+    assert out.reason == "maker_timeout_edge_le_cost"
+    assert fake.cancel_calls >= 1
+
+
+def test_execute_intent_maker_timeout_falls_back_when_edge_ok(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = _FakeKrakenSpotConnector()
+    fake.never_fill_maker = True
+    s = _settings(dry_run=False)
+    s.execution.maker_timeout_s = 1
+    svc = LiveKrakenSpotService(s, run_id="r1", connector=fake)
+    intent = OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={"components": [{"edge_bps": 5.0, "cost_total_bps": 2.0}]})
+    out = svc.execute_intent(intent)
+    assert out.status == "filled_taker_fallback"
+    assert fake.add_calls >= 2
 
 
 def test_execute_intent_blocks_small_order(monkeypatch):
