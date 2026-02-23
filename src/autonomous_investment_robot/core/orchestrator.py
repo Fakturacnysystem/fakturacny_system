@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
+import time
 
 from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, UNSPECIFIED
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceUMPerpsConnector
@@ -15,6 +18,7 @@ from autonomous_investment_robot.services.execution.service import ExecutionServ
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
 from autonomous_investment_robot.services.execution.live_kraken_service import LiveKrakenService
 from autonomous_investment_robot.services.feature_store.service import FeatureStoreService
+from autonomous_investment_robot.services.feature_store.service import FeatureVector
 from autonomous_investment_robot.services.incident.service import IncidentPolicy, Notifier
 from autonomous_investment_robot.services.mlops.service import MLOpsService
 from autonomous_investment_robot.services.models.service import ModelsService
@@ -69,6 +73,206 @@ class RobotOrchestrator:
         ]
         return any(v == UNSPECIFIED for v in req)
 
+    def _kill_file_path(self) -> str:
+        return os.path.join(self.settings.storage.run_dir, "KILL")
+
+    def _live_loop(self, live: object, symbol: str, mode: ExecutionMode) -> dict:
+        poll_s = max(1.0, float(os.getenv("AUTONOMOUS_LIVE_POLL_SECONDS", "5")))
+        max_steps = int(os.getenv("AUTONOMOUS_LIVE_LOOP_MAX_STEPS", "0") or "0")
+        base_budget = max(float(self.settings.policy.base_risk_budget), 1.0)
+        exposure_notional = 0.0
+        equity = 1.0
+        peak = 1.0
+        funding_paid_pct = 0.0
+        prices: list[float] = []
+        last_mid = None
+        steps = 0
+        last_recon_ok = True
+
+        self.ops.audit_event("live_loop_start", {"mode": mode.value, "symbol": symbol, "poll_s": poll_s, "max_steps": max_steps})
+        while True:
+            steps += 1
+            now_ts = time.time()
+            now_dt = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+            kill_path = self._kill_file_path()
+            if os.path.exists(kill_path):
+                if hasattr(live, "request_kill"):
+                    live.request_kill("kill_file_detected")
+                flattened = None
+                if hasattr(live, "flatten_all_positions"):
+                    try:
+                        flattened = live.flatten_all_positions()
+                    except Exception as exc:  # pragma: no cover
+                        flattened = (False, f"flatten_error:{exc}")
+                self.ops.audit_event("kill_file", {"path": kill_path, "flattened": flattened})
+                self.ops.export_prometheus()
+                return {"status": "stopped", "mode": mode.value, "reason": "kill_file_detected", "steps": steps, "flattened": flattened}
+
+            try:
+                book = live.connector.book_ticker(symbol)  # type: ignore[attr-defined]
+                bid = float(book.get("bidPrice", 0.0))
+                ask = float(book.get("askPrice", 0.0))
+                bid_qty = float(book.get("bidQty", 0.0))
+                ask_qty = float(book.get("askQty", 0.0))
+            except Exception as exc:
+                self.ops.audit_event("book_error", {"symbol": symbol, "error": str(exc)})
+                self.ops.inc_metric("book_errors_total")
+                self.ops.export_prometheus()
+                time.sleep(poll_s)
+                continue
+
+            if bid <= 0 or ask <= 0:
+                self.ops.audit_event("book_invalid", {"symbol": symbol, "bid": bid, "ask": ask})
+                self.ops.inc_metric("book_invalid_total")
+                self.ops.export_prometheus()
+                time.sleep(poll_s)
+                continue
+
+            mid = (bid + ask) / 2.0
+            spread_bps = ((ask - bid) / max(mid, 1e-9)) * 10000.0
+            depth_notional = (bid * max(bid_qty, 0.0)) + (ask * max(ask_qty, 0.0))
+            prices.append(mid)
+            prices = prices[-8:]
+            ret_1 = 0.0 if len(prices) < 2 else (prices[-1] / prices[-2] - 1.0)
+            ret_3 = 0.0 if len(prices) < 4 else (prices[-1] / prices[-4] - 1.0)
+            mean = sum(prices) / len(prices)
+            rv = 0.0 if mean <= 0 else ((sum((p - mean) ** 2 for p in prices) / len(prices)) ** 0.5) / mean
+            flow_imbalance = (bid_qty - ask_qty) / max(bid_qty + ask_qty, 1e-9)
+            features = {
+                "ret_1": ret_1,
+                "ret_3": ret_3,
+                "realized_vol": rv,
+                "atr_proxy": spread_bps / 10000.0,
+                "spread_proxy": spread_bps / 10000.0,
+                "funding_rate": 0.0,
+                "oi": 0.0,
+                "liquidations": 0.0,
+                "depth_notional": depth_notional,
+                "orderbook_imbalance": flow_imbalance,
+                "microprice_proxy": mid,
+                "flow_imbalance": flow_imbalance,
+                "mark_price": mid,
+                "spot_price_proxy": 0.0,
+            }
+            fv = FeatureVector(symbol=symbol, ts=now_dt, feature_version=self.features.feature_version, values=features)
+            fc = self.models.forecast(fv)
+
+            # Mark-to-market on estimated internal exposure.
+            if last_mid is not None and abs(exposure_notional) > 1e-9:
+                pnl = exposure_notional * ((mid / max(last_mid, 1e-9)) - 1.0)
+                equity += pnl / base_budget
+                self.risk.record_return((pnl / max(abs(exposure_notional), 1.0)) * 100.0)
+            last_mid = mid
+            peak = max(peak, equity)
+            drawdown_pct = (equity / peak - 1.0) * 100.0
+            daily_loss_pct = min(0.0, (equity - 1.0) * 100.0)
+            weekly_loss_pct = daily_loss_pct
+
+            if hasattr(live, "reconcile_live_state"):
+                try:
+                    last_recon_ok, recon_reason = live.reconcile_live_state(internal_exposure=abs(exposure_notional))
+                    if not last_recon_ok:
+                        self.ops.inc_metric("reconciliation_mismatch_total")
+                        self.ops.audit_event("reconcile", {"ok": False, "reason": recon_reason})
+                        if hasattr(live, "flatten_all_positions"):
+                            closed, flat_reason = live.flatten_all_positions()
+                            if closed:
+                                exposure_notional = 0.0
+                            self.ops.audit_event("flatten", {"reason": flat_reason, "closed": closed})
+                except Exception as exc:
+                    last_recon_ok = False
+                    self.ops.audit_event("reconcile_error", {"error": str(exc)})
+
+            self.ops.set_metric("mid_price", mid)
+            self.ops.set_metric("spread_bps", spread_bps)
+            self.ops.set_metric("depth_notional", depth_notional)
+            self.ops.set_metric("equity", equity)
+            self.ops.set_metric("drawdown", max(0.0, (1.0 - (equity / max(peak, 1e-9))) * 100.0))
+            self.ops.set_metric("exposure_notional", abs(exposure_notional))
+            self.ops.set_metric("kill_switch_state", 1.0 if self.risk.state.kill_switch else 0.0)
+
+            intent = self.policy.make_intent(fc, features, self.settings.execution.fee_bps, self.settings.execution.slippage_bps)
+            if intent is None:
+                self.ops.inc_metric("orders_rejected_total")
+                self.ops.audit_event(
+                    "heartbeat",
+                    {"symbol": symbol, "mid": mid, "spread_bps": spread_bps, "equity": equity, "reason": "no_intent", "regime": fc.regime, "liq_regime": fc.liquidity_regime},
+                )
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                if max_steps and steps >= max_steps:
+                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                time.sleep(poll_s)
+                continue
+
+            decision = self.risk.evaluate(
+                intent=intent,
+                current_exposure=abs(exposure_notional),
+                drawdown_pct=drawdown_pct,
+                daily_loss_pct=daily_loss_pct,
+                data_lag_seconds=0.0,
+                spread_bps=spread_bps,
+                depth_notional=depth_notional,
+                reconciliation_ok=last_recon_ok,
+                funding_paid_pct=funding_paid_pct,
+                oi_spike_pct=0.0,
+                liquidation_spike=0.0,
+                divergence_bps=0.0,
+                margin_buffer=999.0,
+                funding_rate_abs=0.0,
+                weekly_loss_pct=weekly_loss_pct,
+                symbol_exposure=abs(exposure_notional),
+                cluster_exposure=abs(exposure_notional),
+                market_regime=fc.regime,
+                liquidity_regime=fc.liquidity_regime,
+            )
+            self.ops.set_metric("crowding_score", float(decision.details.get("crowding_score", self.risk.state.last_crowding_score)))
+            level = decision.details.get("crowding_level", self.risk.state.last_crowding_level)
+            self.ops.set_metric("crowding_level", float({"none": 0, "medium": 1, "high": 2, "extreme": 3}.get(str(level), 0)))
+            self.ops.set_metric("funding_budget_utilization", float(decision.details.get("funding_budget_utilization", 0.0)))
+
+            if not decision.allowed:
+                self.ops.inc_metric("orders_rejected_total")
+                self.ops.audit_event("risk_reject", {"reason": decision.reason, "details": decision.details})
+                if decision.flatten and hasattr(live, "flatten_all_positions"):
+                    try:
+                        closed, flat_reason = live.flatten_all_positions()
+                        if closed:
+                            exposure_notional = 0.0
+                        self.ops.audit_event("flatten", {"reason": flat_reason, "closed": closed, "from": decision.reason})
+                    except Exception as exc:
+                        self.ops.audit_event("flatten_error", {"from": decision.reason, "error": str(exc)})
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                if max_steps and steps >= max_steps:
+                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                time.sleep(poll_s)
+                continue
+
+            adjusted = OrderIntent(intent.symbol, intent.side, decision.adjusted_notional, {**intent.why, "risk": {"decision_reason": decision.reason, **decision.details}})
+            result = self.execution.execute_live(adjusted)
+            self.ops.audit_event(
+                "live_exec",
+                {"status": result.status, "reason": result.reason, "symbol": adjusted.symbol, "side": adjusted.side, "notional": adjusted.target_notional},
+            )
+            if result.status in {"filled_maker", "filled_taker_fallback"}:
+                exposure_notional += adjusted.target_notional if adjusted.side == "buy" else -adjusted.target_notional
+                self.ops.inc_metric("orders_submitted_total")
+            elif result.status in {"rejected", "blocked", "killed"}:
+                self.ops.inc_metric("orders_rejected_total")
+
+            if getattr(live, "killed", False):
+                self.ops.audit_event("live_killed", {"reason": getattr(live, "kill_reason", "")})
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                return {"status": "stopped", "mode": mode.value, "reason": getattr(live, "kill_reason", "kill_switch_active"), "steps": steps}
+
+            self.ops.export_prometheus()
+            self.ops.export_dashboard_snapshot()
+            if max_steps and steps >= max_steps:
+                return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+            time.sleep(poll_s)
+
     def boot(self) -> dict:
         self.ops.track_config(asdict(self.settings))
         symbol = self.settings.universe[0]
@@ -106,7 +310,9 @@ class RobotOrchestrator:
                 if inc is not None:
                     self.notifier.notify(inc.action, inc.reason)
                 return {"status": "blocked", "reason": reason_preflight}
-            return {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
+            if mode == ExecutionMode.LIVE_READONLY:
+                return {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
+            return self._live_loop(live, symbol=symbol, mode=mode)
 
         if len(self.settings.universe) > 1:
             if not self.settings.fixtures.symbol_files:
