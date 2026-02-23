@@ -1,0 +1,31 @@
+{
+  "mode": "paper",
+  "safe_mode_default": true,
+  "provider_whitelist": ["kraken_derivatives"],
+  "universe": ["PI_XBTUSD"],
+  "execution": {
+    "provider_id": "kraken_derivatives",
+    "mode": "live",
+    "maker_preference": true,
+    "maker_timeout_s": 10,
+    "kraken": {
+      "rest_base_url": "https://futures.kraken.com",
+      "ws_public_url": "wss://futures.kraken.com/ws/v1",
+      "api_key_env": "KRAKEN_API_KEY",
+      "api_secret_env": "KRAKEN_API_SECRET",
+      "allow_unknown_permissions": false,
+      "reduce_only_on_flatten": true
+    }
+  },
+  "safety": {"live_unlock": {"enable_live_trading": true, "ack_i_understand_risks": true, "require_testnet_passed": true, "canary_required_before_full": true}},
+  "canary_mode": false,
+  "risk": {
+    "max_daily_loss_pct": 0.8, "max_weekly_loss_pct": 2.5, "max_drawdown_pct": 5.0, "max_position_notional": 50.0, "max_exposure_notional": 50.0,
+    "max_symbol_exposure_notional": 50.0, "max_cluster_exposure_notional": 50.0, "max_orders_per_min": 5, "leverage": 0, "target_portfolio_vol": 0.08,
+    "cvar_limit_pct": 1.5, "stress_loss_limit_pct": 3.0, "max_spread_bps": 20.0, "min_depth_notional": 50000.0, "stale_data_seconds": 10.0,
+    "min_margin_buffer": 2.0, "max_funding_cost_per_day": 0.15, "max_oi_spike_pct": 1.0, "max_liquidation_spike": 25000.0, "divergence_threshold_bps": 10.0,
+    "crowding_score_kill": 15.0, "crowding_score_medium": 8.0, "crowding_score_high": 12.0, "crowding_score_extreme": 15.0
+  },
+  "tco": {"max_total_cost_bps": 8.0, "max_impact_bps": 8.0},
+  "storage": {"run_dir": "runs/kraken_live"}
+}

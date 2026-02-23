@@ -18,6 +18,15 @@ from autonomous_investment_robot.services.policy.service import OrderIntent
 class FakeKrakenConnector:
     def __init__(self):
         self._has_credentials = True
+        self.supports_live_trading = False
+        self.orders = {}
+        self.positions = []
+        self._open_orders = []
+        self.place_calls = 0
+        self.cancel_calls = 0
+        self.fail_place = False
+        self.fail_with_rate_limit = False
+        self.next_order_status = "NEW"
 
     @property
     def has_credentials(self):
@@ -26,8 +35,38 @@ class FakeKrakenConnector:
     def verify_live_permissions(self):
         return True, "ok"
 
+    def exchange_info(self):
+        return {"symbols": [{"symbol": "PI_XBTUSD"}]}
+
     def book_ticker(self, symbol):
         return {"bidPrice": "100", "askPrice": "101", "bidQty": "1", "askQty": "1", "symbol": symbol}
+
+    def query_order(self, symbol, client_order_id):  # noqa: ARG002
+        if client_order_id in self.orders:
+            return self.orders[client_order_id]
+        raise RuntimeError("not found")
+
+    def place_order(self, params):
+        self.place_calls += 1
+        if self.fail_with_rate_limit:
+            raise RuntimeError("429 Too many requests")
+        if self.fail_place:
+            raise RuntimeError("reject")
+        cid = params["newClientOrderId"]
+        status = "FILLED" if params.get("type") == "MARKET" else self.next_order_status
+        out = {"clientOrderId": cid, "status": status, "symbol": params.get("symbol")}
+        self.orders[cid] = out
+        return out
+
+    def cancel_order(self, symbol, client_order_id):  # noqa: ARG002
+        self.cancel_calls += 1
+        return {"status": "CANCELED"}
+
+    def open_orders(self, symbol=None):  # noqa: ARG002
+        return list(self._open_orders)
+
+    def position_risk(self, symbol=None):  # noqa: ARG002
+        return list(self.positions)
 
 
 def _limits() -> RiskLimits:
@@ -102,3 +141,107 @@ def test_kraken_readonly_preview_uses_connector_book():
     assert out.order is not None
     assert out.order["book"]["bidPrice"] == "100"
 
+
+def test_kraken_live_preflight_passes_when_connector_supports_trading(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = FakeKrakenConnector()
+    fake.supports_live_trading = True
+    s = RobotSettings(
+        provider_whitelist=["kraken_derivatives"],
+        canary_mode=True,
+        execution=ExecutionSettings(
+            mode="live_testnet",
+            provider_id="kraken_derivatives",
+            maker_timeout_s=0,
+            kraken=KrakenExecutionSettings(allow_unknown_permissions=True),
+        ),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        risk=_limits(),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    svc = LiveKrakenService(s, run_id="r1", connector=fake)
+    ok, reason = svc.preflight()
+    assert ok is True
+    assert reason == "ok"
+
+
+def test_kraken_rate_limit_storm_triggers_kill(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = FakeKrakenConnector()
+    fake.supports_live_trading = True
+    fake.fail_with_rate_limit = True
+    s = RobotSettings(
+        provider_whitelist=["kraken_derivatives"],
+        canary_mode=True,
+        execution=ExecutionSettings(mode="live_testnet", provider_id="kraken_derivatives", maker_timeout_s=0),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        risk=_limits(),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    svc = LiveKrakenService(s, run_id="r1", connector=fake)
+    intent = OrderIntent(symbol="PI_XBTUSD", side="buy", target_notional=10.0, why={})
+    last = None
+    for _ in range(5):
+        last = svc.execute_intent(intent)
+    assert last is not None
+    assert last.status == "killed"
+    assert last.reason == "rate_limit_storm"
+    assert svc.killed is True
+    assert svc.safe_mode is True
+
+
+def test_kraken_reconcile_and_flatten_mismatch(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = FakeKrakenConnector()
+    fake.supports_live_trading = True
+    fake.positions = [{"symbol": "PI_XBTUSD", "positionAmt": "1.0", "markPrice": "100.0"}]
+    s = RobotSettings(
+        provider_whitelist=["kraken_derivatives"],
+        canary_mode=True,
+        execution=ExecutionSettings(mode="live_testnet", provider_id="kraken_derivatives", maker_timeout_s=0),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        risk=_limits(),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    svc = LiveKrakenService(s, run_id="r1", connector=fake)
+    ok, _ = svc.reconcile_live_state(internal_exposure=1.0)
+    assert ok is False
+    assert svc.safe_mode is True
+    assert svc.killed is True
+
+    calls = {"n": 0}
+
+    def _position_risk(symbol=None):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"symbol": "PI_XBTUSD", "positionAmt": "1.0", "markPrice": "100.0"}]
+        return []
+
+    fake.position_risk = _position_risk
+    ok2, reason2 = svc.reconcile_and_flatten_on_mismatch(internal_exposure=1.0, max_flatten_attempts=2)
+    assert ok2 is False
+    assert "flattened" in reason2
+
+
+def test_kraken_flatten_cancels_open_orders_best_effort(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = FakeKrakenConnector()
+    fake.supports_live_trading = True
+    fake._open_orders = [{"symbol": "PI_XBTUSD", "clientOrderId": "abc"}]
+    s = RobotSettings(
+        provider_whitelist=["kraken_derivatives"],
+        canary_mode=True,
+        execution=ExecutionSettings(mode="live_testnet", provider_id="kraken_derivatives"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        risk=_limits(),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    svc = LiveKrakenService(s, run_id="r1", connector=fake)
+    closed, reason = svc.flatten_all_positions()
+    assert closed is True
+    assert reason == "flat"
+    assert fake.cancel_calls >= 1

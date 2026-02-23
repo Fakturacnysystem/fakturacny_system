@@ -22,6 +22,8 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Live full strict: `config.perps_intraday.live.yaml`
 - Kraken derivatives live readonly (scaffold): `config.kraken_derivatives.live_readonly.yaml`
 - Kraken derivatives testnet (scaffold, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.testnet.yaml`
+- Kraken derivatives live canary (prepared, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.live_canary.yaml`
+- Kraken derivatives live full (prepared, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.live.yaml`
 
 ## Binance setup (step-by-step)
 1. Create Binance Futures API key:
@@ -72,6 +74,9 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config con
 - Helper scripts:
   - `./scripts/run_kraken_live_readonly.sh`
   - `./scripts/run_kraken_testnet.sh` (expected to fail closed until trading implementation is completed)
+  - `./scripts/run_kraken_live_canary.sh` (prepared; expected to fail closed until trading implementation is completed)
+  - `./scripts/run_kraken_live.sh` (prepared; expected to fail closed until trading implementation is completed)
+  - `./scripts/instant_validate_kraken.sh` (pytest + readonly smoke)
 
 ## Emergency stop
 - Soft stop: run with `--kill`.

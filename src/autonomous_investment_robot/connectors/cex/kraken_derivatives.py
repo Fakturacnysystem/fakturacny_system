@@ -22,6 +22,7 @@ class KrakenAuthError(KrakenConnectorError):
 
 class KrakenDerivativesConnector:
     provider_id = "kraken_derivatives"
+    supports_live_trading = False
 
     def __init__(self, settings: KrakenExecutionSettings) -> None:
         self.settings = settings
