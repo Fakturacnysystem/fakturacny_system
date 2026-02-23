@@ -3,6 +3,7 @@
     "enable_live_trading": true,
     "ack_i_understand_risks": true,
     "canary_mode": true,
+    "safe_mode_default": false,
     "provider_whitelist": ["kraken_spot"],
     "universe": ["XBTUSD", "ETHUSD"],
     "execution": {
@@ -17,7 +18,7 @@
     "policy": {
       "confidence_threshold": 0.45,
       "safety_buffer_bps": 0.0,
-      "base_risk_budget": 50.0
+      "base_risk_budget": 10.0
     },
     "risk": {
       "max_daily_loss_pct": 1.0,
