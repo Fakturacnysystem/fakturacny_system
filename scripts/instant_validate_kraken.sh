@@ -6,5 +6,5 @@ python3 -m pytest -q tests/test_kraken_provider.py
 run_robot live-readonly --config config.kraken_derivatives.live_readonly.yaml
 
 echo
-echo "Kraken live trading path is intentionally fail-closed until signed order adapter is implemented."
-echo "Try testnet preflight (expected blocked): ./scripts/run_kraken_testnet.sh"
+echo "Kraken signed trading adapter is implemented (REST v3 core endpoints) but must be validated on testnet first."
+echo "Next step: ./scripts/run_kraken_testnet.sh"

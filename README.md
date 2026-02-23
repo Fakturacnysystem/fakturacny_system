@@ -21,9 +21,9 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Live canary: `config.perps_intraday.live_canary.yaml`
 - Live full strict: `config.perps_intraday.live.yaml`
 - Kraken derivatives live readonly (scaffold): `config.kraken_derivatives.live_readonly.yaml`
-- Kraken derivatives testnet (scaffold, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.testnet.yaml`
-- Kraken derivatives live canary (prepared, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.live_canary.yaml`
-- Kraken derivatives live full (prepared, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.live.yaml`
+- Kraken derivatives testnet (signed adapter implemented; validate with small size first): `config.kraken_derivatives.testnet.yaml`
+- Kraken derivatives live canary (signed adapter implemented; keep strict limits): `config.kraken_derivatives.live_canary.yaml`
+- Kraken derivatives live full (signed adapter implemented; use only after canary stability): `config.kraken_derivatives.live.yaml`
 
 ## Binance setup (step-by-step)
 1. Create Binance Futures API key:
@@ -68,14 +68,15 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config con
 ```
 
 ## Kraken (EEA-friendly alternative) integration status
-- `live-readonly` preflight path is supported via Kraken derivatives scaffold (`kraken_derivatives` provider).
+- `live-readonly` preflight path is supported via Kraken derivatives provider (`kraken_derivatives`).
+- Core signed REST execution path is implemented for Kraken futures v3 endpoints (`sendorder`, `cancelorder`, `orders/status`, `openorders`, `openpositions`) with fail-closed safety guards in `LiveKrakenService`.
 - `record` is currently implemented only for Binance USDT-M market recorder; Kraken recording path is not yet implemented and fails closed.
-- Kraken live order placement / flatten path is intentionally fail-closed (`kraken_live_trading_not_implemented`) until a full Kraken execution adapter is added.
+- Exchange response schemas can vary by account/entity; run `testnet -> canary` first and verify order/position reconciliation before any live usage.
 - Helper scripts:
   - `./scripts/run_kraken_live_readonly.sh`
-  - `./scripts/run_kraken_testnet.sh` (expected to fail closed until trading implementation is completed)
-  - `./scripts/run_kraken_live_canary.sh` (prepared; expected to fail closed until trading implementation is completed)
-  - `./scripts/run_kraken_live.sh` (prepared; expected to fail closed until trading implementation is completed)
+  - `./scripts/run_kraken_testnet.sh`
+  - `./scripts/run_kraken_live_canary.sh`
+  - `./scripts/run_kraken_live.sh`
   - `./scripts/instant_validate_kraken.sh` (pytest + readonly smoke)
 
 ## Emergency stop
