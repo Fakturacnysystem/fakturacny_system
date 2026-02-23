@@ -21,11 +21,32 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Live canary: `config.perps_intraday.live_canary.yaml`
 - Live full strict: `config.perps_intraday.live.yaml`
 
-## Binance setup (step-by-step)
-1. Create Binance Futures API key:
-- Futures enabled.
+## Kraken setup (step-by-step, private bot model)
+1. Create Kraken API key:
+- Trading enabled.
 - Withdrawals disabled.
 - IP allowlist strongly recommended.
+
+### Credential model for private bot operation
+- This project is documented for a **private bot running on your own exchange account**.
+- You only need standard exchange API credentials for signing requests:
+  - `EXCHANGE_API_KEY`
+  - `EXCHANGE_API_SECRET`
+- Optional extra secret (passphrase) is exchange-specific and only used when a provider requires it.
+- You do **not** need OAuth app credentials (`client_id`, `client_secret`) or a separate developer authorization key for this deployment model.
+
+### Required capability envelope (autonomous but fail-closed)
+- Data plane: market data ingest + internal feature/analysis pipeline.
+- Decision plane: strategy signal + risk-gated decisioning.
+- Action plane: order placement/cancel + position management (including emergency flatten).
+- Control plane: reconciliation, reporting, and WHY/audit logs.
+- Safety profile: conservative, stability-first; risk controls override alpha at all times.
+
+### Minimum exchange permissions
+- Enable only what is required: read + trading (order placement/cancel and balance/position reads).
+- Keep withdrawals disabled permanently.
+- Use IP whitelist whenever the exchange supports it.
+- If required permissions are missing/uncertain, the runtime defaults to no-trade/fail-closed behavior.
 
 2. Configure `.env`:
 ```bash
@@ -123,3 +144,33 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.pe
 ## Security hygiene
 - Secrets via env vars only.
 - Never commit API keys.
+
+## Kraken Spot runbook (private bot, no OAuth)
+- Credentials: `KRAKEN_API_KEY` + `KRAKEN_API_SECRET` only.
+- Do not use developer OAuth/app keys for this private-account bot deployment.
+- Required permissions: funds read + trading. Keep withdrawals disabled.
+- Prefer IP allowlist.
+
+### Rollout steps
+```bash
+# 1) preflight readonly
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.live_readonly.yaml
+
+# 2) record 60s market sample
+PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.kraken_spot.live_readonly.yaml --duration-seconds 60
+
+# 3) replay recordings offline (must return events>0)
+PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.kraken_spot.live_readonly.yaml --source recordings
+
+# 4) canary
+TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_canary.yaml
+
+# 5) full live
+TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
+
+# emergency
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml --kill
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
+```

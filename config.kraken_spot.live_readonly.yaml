@@ -1,0 +1,51 @@
+{
+  "mode": "live",
+  "provider_whitelist": ["kraken_spot"],
+  "universe": ["XBTUSD", "ETHUSD"],
+  "execution": {
+    "mode": "live_readonly",
+    "fee_bps": 16.0,
+    "slippage_bps": 8.0,
+    "kraken_spot": {
+      "rest_base_url": "https://api.kraken.com",
+      "api_key_env": "KRAKEN_API_KEY",
+      "api_secret_env": "KRAKEN_API_SECRET",
+      "allow_unknown_permissions": true
+    }
+  },
+  "universe_builder": {
+    "top_n_target": 1000,
+    "refresh_interval_hours": 6.0,
+    "candidate_max": 200,
+    "trade_max_positions": 20,
+    "min_24h_quote_volume": 100000.0,
+    "max_spread_bps": 25.0
+  },
+  "risk": {
+    "max_daily_loss_pct": 1.5,
+    "max_weekly_loss_pct": 4.0,
+    "max_drawdown_pct": 6.0,
+    "max_position_notional": 500.0,
+    "max_exposure_notional": 5000.0,
+    "max_symbol_exposure_notional": 500.0,
+    "max_cluster_exposure_notional": 1500.0,
+    "max_orders_per_min": 12,
+    "leverage": 0,
+    "target_portfolio_vol": 0.08,
+    "cvar_limit_pct": 5.0,
+    "stress_loss_limit_pct": 7.0,
+    "max_spread_bps": 25.0,
+    "min_depth_notional": 0.0,
+    "stale_data_seconds": 30.0,
+    "min_margin_buffer": 1.0,
+    "max_funding_cost_per_day": 0.0,
+    "max_oi_spike_pct": 0.0,
+    "max_liquidation_spike": 0.0,
+    "divergence_threshold_bps": 30.0,
+    "crowding_score_kill": 30.0
+  },
+  "tco": {"max_total_cost_bps": 40.0, "max_impact_bps": 20.0},
+  "policy": {"confidence_threshold": 0.60, "safety_buffer_bps": 2.0, "base_risk_budget": 500.0},
+  "storage": {"run_dir": "runs/kraken_spot_live_readonly"},
+  "fixtures": {"ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"}
+}

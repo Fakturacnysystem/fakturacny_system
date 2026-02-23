@@ -38,7 +38,12 @@ class DataIngestionService:
         candidates = [p for p in root.iterdir() if p.is_dir()]
         if not candidates:
             return None
-        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        scored = []
+        for d in candidates:
+            market = d / "market.jsonl"
+            non_empty = 1 if (market.exists() and market.stat().st_size > 0) else 0
+            scored.append((non_empty, d.stat().st_mtime, d.name, d))
+        latest = max(scored, key=lambda x: (x[0], x[1], x[2]))[-1]
         return latest.name
 
     def recordings_index(self, run_dir: str, run_id: str) -> dict:
@@ -151,7 +156,7 @@ class DataIngestionService:
                 continue
             evt = int(data.get("E", data.get("T", 0)))
             ts = datetime.fromtimestamp(evt / 1000.0, tz=timezone.utc) if evt > 0 else datetime.now(timezone.utc)
-            if data.get("e") == "aggTrade":
+            if data.get("e") in {"aggTrade", "ticker"}:
                 close = float(data.get("p", close or 0.0))
             if close <= 0:
                 continue

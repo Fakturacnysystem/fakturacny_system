@@ -77,6 +77,32 @@ class BinanceExecutionSettings:
 
 
 @dataclass
+class KrakenSpotExecutionSettings:
+    rest_base_url: str = "https://api.kraken.com"
+    api_key_env: str = "KRAKEN_API_KEY"
+    api_secret_env: str = "KRAKEN_API_SECRET"
+    request_timeout_s: float = 10.0
+    rate_limit_rps: float = 2.0
+    max_retries: int = 3
+    backoff_base_ms: int = 300
+    backoff_max_ms: int = 4000
+    allow_unknown_permissions: bool = False
+    dry_run_long_only: bool = True
+
+
+@dataclass
+class UniverseBuilderSettings:
+    top_n_target: int = 1000
+    refresh_interval_hours: float = 6.0
+    candidate_min: int = 100
+    candidate_max: int = 200
+    trade_max_positions: int = 20
+    min_24h_quote_volume: float = 100000.0
+    max_spread_bps: float = 25.0
+    min_depth_notional: float = 0.0
+
+
+@dataclass
 class ExecutionSettings:
     mode: str = "paper"
     fee_bps: float = 2.0
@@ -90,6 +116,7 @@ class ExecutionSettings:
     max_child_orders: int = 5
     slicing_parts: int = 2
     binance: BinanceExecutionSettings = field(default_factory=BinanceExecutionSettings)
+    kraken_spot: KrakenSpotExecutionSettings = field(default_factory=KrakenSpotExecutionSettings)
 
 
 @dataclass
@@ -188,6 +215,7 @@ class RobotSettings:
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
+    universe_builder: UniverseBuilderSettings = field(default_factory=UniverseBuilderSettings)
 
     @classmethod
     def from_env(cls) -> "RobotSettings":
@@ -244,6 +272,7 @@ class RobotSettings:
                 max_child_orders=execution_data.get("max_child_orders", 5),
                 slicing_parts=execution_data.get("slicing_parts", 2),
                 binance=BinanceExecutionSettings(**execution_data.get("binance", {})),
+                kraken_spot=KrakenSpotExecutionSettings(**execution_data.get("kraken_spot", {})),
             ),
             safety=SafetySettings(live_unlock=LiveUnlockSettings(**live_unlock_data)),
             policy=PolicySettings(**data.get("policy", {})),
@@ -255,6 +284,7 @@ class RobotSettings:
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
+            universe_builder=UniverseBuilderSettings(**data.get("universe_builder", {})),
         )
 
     def __post_init__(self) -> None:
@@ -267,6 +297,12 @@ class RobotSettings:
         if self.execution.mode == "paper" and self.trading_mode == TradingMode.LIVE:
             return ExecutionMode.LIVE
         return ExecutionMode(self.execution.mode)
+
+
+    def live_provider(self) -> str:
+        if "kraken_spot" in self.provider_whitelist:
+            return "kraken_spot"
+        return "binance_um_perps"
 
     def live_ordering_enabled(self) -> bool:
         mode = self.execution_mode_enum()
@@ -301,8 +337,9 @@ class RobotSettings:
             return
 
         # Global live connector guard for non-paper execution modes.
-        if "binance_um_perps" not in self.provider_whitelist:
-            raise ValueError("Live execution blocked: provider_whitelist missing binance_um_perps")
+        provider = self.live_provider()
+        if provider not in self.provider_whitelist:
+            raise ValueError(f"Live execution blocked: provider_whitelist missing {provider}")
 
         if mode == ExecutionMode.LIVE_READONLY:
             return
@@ -318,10 +355,16 @@ class RobotSettings:
         if any(v == UNSPECIFIED for v in self._critical_risk_limits()):
             missing.append("critical risk limits")
 
-        api_key = os.getenv(self.execution.binance.api_key_env, "")
-        api_secret = os.getenv(self.execution.binance.api_secret_env, "")
-        if not api_key or not api_secret:
-            missing.append("binance_api_credentials")
+        if provider == "kraken_spot":
+            api_key = os.getenv(self.execution.kraken_spot.api_key_env, "")
+            api_secret = os.getenv(self.execution.kraken_spot.api_secret_env, "")
+            if not api_key or not api_secret:
+                missing.append("kraken_spot_api_credentials")
+        else:
+            api_key = os.getenv(self.execution.binance.api_key_env, "")
+            api_secret = os.getenv(self.execution.binance.api_secret_env, "")
+            if not api_key or not api_secret:
+                missing.append("binance_api_credentials")
 
         if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode:
             missing.append("CANARY_MODE")
