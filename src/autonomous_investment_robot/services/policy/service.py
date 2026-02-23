@@ -121,7 +121,7 @@ class PolicyService:
             debug_row = {
                 "strategy": s.name,
                 "confidence": s.confidence,
-                "signal_side": s.side,
+                "signal_side": ("buy" if s.target_notional > 0 else "sell" if s.target_notional < 0 else "flat"),
                 "signal_notional": s.target_notional,
                 "edge_bps": edge.expected_bps,
                 "cost_total_bps": cost.total_bps,
