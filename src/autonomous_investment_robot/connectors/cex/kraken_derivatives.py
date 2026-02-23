@@ -66,7 +66,8 @@ class KrakenDerivativesConnector:
     def _authent(self, endpoint_path: str, post_data: str, nonce: str) -> str:
         secret = base64.b64decode(self._api_secret)
         payload = (post_data + nonce + endpoint_path).encode("utf-8")
-        mac = hmac.new(secret, payload, hashlib.sha512).digest()
+        digest = hashlib.sha256(payload).digest()
+        mac = hmac.new(secret, digest, hashlib.sha512).digest()
         return base64.b64encode(mac).decode("ascii")
 
     def _request(
