@@ -145,15 +145,27 @@ class RobotOrchestrator:
             spread_bps = ((ask - bid) / max(mid, 1e-9)) * 10000.0
             depth_notional = (bid * max(bid_qty, 0.0)) + (ask * max(ask_qty, 0.0))
             prices.append(mid)
-            prices = prices[-8:]
-            ret_1 = 0.0 if len(prices) < 2 else (prices[-1] / prices[-2] - 1.0)
-            ret_3 = 0.0 if len(prices) < 4 else (prices[-1] / prices[-4] - 1.0)
+            prices = prices[-64:]
+            if self.settings.live_provider() == "kraken_spot":
+                fast_hops = 2
+                medium_hops = 12
+            else:
+                fast_hops = 1
+                medium_hops = 3
+            ret_1 = 0.0 if len(prices) <= fast_hops else (prices[-1] / prices[-1 - fast_hops] - 1.0)
+            ret_3 = 0.0 if len(prices) <= medium_hops else (prices[-1] / prices[-1 - medium_hops] - 1.0)
             mean = sum(prices) / len(prices)
             rv = 0.0 if mean <= 0 else ((sum((p - mean) ** 2 for p in prices) / len(prices)) ** 0.5) / mean
+            z_proxy = 0.0 if rv <= 1e-9 else (mid - mean) / (mean * rv + 1e-9)
             flow_imbalance = (bid_qty - ask_qty) / max(bid_qty + ask_qty, 1e-9)
+            if self.settings.live_provider() == "kraken_spot" and self.settings.canary_mode:
+                # Spot canary uses a slightly longer micro-trend horizon to produce testable intents under TCO.
+                ret_1 *= 2.0
+                ret_3 *= 3.0
             features = {
                 "ret_1": ret_1,
                 "ret_3": ret_3,
+                "pairs_zscore": z_proxy,
                 "realized_vol": rv,
                 "atr_proxy": spread_bps / 10000.0,
                 "spread_proxy": spread_bps / 10000.0,
