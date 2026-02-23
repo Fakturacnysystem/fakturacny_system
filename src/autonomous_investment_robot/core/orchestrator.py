@@ -200,9 +200,20 @@ class RobotOrchestrator:
             intent = self.policy.make_intent(fc, features, self.settings.execution.fee_bps, self.settings.execution.slippage_bps)
             if intent is None:
                 self.ops.inc_metric("orders_rejected_total")
+                no_intent_debug = dict(getattr(self.policy, "last_no_intent_debug", {}) or {})
                 self.ops.audit_event(
                     "heartbeat",
-                    {"symbol": symbol, "mid": mid, "spread_bps": spread_bps, "equity": equity, "reason": "no_intent", "regime": fc.regime, "liq_regime": fc.liquidity_regime},
+                    {
+                        "symbol": symbol,
+                        "mid": mid,
+                        "spread_bps": spread_bps,
+                        "equity": equity,
+                        "reason": "no_intent",
+                        "regime": fc.regime,
+                        "liq_regime": fc.liquidity_regime,
+                        "fc_confidence": fc.confidence,
+                        "policy_debug": no_intent_debug,
+                    },
                 )
                 self.ops.export_prometheus()
                 if max_steps and steps >= max_steps:

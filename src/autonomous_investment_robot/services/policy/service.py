@@ -32,6 +32,7 @@ class PolicyService:
         self.tco_settings = tco_settings
         self.last_veto_reasons: list[str] = []
         self.last_veto_counts: dict[str, int] = {}
+        self.last_no_intent_debug: dict[str, object] = {}
         self.strategy_regime_cooldowns: dict[tuple[str, str], int] = {}
         self.strategy_regime_veto_streaks: dict[tuple[str, str], int] = defaultdict(int)
         self.allocator = BanditAllocator(
@@ -88,8 +89,10 @@ class PolicyService:
     def make_intent(self, fc: Forecast, features: dict[str, float], fee_bps: float, slippage_bps: float) -> OrderIntent | None:
         self.last_veto_reasons = []
         self.last_veto_counts = {}
+        self.last_no_intent_debug = {}
         signals = self.evaluate_strategies(features, fc)
         if not signals:
+            self.last_no_intent_debug = {"reason": "no_strategies", "regime": fc.regime, "liquidity_regime": fc.liquidity_regime}
             return None
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -170,7 +173,24 @@ class PolicyService:
                 contrib = s.target_notional * effective_weights.get(s.name, 0.0)
                 combined += contrib
 
-        if abs(combined) < 1e-9 or fc.confidence < self.settings.confidence_threshold:
+        if abs(combined) < 1e-9:
+            self.last_no_intent_debug = {
+                "reason": "combined_zero",
+                "fc_confidence": fc.confidence,
+                "confidence_threshold": self.settings.confidence_threshold,
+                "signals": [s.name for s in signals],
+                "accepted_candidates": [s.name for s, *_ in accepted_candidates],
+                "veto_counts": dict(self.last_veto_counts),
+            }
+            return None
+        if fc.confidence < self.settings.confidence_threshold:
+            self.last_no_intent_debug = {
+                "reason": "forecast_confidence_below_threshold",
+                "fc_confidence": fc.confidence,
+                "confidence_threshold": self.settings.confidence_threshold,
+                "combined": combined,
+                "veto_counts": dict(self.last_veto_counts),
+            }
             return None
 
         side = "buy" if combined > 0 else "sell"
