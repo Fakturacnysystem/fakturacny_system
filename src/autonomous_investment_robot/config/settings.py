@@ -77,8 +77,21 @@ class BinanceExecutionSettings:
 
 
 @dataclass
+class KrakenExecutionSettings:
+    rest_base_url: str = "https://futures.kraken.com"
+    ws_public_url: str = "wss://futures.kraken.com/ws/v1"
+    api_key_env: str = "KRAKEN_API_KEY"
+    api_secret_env: str = "KRAKEN_API_SECRET"
+    request_timeout_s: float = 10.0
+    rate_limit_rps: float = 5.0
+    allow_unknown_permissions: bool = False
+    reduce_only_on_flatten: bool = True
+
+
+@dataclass
 class ExecutionSettings:
     mode: str = "paper"
+    provider_id: str = "binance_um_perps"
     fee_bps: float = 2.0
     slippage_bps: float = 1.0
     partial_fill_ratio: float = 0.7
@@ -90,6 +103,7 @@ class ExecutionSettings:
     max_child_orders: int = 5
     slicing_parts: int = 2
     binance: BinanceExecutionSettings = field(default_factory=BinanceExecutionSettings)
+    kraken: KrakenExecutionSettings = field(default_factory=KrakenExecutionSettings)
 
 
 @dataclass
@@ -233,6 +247,7 @@ class RobotSettings:
             risk=RiskLimits(**data.get("risk", {})),
             execution=ExecutionSettings(
                 mode=execution_data.get("mode", data.get("mode", "paper")),
+                provider_id=execution_data.get("provider_id", "binance_um_perps"),
                 fee_bps=execution_data.get("fee_bps", 2.0),
                 slippage_bps=execution_data.get("slippage_bps", 1.0),
                 partial_fill_ratio=execution_data.get("partial_fill_ratio", 0.7),
@@ -244,6 +259,7 @@ class RobotSettings:
                 max_child_orders=execution_data.get("max_child_orders", 5),
                 slicing_parts=execution_data.get("slicing_parts", 2),
                 binance=BinanceExecutionSettings(**execution_data.get("binance", {})),
+                kraken=KrakenExecutionSettings(**execution_data.get("kraken", {})),
             ),
             safety=SafetySettings(live_unlock=LiveUnlockSettings(**live_unlock_data)),
             policy=PolicySettings(**data.get("policy", {})),
@@ -301,8 +317,9 @@ class RobotSettings:
             return
 
         # Global live connector guard for non-paper execution modes.
-        if "binance_um_perps" not in self.provider_whitelist:
-            raise ValueError("Live execution blocked: provider_whitelist missing binance_um_perps")
+        provider_id = self.execution.provider_id
+        if provider_id not in self.provider_whitelist:
+            raise ValueError(f"Live execution blocked: provider_whitelist missing {provider_id}")
 
         if mode == ExecutionMode.LIVE_READONLY:
             return
@@ -318,8 +335,14 @@ class RobotSettings:
         if any(v == UNSPECIFIED for v in self._critical_risk_limits()):
             missing.append("critical risk limits")
 
-        api_key = os.getenv(self.execution.binance.api_key_env, "")
-        api_secret = os.getenv(self.execution.binance.api_secret_env, "")
+        if provider_id == "kraken_derivatives":
+            api_key_env = self.execution.kraken.api_key_env
+            api_secret_env = self.execution.kraken.api_secret_env
+        else:
+            api_key_env = self.execution.binance.api_key_env
+            api_secret_env = self.execution.binance.api_secret_env
+        api_key = os.getenv(api_key_env, "")
+        api_secret = os.getenv(api_secret_env, "")
         if not api_key or not api_secret:
             missing.append("binance_api_credentials")
 

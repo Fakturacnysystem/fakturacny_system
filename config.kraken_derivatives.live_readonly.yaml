@@ -1,0 +1,62 @@
+{
+  "mode": "paper",
+  "safe_mode_default": false,
+  "provider_whitelist": ["kraken_derivatives"],
+  "universe": ["PI_XBTUSD"],
+  "execution": {
+    "provider_id": "kraken_derivatives",
+    "mode": "live_readonly",
+    "fee_bps": 2.0,
+    "slippage_bps": 1.0,
+    "partial_fill_ratio": 0.0,
+    "maker_preference": true,
+    "maker_timeout_s": 20,
+    "slicing_parts": 1,
+    "kraken": {
+      "rest_base_url": "https://futures.kraken.com",
+      "ws_public_url": "wss://futures.kraken.com/ws/v1",
+      "api_key_env": "KRAKEN_API_KEY",
+      "api_secret_env": "KRAKEN_API_SECRET",
+      "allow_unknown_permissions": false
+    }
+  },
+  "safety": {
+    "live_unlock": {
+      "enable_live_trading": false,
+      "ack_i_understand_risks": false,
+      "require_testnet_passed": true,
+      "canary_required_before_full": true
+    }
+  },
+  "policy": {"confidence_threshold": 0.55, "estimated_cost_bps": 3.0, "base_risk_budget": 1000.0},
+  "allocator": {"max_weight_per_strategy": 0.7, "decay": 0.9, "min_samples": 2, "fatal_sigma_loss": 2.5, "cooldown_steps": 3},
+  "risk": {
+    "max_daily_loss_pct": 2.0,
+    "max_weekly_loss_pct": 4.0,
+    "max_drawdown_pct": 3.0,
+    "max_position_notional": 200.0,
+    "max_exposure_notional": 200.0,
+    "max_symbol_exposure_notional": 200.0,
+    "max_cluster_exposure_notional": 200.0,
+    "max_orders_per_min": 10,
+    "leverage": 0,
+    "target_portfolio_vol": 0.1,
+    "cvar_limit_pct": 2.0,
+    "stress_loss_limit_pct": 4.0,
+    "max_spread_bps": 30.0,
+    "min_depth_notional": 100000.0,
+    "stale_data_seconds": 10.0,
+    "min_margin_buffer": 2.0,
+    "max_funding_cost_per_day": 0.2,
+    "max_oi_spike_pct": 1.5,
+    "max_liquidation_spike": 50000.0,
+    "divergence_threshold_bps": 15.0,
+    "crowding_score_kill": 20.0,
+    "crowding_score_medium": 10.0,
+    "crowding_score_high": 15.0,
+    "crowding_score_extreme": 20.0
+  },
+  "tco": {"max_total_cost_bps": 10.0, "max_impact_bps": 10.0},
+  "storage": {"run_dir": "runs/kraken_live_readonly"},
+  "monitoring": {"metrics_port": 9108}
+}

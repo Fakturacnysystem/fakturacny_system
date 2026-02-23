@@ -6,12 +6,14 @@ import json
 
 from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, UNSPECIFIED
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceUMPerpsConnector
+from autonomous_investment_robot.connectors.cex.kraken_derivatives import KrakenDerivativesConnector
 from autonomous_investment_robot.services.compliance.service import ComplianceService
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.data_qa.service import DataQAService
 from autonomous_investment_robot.services.event_store.service import EventStore
 from autonomous_investment_robot.services.execution.service import ExecutionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
+from autonomous_investment_robot.services.execution.live_kraken_service import LiveKrakenService
 from autonomous_investment_robot.services.feature_store.service import FeatureStoreService
 from autonomous_investment_robot.services.incident.service import IncidentPolicy, Notifier
 from autonomous_investment_robot.services.mlops.service import MLOpsService
@@ -71,7 +73,7 @@ class RobotOrchestrator:
         self.ops.track_config(asdict(self.settings))
         symbol = self.settings.universe[0]
         mode = self.settings.execution_mode_enum()
-        provider = "paper_sim_provider" if mode == ExecutionMode.PAPER else "binance_um_perps"
+        provider = "paper_sim_provider" if mode == ExecutionMode.PAPER else self.settings.execution.provider_id
         c = self.compliance.check_provider_authorization(provider)
         self.event_store.append("compliance", make_event(ComplianceEvent, "COMPLIANCE_CHECK", symbol, provider, self.event_store.next_seq("compliance"), {"allowed": c.allowed, "reason": c.reason}))
         if not c.allowed:
@@ -80,11 +82,18 @@ class RobotOrchestrator:
             return {"status": "blocked", "reason": "missing_required_limits"}
 
         if mode != ExecutionMode.PAPER:
-            live = LiveBinanceService(
-                settings=self.settings,
-                run_id=self.settings.storage.run_dir.replace("/", "_"),
-                connector=BinanceUMPerpsConnector(self.settings.execution.binance),
-            )
+            if self.settings.execution.provider_id == "kraken_derivatives":
+                live = LiveKrakenService(
+                    settings=self.settings,
+                    run_id=self.settings.storage.run_dir.replace("/", "_"),
+                    connector=KrakenDerivativesConnector(self.settings.execution.kraken),
+                )
+            else:
+                live = LiveBinanceService(
+                    settings=self.settings,
+                    run_id=self.settings.storage.run_dir.replace("/", "_"),
+                    connector=BinanceUMPerpsConnector(self.settings.execution.binance),
+                )
             self.execution.attach_live_service(live)
             ok_preflight, reason_preflight = live.preflight()
             self.recon.persist_report(

@@ -20,6 +20,8 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Testnet tiny risk: `config.perps_intraday.testnet.yaml`
 - Live canary: `config.perps_intraday.live_canary.yaml`
 - Live full strict: `config.perps_intraday.live.yaml`
+- Kraken derivatives live readonly (scaffold): `config.kraken_derivatives.live_readonly.yaml`
+- Kraken derivatives testnet (scaffold, trading path fail-closed until full execution adapter is implemented): `config.kraken_derivatives.testnet.yaml`
 
 ## Binance setup (step-by-step)
 1. Create Binance Futures API key:
@@ -60,7 +62,16 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps
 PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml --duration-seconds 60
 PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.perps_intraday.live_readonly.yaml --source recordings
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_derivatives.live_readonly.yaml
 ```
+
+## Kraken (EEA-friendly alternative) integration status
+- `live-readonly` preflight path is supported via Kraken derivatives scaffold (`kraken_derivatives` provider).
+- `record` is currently implemented only for Binance USDT-M market recorder; Kraken recording path is not yet implemented and fails closed.
+- Kraken live order placement / flatten path is intentionally fail-closed (`kraken_live_trading_not_implemented`) until a full Kraken execution adapter is added.
+- Helper scripts:
+  - `./scripts/run_kraken_live_readonly.sh`
+  - `./scripts/run_kraken_testnet.sh` (expected to fail closed until trading implementation is completed)
 
 ## Emergency stop
 - Soft stop: run with `--kill`.
