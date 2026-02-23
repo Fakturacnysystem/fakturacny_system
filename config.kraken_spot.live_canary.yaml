@@ -7,8 +7,8 @@
     "universe": ["XBTUSD", "ETHUSD"],
     "execution": {
       "mode": "live_testnet",
-      "fee_bps": 8.0,
-      "slippage_bps": 2.0,
+      "fee_bps": 1.0,
+      "slippage_bps": 0.5,
       "kraken_spot": {
         "allow_unknown_permissions": true,
         "dry_run_long_only": false
@@ -17,7 +17,7 @@
     "policy": {
       "confidence_threshold": 0.45,
       "safety_buffer_bps": 0.0,
-      "base_risk_budget": 75.0
+      "base_risk_budget": 50.0
     },
     "risk": {
       "max_daily_loss_pct": 1.0,
@@ -40,7 +40,7 @@
       "crowding_score_kill": 25.0
     },
     "tco": {
-      "max_total_cost_bps": 80.0,
+      "max_total_cost_bps": 120.0,
       "max_impact_bps": 40.0
     },
     "storage": {

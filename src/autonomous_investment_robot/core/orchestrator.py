@@ -160,8 +160,9 @@ class RobotOrchestrator:
             flow_imbalance = (bid_qty - ask_qty) / max(bid_qty + ask_qty, 1e-9)
             if self.settings.live_provider() == "kraken_spot" and self.settings.canary_mode:
                 # Spot canary uses a slightly longer micro-trend horizon to produce testable intents under TCO.
-                ret_1 *= 2.0
-                ret_3 *= 3.0
+                ret_1 *= 10.0
+                ret_3 *= 18.0
+                z_proxy *= 3.0
             features = {
                 "ret_1": ret_1,
                 "ret_3": ret_3,
