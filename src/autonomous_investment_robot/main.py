@@ -3,10 +3,13 @@ import time
 
 from autonomous_investment_robot.config.settings import RobotSettings
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceConnectorError, BinanceUMPerpsConnector
+from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.services.data_ingestion.binance_ws_streams import BinanceWSStreams
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
+from autonomous_investment_robot.services.execution.live_kraken_spot_service import LiveKrakenSpotService
+from autonomous_investment_robot.services.data_ingestion.kraken_spot_poller import KrakenSpotMarketPoller
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
 
 
@@ -23,10 +26,10 @@ def run_replay(config_path: str, source: str = "fixtures", run_id: str | None = 
         ing = DataIngestionService()
         resolved_run_id = ing.resolve_recording_run_id(settings.storage.run_dir, run_id=run_id)
         if resolved_run_id is None:
-            return {"events": 0, "source": source, "status": "blocked", "reason": "recordings_missing"}
+            return {"events": 0, "source": source, "status": "blocked", "reason": "recordings_missing", "hint": "Run record --duration-seconds 60 first or provide --run-id."}
         health = ing.recordings_health(settings.storage.run_dir, resolved_run_id)
         bars = ing.replay_recordings(settings.storage.run_dir, run_id=resolved_run_id, symbol=symbol, source=source)
-        return {
+        out = {
             "events": len(bars),
             "source": source,
             "run_id": resolved_run_id,
@@ -34,6 +37,11 @@ def run_replay(config_path: str, source: str = "fixtures", run_id: str | None = 
             "recording_index": ing.recordings_index(settings.storage.run_dir, resolved_run_id),
             "recording_meta": ing.replay_recordings_meta(settings.storage.run_dir, resolved_run_id),
         }
+        if out["events"] <= 0:
+            out["status"] = "blocked"
+            out["reason"] = "recordings_empty"
+            out["hint"] = "Recording file exists but has no replayable events."
+        return out
     engine = ReplayEngine()
     events = engine.from_csv(settings.fixtures.ohlcv_csv, symbol=symbol, venue=source)
     return {"events": len(events), "source": source}
@@ -46,18 +54,33 @@ def run_record(
     poll_interval_seconds: float = 1.0,
 ) -> dict:
     settings = RobotSettings.from_file(config_path)
+    provider = settings.live_provider()
+    out = {
+        "status": "ready",
+        "mode": settings.execution.mode,
+        "provider": provider,
+        "run_id": run_id,
+        "record_path": f"{settings.storage.run_dir}/recordings/{run_id}/market.jsonl",
+    }
+    if provider == "kraken_spot":
+        connector = KrakenSpotConnector(settings.execution.kraken_spot)
+        if duration_seconds <= 0:
+            return out
+        poller = KrakenSpotMarketPoller(connector=connector, run_dir=settings.storage.run_dir, symbols=settings.universe)
+        rec = poller.record(run_id=run_id, duration_seconds=duration_seconds, poll_interval_seconds=poll_interval_seconds)
+        out.update({"status": "ok", "duration_seconds": int(duration_seconds), **rec})
+        ing = DataIngestionService()
+        out["recording_health"] = ing.recordings_health(settings.storage.run_dir, run_id)
+        out["recording_index"] = ing.recordings_index(settings.storage.run_dir, run_id)
+        out["recording_meta"] = ing.replay_recordings_meta(settings.storage.run_dir, run_id)
+        return out
+
     ws = BinanceWSStreams(
         ws_base_url=settings.execution.binance.ws_stream_base_url,
         symbols=settings.universe,
         run_dir=settings.storage.run_dir,
     )
-    out = {
-        "status": "ready",
-        "mode": settings.execution.mode,
-        "run_id": run_id,
-        "record_path": f"{settings.storage.run_dir}/recordings/{run_id}/market.jsonl",
-        "combined_stream_url": ws.combined_stream_url(),
-    }
+    out["combined_stream_url"] = ws.combined_stream_url()
     if duration_seconds <= 0:
         return out
 
@@ -156,11 +179,18 @@ def run_record(
 
 def emergency_flatten(config_path: str) -> dict:
     settings = RobotSettings.from_file(config_path)
-    live = LiveBinanceService(
-        settings=settings,
-        run_id=settings.storage.run_dir.replace("/", "_"),
-        connector=BinanceUMPerpsConnector(settings.execution.binance),
-    )
+    if settings.live_provider() == "kraken_spot":
+        live = LiveKrakenSpotService(
+            settings=settings,
+            run_id=settings.storage.run_dir.replace("/", "_"),
+            connector=KrakenSpotConnector(settings.execution.kraken_spot),
+        )
+    else:
+        live = LiveBinanceService(
+            settings=settings,
+            run_id=settings.storage.run_dir.replace("/", "_"),
+            connector=BinanceUMPerpsConnector(settings.execution.binance),
+        )
     ok, reason = live.preflight()
     if not ok:
         return {"status": "blocked", "reason": reason}
