@@ -45,7 +45,9 @@ class WSDataIntegrityGuard:
     def record_stream_update(self, *, stream: str, ts: float, seq: float | None = None) -> None:
         state = self._state(stream)
         new_ts = _safe_float(ts, 0.0)
-        if new_ts > 0.0 and state.last_update_ts > 0.0 and new_ts < state.last_update_ts:
+        # Some venue timestamps can move backwards slightly (server time jitter).
+        # Treat out-of-order as authoritative only when a sequence value is present.
+        if seq is not None and new_ts > 0.0 and state.last_update_ts > 0.0 and new_ts < state.last_update_ts:
             state.out_of_order += 1
         if seq is not None and state.last_seq is not None and float(seq) <= float(state.last_seq):
             state.out_of_order += 1
