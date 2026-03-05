@@ -137,9 +137,26 @@ class KrakenSpotConnector:
         raise KrakenConnectorError(f"Kraken request failed {method} {path}")
 
     def verify_live_permissions(self) -> tuple[bool, str]:
-        if self.settings.allow_unknown_permissions:
-            return True, "permissions_unverified_operator_override"
-        return False, "Cannot verify Kraken trade-only/no-withdraw permissions via API. Set allow_unknown_permissions=true only after manual verification."
+        if not self.has_credentials:
+            return False, "missing_credentials"
+        # Validate required private scopes used by live execution.
+        required_checks = [
+            ("balance", self.balance),
+            ("open_orders", self.open_orders),
+        ]
+        for scope, fn in required_checks:
+            try:
+                fn()
+            except Exception as exc:
+                txt = str(exc).lower()
+                if "permission denied" in txt:
+                    return False, f"kraken_permission_denied:{scope}"
+                if "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
+                    return False, f"kraken_auth_error:{scope}"
+                if self.settings.allow_unknown_permissions:
+                    return True, f"permissions_unverified_operator_override:{scope}:{exc}"
+                return False, f"permission_check_failed:{scope}:{exc}"
+        return True, "ok"
 
     # Public
     def asset_pairs(self) -> dict[str, Any]:

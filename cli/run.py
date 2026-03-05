@@ -48,6 +48,30 @@ def _resolve_run_dir(config_path: str) -> str:
     return "runs/kraken_spot_live"
 
 
+def _force_execution_mode(config_path: str, mode: str) -> str:
+    try:
+        cfg = _load_yaml_like(config_path)
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    cfg["mode"] = mode
+    exec_cfg = cfg.get("execution", {})
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
+    exec_cfg["mode"] = mode
+    cfg["execution"] = exec_cfg
+    out_path = Path(_resolve_run_dir(config_path)) / f"runtime_config.forced_{mode}.yaml"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import yaml  # type: ignore
+
+        out_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    except Exception:
+        out_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    return str(out_path)
+
+
 def _watchdog_config(config_path: str) -> WatchdogConfig:
     try:
         cfg = _load_yaml_like(config_path)
@@ -106,11 +130,15 @@ def main() -> int:
 
     if args.paper:
         os.environ["LIVE_TRADING"] = "false"
-        args.once = True
+        os.environ["ENABLE_LIVE_TRADING"] = "false"
+        if not args.nonstop:
+            args.once = True
     if args.live:
         os.environ["LIVE_TRADING"] = "true"
 
     effective_config = apply_runtime_override(args.config)
+    if args.paper:
+        effective_config = _force_execution_mode(effective_config, "paper")
     dash_enabled = bool(args.dashboard or str(os.getenv("AUTONOMOUS_DASHBOARD_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"})
     dash_proc: subprocess.Popen | None = None
     if dash_enabled:
@@ -155,8 +183,11 @@ def main() -> int:
         wd_cfg.poll_interval_s = max(0.25, float(args.poll_s))
 
     sup = WatchdogSupervisor(run_dir=run_dir, config=wd_cfg)
+    loop_config_source = effective_config if args.paper else args.config
     while True:
-        effective_config = apply_runtime_override(args.config)
+        effective_config = apply_runtime_override(loop_config_source)
+        if args.paper:
+            effective_config = _force_execution_mode(effective_config, "paper")
         child = subprocess.Popen(
             [sys.executable, "-m", "cli.worker", "--config", effective_config],
             cwd=str(ROOT),

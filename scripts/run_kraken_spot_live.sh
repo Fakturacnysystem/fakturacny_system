@@ -137,5 +137,40 @@ if [[ -z "${PYTHON_BIN}" ]]; then
   PYTHON_BIN="python3"
 fi
 
+FALLBACK_TO_PAPER_ON_PERM_DENIED="$(printf '%s' "${AUTONOMOUS_FALLBACK_TO_PAPER_ON_PERMISSION_DENIED:-true}" | tr '[:upper:]' '[:lower:]')"
+PERM_CHECK_RESULT="$(
+  PYTHONPATH=src "${PYTHON_BIN}" - <<'PY'
+from autonomous_investment_robot.config.settings import KrakenSpotExecutionSettings
+from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
+
+settings = KrakenSpotExecutionSettings(allow_unknown_permissions=True)
+connector = KrakenSpotConnector(settings)
+checks = [
+    ("balance", connector.balance),
+    ("open_orders", connector.open_orders),
+]
+for name, fn in checks:
+    try:
+        fn()
+    except Exception as exc:
+        txt = str(exc).lower()
+        if "permission denied" in txt or "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
+            print(f"DENIED:{name}:{exc}")
+            raise SystemExit(2)
+print("OK")
+PY
+)" || true
+
+if [[ "${PERM_CHECK_RESULT}" == DENIED:* ]]; then
+  echo "[run_kraken_spot_live] Kraken private API permissions missing (${PERM_CHECK_RESULT})." >&2
+  if [[ "${FALLBACK_TO_PAPER_ON_PERM_DENIED}" == "true" || "${FALLBACK_TO_PAPER_ON_PERM_DENIED}" == "1" || "${FALLBACK_TO_PAPER_ON_PERM_DENIED}" == "yes" || "${FALLBACK_TO_PAPER_ON_PERM_DENIED}" == "on" ]]; then
+    echo "[run_kraken_spot_live] Switching to paper mode to avoid live error loops." >&2
+    TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=false ACK_I_UNDERSTAND_RISKS=true \
+    PYTHONPATH=src "${PYTHON_BIN}" -m cli.run --config "${LIVE_CONFIG}" --paper --nonstop
+    exit $?
+  fi
+  exit 3
+fi
+
 TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
 PYTHONPATH=src "${PYTHON_BIN}" -m cli.run --config "${LIVE_CONFIG}" --nonstop

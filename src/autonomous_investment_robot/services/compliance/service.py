@@ -16,6 +16,10 @@ class ComplianceService:
         self.provider_whitelist = provider_whitelist
 
     def check_provider_authorization(self, provider: str) -> ComplianceDecision:
+        # Paper simulation must stay available even when config whitelist contains only
+        # live providers, so runtime can safely downgrade without manual edits.
+        if provider == "paper_sim_provider":
+            return ComplianceDecision(True, "authorized")
         if provider not in self.provider_whitelist:
             return ComplianceDecision(False, "provider_not_authorized")
         return ComplianceDecision(True, "authorized")
