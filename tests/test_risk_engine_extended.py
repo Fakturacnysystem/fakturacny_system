@@ -1,3 +1,5 @@
+import os
+
 from autonomous_investment_robot.config.settings import RiskLimits
 from autonomous_investment_robot.services.policy.service import OrderIntent
 from autonomous_investment_robot.services.risk_engine.service import RiskEngineService
@@ -143,8 +145,9 @@ def test_symbol_and_cluster_exposure_caps_enforced():
         symbol_exposure=1800.0,
         cluster_exposure=2800.0,
     )
-    assert d.allowed is False
-    assert d.reason in {"symbol_exposure_notional_exceeded", "cluster_exposure_notional_exceeded"}
+    assert d.allowed is True
+    # Open intent is clamped to remaining symbol/cluster room instead of rejected.
+    assert d.adjusted_notional <= 200.0 + 1e-9
 
 
 def test_stress_guard_blocks_before_order():
@@ -200,6 +203,43 @@ def test_drawdown_safe_mode_recovers_after_cooldown_and_stability():
     assert b1.allowed is False
     assert b2.allowed is False
     assert b3.allowed is True
+
+
+def test_safe_mode_recovers_after_release_steps_without_new_returns():
+    prev = os.environ.get("AUTONOMOUS_SAFE_MODE_RELEASE_STEPS")
+    os.environ["AUTONOMOUS_SAFE_MODE_RELEASE_STEPS"] = "3"
+    try:
+        r = _risk()
+        r.limits.drawdown_cooldown_steps = 0
+        d = r.evaluate(
+            OrderIntent("BTCUSDT", "buy", 100.0, {}),
+            0.0,
+            -11.0,
+            0.0,
+            data_lag_seconds=0.0,
+            spread_bps=1.0,
+            depth_notional=1000.0,
+            reconciliation_ok=True,
+            funding_paid_pct=0.0,
+            oi_spike_pct=0.0,
+            liquidation_spike=0.0,
+            divergence_bps=0.0,
+            margin_buffer=3.0,
+        )
+        assert d.allowed is False
+        assert d.reason == "drawdown_safe_mode"
+
+        b1 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+        b2 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+        b3 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, -1.0, 0.0, 0.0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+        assert b1.reason == "safe_mode_default"
+        assert b2.reason == "safe_mode_default"
+        assert b3.allowed is True
+    finally:
+        if prev is None:
+            os.environ.pop("AUTONOMOUS_SAFE_MODE_RELEASE_STEPS", None)
+        else:
+            os.environ["AUTONOMOUS_SAFE_MODE_RELEASE_STEPS"] = prev
 
 
 def test_crowding_medium_throttles_size_and_emits_details():
@@ -313,3 +353,52 @@ def test_funding_budget_thresholds_throttle_then_block():
     )
     assert d2.allowed is False
     assert d2.reason == "funding_budget_throttle_block_open"
+
+
+def test_reduce_only_sell_not_blocked_by_position_or_exposure_caps():
+    r = _risk()
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "sell", 1500.0, {}),
+        current_exposure=1500.0,
+        drawdown_pct=0.0,
+        daily_loss_pct=0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+        is_reduce_only=True,
+        side="sell",
+    )
+    assert d.allowed is True
+
+
+def test_portfolio_vol_and_cvar_scaling_reduces_size():
+    r = _risk()
+    r.limits.target_portfolio_vol = 0.02
+    r.limits.cvar_limit_pct = 4.0
+    for v in [0.03, -0.032, 0.028, -0.027, 0.031, -0.034, 0.029]:
+        r.record_return(v)
+    d = r.evaluate(
+        OrderIntent("BTCUSDT", "buy", 100.0, {}),
+        current_exposure=0.0,
+        drawdown_pct=0.0,
+        daily_loss_pct=0.0,
+        data_lag_seconds=0.0,
+        spread_bps=1.0,
+        depth_notional=1000.0,
+        reconciliation_ok=True,
+        funding_paid_pct=0.0,
+        oi_spike_pct=0.0,
+        liquidation_spike=0.0,
+        divergence_bps=0.0,
+        margin_buffer=3.0,
+    )
+    assert d.allowed is True
+    assert d.adjusted_notional < 100.0
+    assert d.details.get("portfolio_scale_vol", 1.0) <= 1.0
+    assert d.details.get("portfolio_scale_cvar", 1.0) <= 1.0

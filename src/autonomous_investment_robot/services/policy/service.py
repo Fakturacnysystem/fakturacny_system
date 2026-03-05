@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import defaultdict
+import os
 
 from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings, TCOSettings, UNSPECIFIED
 from autonomous_investment_robot.services.models.service import Forecast
@@ -33,8 +34,18 @@ class PolicyService:
         self.last_veto_reasons: list[str] = []
         self.last_veto_counts: dict[str, int] = {}
         self.last_no_intent_debug: dict[str, object] = {}
+        self.last_meta_gates: list[dict[str, str]] = []
         self.strategy_regime_cooldowns: dict[tuple[str, str], int] = {}
         self.strategy_regime_veto_streaks: dict[tuple[str, str], int] = defaultdict(int)
+        self.strategy_perf_history_bps: dict[str, list[float]] = defaultdict(list)
+        self.strategy_disable_cooldowns: dict[str, int] = {}
+        self.strategy_degradation_streaks: dict[str, int] = defaultdict(int)
+        self._regime_allowed: dict[str, set[str]] = {
+            "TREND": {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry", "trend"},
+            "RANGE": {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry", "mean_reversion"},
+            "PANIC": {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry"},
+        }
+        self._thin_liquidity_blocked = {"trend", "mean_reversion"}
         self.allocator = BanditAllocator(
             decay=allocator_settings.decay,
             max_weight=allocator_settings.max_weight_per_strategy,
@@ -51,13 +62,57 @@ class PolicyService:
             TrendStrategy(),
         ]
 
+    def _meta_gate_strategy(self, strategy_name: str, regime: str, liq_regime: str) -> tuple[bool, str]:
+        allowed = self._regime_allowed.get(regime)
+        if allowed is not None and strategy_name in {
+            "delta_neutral_carry",
+            "basis",
+            "pairs_stat_arb",
+            "carry",
+            "trend",
+            "mean_reversion",
+        }:
+            if strategy_name not in allowed:
+                return False, "meta_gate_regime"
+        if liq_regime == "THIN" and strategy_name in self._thin_liquidity_blocked:
+            return False, "meta_gate_liquidity"
+        return True, ""
+
     def evaluate_strategies(self, features: dict[str, float], forecast: Forecast) -> list[StrategySignal]:
         out: list[StrategySignal] = []
         for s in self.strategies:
+            dis_cd = self.strategy_disable_cooldowns.get(s.name, 0)
+            if dis_cd > 0:
+                self.strategy_disable_cooldowns[s.name] = dis_cd - 1
+                self.last_veto_reasons.append("meta_gate_degraded")
+                self.last_veto_counts["meta_gate_degraded"] = self.last_veto_counts.get("meta_gate_degraded", 0) + 1
+                self.last_meta_gates.append(
+                    {
+                        "strategy": s.name,
+                        "regime": forecast.regime,
+                        "liquidity_regime": forecast.liquidity_regime,
+                        "reason": "meta_gate_degraded",
+                    }
+                )
+                continue
             key = (s.name, forecast.regime)
             cd = self.strategy_regime_cooldowns.get(key, 0)
             if cd > 0:
                 self.strategy_regime_cooldowns[key] = cd - 1
+                continue
+            allowed, gate_reason = self._meta_gate_strategy(s.name, forecast.regime, forecast.liquidity_regime)
+            if not allowed:
+                self.last_veto_reasons.append(gate_reason)
+                self.last_veto_counts[gate_reason] = self.last_veto_counts.get(gate_reason, 0) + 1
+                self._record_regime_veto(s.name, forecast.regime)
+                self.last_meta_gates.append(
+                    {
+                        "strategy": s.name,
+                        "regime": forecast.regime,
+                        "liquidity_regime": forecast.liquidity_regime,
+                        "reason": gate_reason,
+                    }
+                )
                 continue
             out.append(s.signal(features, forecast.regime, forecast.liquidity_regime))
         return out
@@ -86,13 +141,38 @@ class PolicyService:
     def _clear_regime_veto_streak(self, strategy_name: str, regime: str) -> None:
         self.strategy_regime_veto_streaks[(strategy_name, regime)] = 0
 
+    def _dynamic_net_edge_floor_bps(self, features: dict[str, float], forecast: Forecast) -> float:
+        base_floor = float(os.getenv("AUTONOMOUS_MIN_NET_EDGE_BPS", "0.0") or "0.0")
+        spread_bps = max(0.0, float(features.get("spread_proxy", 0.0))) * 10000.0
+        realized_vol_bps = max(0.0, float(features.get("realized_vol", 0.0))) * 10000.0
+        spread_weight = float(os.getenv("AUTONOMOUS_DYNAMIC_EDGE_SPREAD_WEIGHT", "0.03") or "0.03")
+        vol_weight = float(os.getenv("AUTONOMOUS_DYNAMIC_EDGE_VOL_WEIGHT", "0.012") or "0.012")
+        thin_add_bps = float(os.getenv("AUTONOMOUS_DYNAMIC_EDGE_THIN_ADD_BPS", "0.65") or "0.65")
+        panic_add_bps = float(os.getenv("AUTONOMOUS_DYNAMIC_EDGE_PANIC_ADD_BPS", "0.95") or "0.95")
+        max_floor_bps = float(os.getenv("AUTONOMOUS_DYNAMIC_EDGE_MAX_BPS", "0.0") or "0.0")
+        floor = base_floor + spread_weight * spread_bps + vol_weight * realized_vol_bps
+        if forecast.liquidity_regime == "THIN":
+            floor += thin_add_bps
+        if forecast.regime == "PANIC":
+            floor += panic_add_bps
+        if max_floor_bps > 0.0:
+            floor = min(floor, max_floor_bps)
+        return max(0.0, floor)
+
     def make_intent(self, fc: Forecast, features: dict[str, float], fee_bps: float, slippage_bps: float) -> OrderIntent | None:
         self.last_veto_reasons = []
         self.last_veto_counts = {}
         self.last_no_intent_debug = {}
+        self.last_meta_gates = []
         signals = self.evaluate_strategies(features, fc)
         if not signals:
-            self.last_no_intent_debug = {"reason": "no_strategies", "regime": fc.regime, "liquidity_regime": fc.liquidity_regime}
+            self.last_no_intent_debug = {
+                "reason": "no_strategies",
+                "regime": fc.regime,
+                "liquidity_regime": fc.liquidity_regime,
+                "meta_gates": list(self.last_meta_gates),
+                "veto_counts": dict(self.last_veto_counts),
+            }
             return None
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -102,7 +182,8 @@ class PolicyService:
         accepted_candidates: list[tuple[StrategySignal, float, object, object]] = []
         candidate_debug: list[dict[str, object]] = []
         for s in signals:
-            impact_bps = min(15.0, abs(s.target_notional) / max(features.get("depth_notional", 1.0), 1.0) * 10000)
+            effective_target_notional = min(abs(float(s.target_notional)), float(self.settings.base_risk_budget))
+            impact_bps = min(15.0, effective_target_notional / max(features.get("depth_notional", 1.0), 1.0) * 10000)
             cost = estimate_cost(
                 fee_bps=fee_bps,
                 slippage_bps=slippage_bps,
@@ -123,6 +204,7 @@ class PolicyService:
                 "confidence": s.confidence,
                 "signal_side": ("buy" if s.target_notional > 0 else "sell" if s.target_notional < 0 else "flat"),
                 "signal_notional": s.target_notional,
+                "effective_notional_for_cost": effective_target_notional,
                 "edge_bps": edge.expected_bps,
                 "cost_total_bps": cost.total_bps,
                 "edge_minus_cost_bps": edge.expected_bps - cost.total_bps,
@@ -156,12 +238,22 @@ class PolicyService:
                 continue
             self._clear_regime_veto_streak(s.name, fc.regime)
             net_after_cost_bps = edge.expected_bps - cost.total_bps
+            dynamic_edge_floor_bps = self._dynamic_net_edge_floor_bps(features, fc)
+            debug_row["dynamic_edge_floor_bps"] = dynamic_edge_floor_bps
+            if net_after_cost_bps < dynamic_edge_floor_bps:
+                self.last_veto_reasons.append("dynamic_edge_floor")
+                self.last_veto_counts["dynamic_edge_floor"] = self.last_veto_counts.get("dynamic_edge_floor", 0) + 1
+                self._record_regime_veto(s.name, fc.regime)
+                debug_row["blocked_reason"] = "dynamic_edge_floor"
+                candidate_debug.append(debug_row)
+                continue
             regime_mult = self._regime_priority_multiplier(s.name, fc.regime, fc.liquidity_regime)
             net_scores[s.name] = max(0.0, net_after_cost_bps) * regime_mult
             accepted_candidates.append((s, impact_bps, cost, edge_info))
             debug_row["blocked_reason"] = ""
             debug_row["accepted"] = True
             debug_row["regime_priority_mult"] = regime_mult
+            debug_row["dynamic_edge_floor_bps"] = dynamic_edge_floor_bps
             candidate_debug.append(debug_row)
             why_parts.append(
                 {
@@ -173,6 +265,7 @@ class PolicyService:
                     "final_edge_bps": edge_info.final_edge_bps,
                     "net_after_cost_bps": net_after_cost_bps,
                     "regime_priority_mult": regime_mult,
+                    "dynamic_edge_floor_bps": dynamic_edge_floor_bps,
                     "cost_total_bps": cost.total_bps,
                     "cost_breakdown": {
                         "fees_bps": cost.fees_bps,
@@ -223,6 +316,21 @@ class PolicyService:
 
         side = "buy" if combined > 0 else "sell"
         target = min(abs(combined), self.settings.base_risk_budget)
+        max_order_cap = max(0.0, float(os.getenv("AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE", "0") or "0"))
+        if max_order_cap > 0.0:
+            target = min(target, max_order_cap)
+        min_order_floor = max(0.0, float(os.getenv("AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE", "0") or "0"))
+        if min_order_floor > 0.0 and target < min_order_floor:
+            self.last_veto_reasons.append("min_order_floor_skip")
+            self.last_veto_counts["min_order_floor_skip"] = self.last_veto_counts.get("min_order_floor_skip", 0) + 1
+            self.last_no_intent_debug = {
+                "reason": "min_order_floor_skip",
+                "min_order_floor": min_order_floor,
+                "max_order_cap": max_order_cap,
+                "target_notional": target,
+                "side": side,
+            }
+            return None
         return OrderIntent(
             symbol=fc.symbol,
             side=side,
@@ -233,7 +341,10 @@ class PolicyService:
                 "liquidity_regime": fc.liquidity_regime,
                 "weights": weights,
                 "weights_net_after_costs": {k: v for k, v in sorted({c["strategy"]: c["weight"] for c in why_parts}.items())},
+                "max_order_notional_quote_cap": max_order_cap,
                 "veto_counts": dict(self.last_veto_counts),
+                "meta_gates": list(self.last_meta_gates),
+                "strategy_disable_cooldowns": {k: v for k, v in sorted(self.strategy_disable_cooldowns.items()) if v > 0},
                 "strategy_regime_cooldowns": {f"{k[0]}@{k[1]}": v for k, v in sorted(self.strategy_regime_cooldowns.items()) if v > 0},
                 "components": why_parts,
             },
@@ -242,4 +353,15 @@ class PolicyService:
     def update_allocator(self, strategy_pnl_bps: dict[str, float]) -> None:
         for s, pnl in strategy_pnl_bps.items():
             self.allocator.update_performance(s, pnl)
+            hist = self.strategy_perf_history_bps[s]
+            hist.append(float(pnl))
+            self.strategy_perf_history_bps[s] = hist[-60:]
+            short = self.strategy_perf_history_bps[s][-5:]
+            if len(short) >= 5 and (sum(short) / len(short)) < -1.0:
+                self.strategy_degradation_streaks[s] += 1
+            else:
+                self.strategy_degradation_streaks[s] = 0
+            if self.strategy_degradation_streaks[s] >= 3:
+                self.strategy_disable_cooldowns[s] = max(self.strategy_disable_cooldowns.get(s, 0), 20)
+                self.strategy_degradation_streaks[s] = 0
         self.allocator.step_cooldowns()

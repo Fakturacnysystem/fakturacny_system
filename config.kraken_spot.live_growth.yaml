@@ -1,0 +1,69 @@
+mode: live
+enable_live_trading: true
+ack_i_understand_risks: true
+canary_mode: true
+safe_mode_default: false
+provider_whitelist:
+- kraken_spot
+universe:
+- XBTUSD
+execution:
+  mode: live
+  fee_bps: 1.0
+  slippage_bps: 0.5
+  maker_preference: true
+  maker_timeout_s: 45
+  kraken_spot:
+    allow_unknown_permissions: true
+    dry_run_long_only: false
+  slicing_parts: 1
+  max_child_orders: 1
+policy:
+  confidence_threshold: 0.0
+  safety_buffer_bps: -40.0
+  base_risk_budget: 8.01
+risk:
+  max_daily_loss_pct: 1.5
+  max_weekly_loss_pct: 5.0
+  max_drawdown_pct: 6.0
+  max_position_notional: 8.01
+  max_exposure_notional: 10.4664
+  max_symbol_exposure_notional: 8.01
+  max_cluster_exposure_notional: 10.4664
+  max_orders_per_min: 8
+  leverage: 0
+  target_portfolio_vol: 0.12
+  cvar_limit_pct: 20.0
+  stress_loss_limit_pct: 3.0
+  max_spread_bps: 35.0
+  min_depth_notional: 0.0
+  stale_data_seconds: 30.0
+  min_margin_buffer: 1.0
+  max_funding_cost_per_day: 5.0
+  max_oi_spike_pct: 200.0
+  max_liquidation_spike: 10000000.0
+  divergence_threshold_bps: 30.0
+  crowding_score_kill: 40.0
+tco:
+  max_total_cost_bps: 140.0
+  max_impact_bps: 60.0
+storage:
+  run_dir: runs/kraken_spot_live
+fixtures:
+  ohlcv_csv: data/fixtures/btcusdt_1h.csv
+universe_builder:
+  top_n_target: 5000
+  candidate_max: 5000
+  trade_max_positions: 1
+  min_24h_quote_volume: 0.0
+  max_spread_bps: 10000.0
+growth_hints:
+  quote_currency: USD
+  budget_quote: 10.68
+  exchange_min_quote: 3.408597
+  effective_min_order_quote: 3.408597
+  max_order_quote: 8.01
+  fallback_symbols:
+  - XBTUSD
+  - ETHUSD
+  - SOLUSD

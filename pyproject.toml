@@ -14,7 +14,10 @@ dependencies = [
   "sqlalchemy>=2.0",
   "tenacity>=8.2",
   "prometheus-client>=0.20",
-  "matplotlib>=3.8"
+  "matplotlib>=3.8",
+  "openai>=1.0.0",
+  "requests>=2.31",
+  "streamlit>=1.30"
 ]
 
 [tool.pytest.ini_options]

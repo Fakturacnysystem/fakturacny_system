@@ -1,0 +1,24 @@
+version: "3.9"
+services:
+  trader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      LIVE_TRADING: ${LIVE_TRADING:-true}
+      KRAKEN_API_KEY: ${KRAKEN_API_KEY:-}
+      KRAKEN_API_SECRET: ${KRAKEN_API_SECRET:-}
+      KRAKEN_FUTURES_KEY: ${KRAKEN_FUTURES_KEY:-}
+      KRAKEN_FUTURES_SECRET: ${KRAKEN_FUTURES_SECRET:-}
+      TESTNET_VALIDATED: ${TESTNET_VALIDATED:-true}
+    command: ["python", "-m", "cli.run", "--config", "config.kraken_spot.live_profit.yaml", "--nonstop"]
+    healthcheck:
+      test: ["CMD", "bash", "scripts/healthcheck.sh", "config.kraken_spot.live_profit.yaml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./runs:/app/runs
+      - ./config.kraken_spot.live_profit.yaml:/app/config.kraken_spot.live_profit.yaml:ro

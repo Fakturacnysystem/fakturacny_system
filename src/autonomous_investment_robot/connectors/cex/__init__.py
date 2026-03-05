@@ -14,6 +14,14 @@ __all__ = [
     "KrakenRateLimitError",
     "KrakenOrderError",
     "KrakenInsufficientFundsError",
+    "KrakenFuturesConnector",
+    "KrakenFuturesConnectorError",
+    "KrakenFuturesAuthError",
+    "KrakenFuturesRateLimitError",
+    "KrakenFuturesOrderError",
+    "KrakenFuturesWSClient",
+    "KrakenFixAdapter",
+    "KrakenFixSettings",
 ]
 
 from autonomous_investment_robot.connectors.cex.kraken_spot import (
@@ -24,3 +32,12 @@ from autonomous_investment_robot.connectors.cex.kraken_spot import (
     KrakenRateLimitError,
     KrakenSpotConnector,
 )
+from autonomous_investment_robot.connectors.cex.kraken_futures import (
+    KrakenFuturesAuthError,
+    KrakenFuturesConnector,
+    KrakenFuturesConnectorError,
+    KrakenFuturesOrderError,
+    KrakenFuturesRateLimitError,
+    KrakenFuturesWSClient,
+)
+from autonomous_investment_robot.connectors.cex.kraken_fix_adapter import KrakenFixAdapter, KrakenFixSettings

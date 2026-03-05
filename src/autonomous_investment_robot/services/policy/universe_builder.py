@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from autonomous_investment_robot.config.settings import UniverseBuilderSettings
@@ -18,6 +19,7 @@ class KrakenSpotUniverseBuilder:
         self.settings = settings
 
     def build(self, asset_pairs: dict, ticker: dict) -> UniverseTiers:
+        trade_all = os.getenv("AUTONOMOUS_KRAKEN_TRADE_ALL", "false").strip().lower() in {"1", "true", "yes", "on"}
         tradable = []
         for pair, meta in asset_pairs.items():
             if str(meta.get("status", "online")).lower() not in {"online", "tradable"}:
@@ -35,10 +37,15 @@ class KrakenSpotUniverseBuilder:
             tradable.append((pair, vol, spread_bps))
 
         tradable.sort(key=lambda x: x[1], reverse=True)
-        watch = [p for p, _, _ in tradable[: self.settings.top_n_target]]
-        candidate = [p for p, vol, spread in tradable if vol >= self.settings.min_24h_quote_volume and spread <= self.settings.max_spread_bps]
-        candidate = candidate[: self.settings.candidate_max]
-        trade = candidate[: self.settings.trade_max_positions]
+        if trade_all:
+            watch = [p for p, _, _ in tradable]
+            candidate = list(watch)
+            trade = list(watch)
+        else:
+            watch = [p for p, _, _ in tradable[: self.settings.top_n_target]]
+            candidate = [p for p, vol, spread in tradable if vol >= self.settings.min_24h_quote_volume and spread <= self.settings.max_spread_bps]
+            candidate = candidate[: self.settings.candidate_max]
+            trade = candidate[: self.settings.trade_max_positions]
         return UniverseTiers(watch=watch, candidate=candidate, trade=trade)
 
     def write_helpers(self, run_dir: str, tiers: UniverseTiers) -> None:

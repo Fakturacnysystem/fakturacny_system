@@ -3,11 +3,14 @@ import time
 
 from autonomous_investment_robot.config.settings import RobotSettings
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceConnectorError, BinanceUMPerpsConnector
+from autonomous_investment_robot.connectors.cex.kraken_futures import KrakenFuturesConnector, KrakenFuturesSettings
 from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.services.data_ingestion.binance_ws_streams import BinanceWSStreams
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
+from autonomous_investment_robot.services.execution.live_kraken_futures_service import LiveKrakenFuturesService
+from autonomous_investment_robot.services.execution.live_kraken_router_service import LiveKrakenRouterService
 from autonomous_investment_robot.services.execution.live_kraken_spot_service import LiveKrakenSpotService
 from autonomous_investment_robot.services.data_ingestion.kraken_spot_poller import KrakenSpotMarketPoller
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
@@ -180,10 +183,27 @@ def run_record(
 def emergency_flatten(config_path: str) -> dict:
     settings = RobotSettings.from_file(config_path)
     if settings.live_provider() == "kraken_spot":
-        live = LiveKrakenSpotService(
+        spot_live = LiveKrakenSpotService(
             settings=settings,
             run_id=settings.storage.run_dir.replace("/", "_"),
             connector=KrakenSpotConnector(settings.execution.kraken_spot),
+        )
+        futures_live = None
+        try:
+            coverage = getattr(settings, "market_coverage", None)
+            enable_perps = bool(getattr(coverage, "enable_perps", True))
+        except Exception:
+            enable_perps = True
+        if enable_perps:
+            futures_live = LiveKrakenFuturesService(
+                settings=settings,
+                run_id=settings.storage.run_dir.replace("/", "_"),
+                connector=KrakenFuturesConnector(KrakenFuturesSettings()),
+            )
+        live = LiveKrakenRouterService(
+            spot_service=spot_live,
+            futures_service=futures_live,
+            discovered_instruments=[],
         )
     else:
         live = LiveBinanceService(

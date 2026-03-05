@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 
 from autonomous_investment_robot.config.settings import RiskLimits, UNSPECIFIED
 from autonomous_investment_robot.services.policy.service import OrderIntent
@@ -10,6 +11,7 @@ from autonomous_investment_robot.services.policy.service import OrderIntent
 class RiskState:
     kill_switch: bool = False
     safe_mode: bool = False
+    safe_mode_steps: int = 0
     weekly_stop: bool = False
     orders_in_current_min: int = 0
     rolling_returns: list[float] = field(default_factory=list)
@@ -63,6 +65,13 @@ class RiskEngineService:
         tails = sorted(self.state.rolling_returns)[: max(1, len(self.state.rolling_returns) // 20)]
         return abs(sum(tails) / len(tails)) * 100
 
+    def _rolling_vol_pct(self) -> float:
+        vals = self.state.rolling_returns[-120:]
+        if len(vals) < 5:
+            return 0.0
+        m = sum(vals) / len(vals)
+        return (sum((x - m) ** 2 for x in vals) / len(vals)) ** 0.5
+
     def _approx_stress_loss_pct(self, current_exposure: float, max_exposure_notional: float, spread_bps: float, oi_spike_pct: float) -> float:
         if max_exposure_notional <= 0:
             return 0.0
@@ -103,6 +112,15 @@ class RiskEngineService:
     def _enter_cooldown(self, steps: int) -> None:
         self.state.cooldown_steps_remaining = max(self.state.cooldown_steps_remaining, max(0, int(steps)))
 
+    def _activate_safe_mode(self, cooldown_steps: int = 0) -> None:
+        self.state.safe_mode = True
+        self.state.safe_mode_steps = 0
+        if cooldown_steps > 0:
+            self._enter_cooldown(cooldown_steps)
+
+    def _safe_mode_release_steps(self) -> int:
+        return max(1, int(os.getenv("AUTONOMOUS_SAFE_MODE_RELEASE_STEPS", "8") or "8"))
+
     def _tick_cooldown(self) -> None:
         if self.state.cooldown_steps_remaining > 0:
             self.state.cooldown_steps_remaining -= 1
@@ -114,9 +132,11 @@ class RiskEngineService:
             return
         if self.state.cooldown_steps_remaining > 0:
             return
-        needed = max(1, int(getattr(self.limits, "drawdown_recovery_stable_steps", 5)))
-        if self.state.stable_steps >= needed:
+        steps_needed = self._safe_mode_release_steps()
+        stable_needed = max(1, int(getattr(self.limits, "drawdown_recovery_stable_steps", 5)))
+        if self.state.safe_mode_steps >= steps_needed or self.state.stable_steps >= stable_needed:
             self.state.safe_mode = False
+            self.state.safe_mode_steps = 0
             self.state.de_risk_multiplier = min(self.state.de_risk_multiplier, 0.5)
 
     def _crowding_thresholds(self) -> tuple[float, float, float]:
@@ -199,23 +219,29 @@ class RiskEngineService:
         market_regime: str = "RANGE",
         liquidity_regime: str = "GOOD",
         is_reduce_only: bool = False,
+        side: str = "buy",
     ) -> RiskDecision:
-        if self.state.weekly_stop:
+        if self.state.weekly_stop and not is_reduce_only:
             return RiskDecision(False, "weekly_stop_safe_mode")
         if self.state.safe_mode:
-            if self.state.cooldown_steps_remaining > 0:
+            if is_reduce_only:
+                # Safe-mode must not trap existing inventory; allow only exposure-reducing actions.
+                self.state.safe_mode_steps += 1
+                self._maybe_recover_from_dd_safe_mode()
+            elif self.state.cooldown_steps_remaining > 0:
                 self._tick_cooldown()
                 return RiskDecision(False, "cooldown_active")
-            self._maybe_recover_from_dd_safe_mode()
-            if self.state.safe_mode:
+            else:
+                self.state.safe_mode_steps += 1
+                self._maybe_recover_from_dd_safe_mode()
+            if self.state.safe_mode and not is_reduce_only:
                 return RiskDecision(False, "safe_mode_default")
         if not self._limits_complete():
             return RiskDecision(False, "risk_limits_unspecified")
 
         self._update_dd_throttle(drawdown_pct)
         if self.state.dd_throttle == 0.0:
-            self.state.safe_mode = True
-            self._enter_cooldown(getattr(self.limits, "drawdown_cooldown_steps", 10))
+            self._activate_safe_mode(getattr(self.limits, "drawdown_cooldown_steps", 10))
             return RiskDecision(False, "drawdown_safe_mode", flatten=True)
 
         self.state.last_crowding_score, self.state.last_crowding_components = self._crowding_score(
@@ -224,8 +250,7 @@ class RiskEngineService:
         self.state.last_crowding_level = self._crowding_level(self.state.last_crowding_score)
         if self.state.last_crowding_level == "extreme":
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(
                 False,
                 "crowding_radar_kill",
@@ -235,28 +260,23 @@ class RiskEngineService:
 
         if data_lag_seconds > float(self.limits.stale_data_seconds):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "stale_data_kill", flatten=True)
         if divergence_bps > float(self.limits.divergence_threshold_bps):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "cross_feed_divergence_kill", flatten=True)
         if spread_bps > float(self.limits.max_spread_bps):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "spread_explosion_kill", flatten=True)
         if depth_notional < float(self.limits.min_depth_notional):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "liquidity_hole_kill", flatten=True)
         if not reconciliation_ok:
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "reconciliation_kill", flatten=True)
         if self.limits.max_funding_cost_per_day != UNSPECIFIED:
             max_funding = max(float(self.limits.max_funding_cost_per_day), 1e-9)
@@ -267,32 +287,34 @@ class RiskEngineService:
             self.state.funding_budget_utilization = 0.0
         if oi_spike_pct > float(self.limits.max_oi_spike_pct) and liquidation_spike > float(self.limits.max_liquidation_spike):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "squeeze_risk_kill", flatten=True)
         if margin_buffer < float(self.limits.min_margin_buffer):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(10)
+            self._activate_safe_mode(10)
             return RiskDecision(False, "margin_buffer_kill", flatten=True)
 
         if self.state.orders_in_current_min >= int(self.limits.max_orders_per_min):
             return RiskDecision(False, "orders_per_min_exceeded")
         if daily_loss_pct <= -float(self.limits.max_daily_loss_pct):
             self.state.kill_switch = True
-            self.state.safe_mode = True
-            self._enter_cooldown(20)
+            self._activate_safe_mode(20)
             return RiskDecision(False, "daily_loss_kill", flatten=True)
         if self.limits.max_weekly_loss_pct != UNSPECIFIED and weekly_loss_pct <= -float(self.limits.max_weekly_loss_pct):
             self.state.kill_switch = True
-            self.state.safe_mode = True
+            self._activate_safe_mode(100)
             self.state.weekly_stop = True
-            self._enter_cooldown(100)
             return RiskDecision(False, "weekly_loss_stop", flatten=True)
 
-        cvar = self._approx_cvar()
-        if self.limits.cvar_limit_pct != UNSPECIFIED and cvar > float(self.limits.cvar_limit_pct):
-            return RiskDecision(False, "cvar_guard")
+        cvar_scale = 1.0
+        cvar_min_samples = max(5, int(os.getenv("AUTONOMOUS_CVAR_MIN_SAMPLES", "20") or "20"))
+        cvar = self._approx_cvar() if len(self.state.rolling_returns) >= cvar_min_samples else 0.0
+        if self.limits.cvar_limit_pct != UNSPECIFIED:
+            cvar_limit = max(float(self.limits.cvar_limit_pct), 1e-9)
+            if cvar > cvar_limit * 1.5:
+                return RiskDecision(False, "cvar_guard")
+            if cvar > 0:
+                cvar_scale = max(0.25, min(1.0, cvar_limit / cvar))
 
         stress_limit = self.limits.stress_loss_limit_pct
         if stress_limit != UNSPECIFIED:
@@ -315,24 +337,42 @@ class RiskEngineService:
             )
 
         adjusted = intent.target_notional * self.state.de_risk_multiplier * self.state.dd_throttle
+        vol_scale = 1.0
+        if self.limits.target_portfolio_vol != UNSPECIFIED:
+            target_vol = max(float(self.limits.target_portfolio_vol), 1e-9)
+            current_vol = self._rolling_vol_pct()
+            if current_vol > 0:
+                vol_scale = max(0.25, min(2.0, target_vol / current_vol))
+            else:
+                vol_scale = 1.5
+            adjusted *= vol_scale
+        adjusted *= cvar_scale
         if self.state.last_crowding_level == "medium":
             adjusted *= 0.5
         if self.state.funding_budget_utilization >= 0.8 and not is_reduce_only:
             return RiskDecision(False, "funding_budget_throttle_block_open", details={"funding_budget_utilization": self.state.funding_budget_utilization})
         if self.state.funding_budget_utilization >= 0.6:
             adjusted *= 0.5
-        if adjusted > float(self.limits.max_position_notional):
-            return RiskDecision(False, "position_notional_exceeded")
-        if current_exposure + adjusted > float(self.limits.max_exposure_notional):
-            return RiskDecision(False, "exposure_notional_exceeded")
-        if self.limits.max_symbol_exposure_notional != UNSPECIFIED:
-            sx = current_exposure if symbol_exposure is None else symbol_exposure
-            if sx + adjusted > float(self.limits.max_symbol_exposure_notional):
-                return RiskDecision(False, "symbol_exposure_notional_exceeded")
-        if self.limits.max_cluster_exposure_notional != UNSPECIFIED:
-            cx = current_exposure if cluster_exposure is None else cluster_exposure
-            if cx + adjusted > float(self.limits.max_cluster_exposure_notional):
-                return RiskDecision(False, "cluster_exposure_notional_exceeded")
+        reduce_side = str(side).lower() == "sell" or is_reduce_only
+        if not reduce_side:
+            max_pos = float(self.limits.max_position_notional)
+            if max_pos > 0.0:
+                adjusted = min(adjusted, max_pos)
+            max_exp = float(self.limits.max_exposure_notional)
+            if max_exp > 0.0:
+                adjusted = min(adjusted, max(0.0, max_exp - current_exposure))
+            if self.limits.max_symbol_exposure_notional != UNSPECIFIED:
+                sx = current_exposure if symbol_exposure is None else symbol_exposure
+                adjusted = min(adjusted, max(0.0, float(self.limits.max_symbol_exposure_notional) - sx))
+            if self.limits.max_cluster_exposure_notional != UNSPECIFIED:
+                cx = current_exposure if cluster_exposure is None else cluster_exposure
+                adjusted = min(adjusted, max(0.0, float(self.limits.max_cluster_exposure_notional) - cx))
+            if adjusted <= 0.0:
+                return RiskDecision(False, "exposure_notional_exceeded")
+        else:
+            projected_exposure = max(0.0, current_exposure - adjusted)
+            if projected_exposure > float(self.limits.max_exposure_notional):
+                return RiskDecision(False, "exposure_notional_exceeded")
         if int(self.limits.leverage) != 0:
             return RiskDecision(False, "leverage_must_be_zero_in_mvp")
 
@@ -346,5 +386,7 @@ class RiskEngineService:
                 "crowding_level": self.state.last_crowding_level,
                 "crowding_components": dict(self.state.last_crowding_components),
                 "funding_budget_utilization": self.state.funding_budget_utilization,
+                "portfolio_scale_vol": vol_scale,
+                "portfolio_scale_cvar": cvar_scale,
             },
         )

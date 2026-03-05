@@ -170,6 +170,38 @@ class MonitoringSettings:
 
 
 @dataclass
+class MarketCoverageSettings:
+    enable_spot: bool = True
+    enable_margin: bool = True
+    enable_perps: bool = True
+    enable_optional_venues: bool = True
+    discover_all_symbols: bool = True
+    max_symbols: int = 0
+
+
+@dataclass
+class WatchdogSettings:
+    enabled: bool = True
+    poll_interval_s: float = 2.0
+    stall_timeout_s: float = 45.0
+    restart_backoff_s: float = 5.0
+    max_restarts: int = 0
+    heartbeat_file: str = "health.json"
+    state_file: str = "watchdog_state.json"
+
+
+@dataclass
+class HealthAudit110Settings:
+    enabled: bool = True
+    interval_s: float = 600.0
+    health_threshold: float = 90.0
+    stream_stale_after_s: float = 20.0
+    scheduler_lag_grace_s: float = 5.0
+    max_rate_limit_events_60s: float = 14.0
+    pause_openings_s: float = 180.0
+
+
+@dataclass
 class StorageSettings:
     run_dir: str = "runs/latest"
 
@@ -211,6 +243,9 @@ class RobotSettings:
     regime: RegimeSettings = field(default_factory=RegimeSettings)
     allocator: AllocatorSettings = field(default_factory=AllocatorSettings)
     monitoring: MonitoringSettings = field(default_factory=MonitoringSettings)
+    market_coverage: MarketCoverageSettings = field(default_factory=MarketCoverageSettings)
+    watchdog: WatchdogSettings = field(default_factory=WatchdogSettings)
+    health_audit_110: HealthAudit110Settings = field(default_factory=HealthAudit110Settings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
@@ -280,6 +315,9 @@ class RobotSettings:
             regime=RegimeSettings(**data.get("regime", {})),
             allocator=AllocatorSettings(**data.get("allocator", {})),
             monitoring=MonitoringSettings(**data.get("monitoring", {})),
+            market_coverage=MarketCoverageSettings(**data.get("market_coverage", {})),
+            watchdog=WatchdogSettings(**data.get("watchdog", {})),
+            health_audit_110=HealthAudit110Settings(**data.get("health_audit_110", {})),
             storage=StorageSettings(**data.get("storage", {})),
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),

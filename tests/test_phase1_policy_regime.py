@@ -107,3 +107,104 @@ def test_strategy_regime_cooldown_after_repeated_veto():
         out = policy.make_intent(fc, features, fee_bps=1.0, slippage_bps=1.0)
         assert out is None
     assert policy.strategy_regime_cooldowns.get(("pairs_stat_arb", fc.regime), 0) > 0
+
+
+def test_meta_gating_blocks_mean_reversion_in_trend():
+    class _Stub:
+        def __init__(self, name: str):
+            self.name = name
+
+        def signal(self, features, regime, liq_regime):  # noqa: ARG002
+            return StrategySignal(self.name, 50.0, 0.9, 1.0, 12.0, {"source": "stub"})
+
+    policy = PolicyService(PolicySettings(confidence_threshold=0.5, base_risk_budget=100.0), AllocatorSettings(), TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    policy.strategies = [_Stub("mean_reversion"), _Stub("trend")]
+    fc = _forecast()
+    fc = replace(fc, regime="TREND", liquidity_regime="GOOD")
+    intent = policy.make_intent(fc, {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is not None
+    names = [c["strategy"] for c in intent.why["components"]]
+    assert names == ["trend"]
+    assert any(g["strategy"] == "mean_reversion" and g["reason"] == "meta_gate_regime" for g in intent.why["meta_gates"])
+
+
+def test_meta_gating_blocks_directional_strategies_in_thin_liquidity():
+    class _Stub:
+        name = "trend"
+
+        def signal(self, features, regime, liq_regime):  # noqa: ARG002
+            return StrategySignal(self.name, 50.0, 0.9, 1.0, 12.0, {"source": "stub"})
+
+    policy = PolicyService(PolicySettings(confidence_threshold=0.5, base_risk_budget=100.0), AllocatorSettings(), TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    policy.strategies = [_Stub()]
+    fc = _forecast()
+    fc = replace(fc, regime="TREND", liquidity_regime="THIN")
+    intent = policy.make_intent(fc, {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is None
+    assert policy.last_veto_counts.get("meta_gate_liquidity") == 1
+
+
+def test_strategy_auto_disable_on_degradation():
+    class _Stub:
+        name = "pairs_stat_arb"
+
+        def signal(self, features, regime, liq_regime):  # noqa: ARG002
+            return StrategySignal(self.name, 50.0, 0.9, 1.0, 12.0, {"source": "stub"})
+
+    policy = PolicyService(
+        PolicySettings(confidence_threshold=0.5, base_risk_budget=100.0),
+        AllocatorSettings(),
+        TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0),
+    )
+    policy.strategies = [_Stub()]
+    for _ in range(15):
+        policy.update_allocator({"pairs_stat_arb": -3.5})
+    fc = _forecast()
+    intent = policy.make_intent(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0},
+        fee_bps=1.0,
+        slippage_bps=0.1,
+    )
+    assert intent is None
+    assert policy.last_veto_counts.get("meta_gate_degraded", 0) >= 1
+
+
+def test_dynamic_edge_floor_blocks_weak_net_edge(monkeypatch):
+    monkeypatch.setenv("AUTONOMOUS_MIN_NET_EDGE_BPS", "8.0")
+    policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    policy.evaluate_strategies = lambda features, forecast: [  # type: ignore[method-assign]
+        StrategySignal(
+            name="unit",
+            target_notional=50.0,
+            confidence=0.9,
+            estimated_cost_bps=1.0,
+            expected_edge_bps=6.0,
+            why={"source": "test"},
+        )
+    ]
+    fc = _forecast()
+    intent = policy.make_intent(fc, {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0002, "realized_vol": 0.0003}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is None
+    assert policy.last_veto_counts.get("dynamic_edge_floor", 0) >= 1
+
+
+def test_max_order_notional_quote_caps_target(monkeypatch):
+    monkeypatch.setenv("AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE", "7.5")
+    policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    fc = _forecast()
+    intent = policy.make_intent(fc, {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is not None
+    assert intent.target_notional == 7.5
+    assert intent.why.get("max_order_notional_quote_cap") == 7.5
+
+
+def test_max_order_cap_below_min_floor_skips_intent(monkeypatch):
+    monkeypatch.setenv("AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE", "5.0")
+    monkeypatch.setenv("AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE", "6.0")
+    policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    fc = _forecast()
+    intent = policy.make_intent(fc, {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is None
+    assert policy.last_no_intent_debug.get("reason") == "min_order_floor_skip"
+    assert policy.last_no_intent_debug.get("max_order_cap") == 5.0

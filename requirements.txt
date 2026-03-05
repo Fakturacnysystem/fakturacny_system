@@ -4,5 +4,8 @@ flask-wtf
 pandas
 openpyxl
 reportlab
-sqlite3
 email-validator
+pyyaml
+requests
+streamlit
+openai>=1.0.0

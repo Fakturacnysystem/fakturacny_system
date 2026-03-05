@@ -1,0 +1,27 @@
+[Unit]
+Description=Autonomous Kraken Trading Robot (watchdog-supervised)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=martinholik
+WorkingDirectory=/Users/martinholik/Projects/fakturacny_system
+EnvironmentFile=-/Users/martinholik/Projects/fakturacny_system/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=KRAKEN_API_KEY=%E{KRAKEN_API_KEY}
+Environment=KRAKEN_API_SECRET=%E{KRAKEN_API_SECRET}
+Environment=KRAKEN_FUTURES_KEY=%E{KRAKEN_FUTURES_KEY}
+Environment=KRAKEN_FUTURES_SECRET=%E{KRAKEN_FUTURES_SECRET}
+Environment=LIVE_TRADING=true
+Environment=TESTNET_VALIDATED=true
+ExecStart=/usr/bin/env python3 -m cli.run --config config.kraken_spot.live_profit.yaml --nonstop
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=0
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

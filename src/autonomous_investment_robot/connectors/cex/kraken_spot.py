@@ -170,6 +170,12 @@ class KrakenSpotConnector:
         p = {"start": start} if start is not None else {}
         return self._request("POST", "/0/private/TradesHistory", params=p, private=True)
 
+    def trade_volume(self, pair: str | None = None, fee_info: bool = True) -> dict[str, Any]:
+        p: dict[str, Any] = {"fee-info": "true" if fee_info else "false"}
+        if pair:
+            p["pair"] = pair
+        return self._request("POST", "/0/private/TradeVolume", params=p, private=True)
+
     def add_order(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/0/private/AddOrder", params=params, private=True)
 
