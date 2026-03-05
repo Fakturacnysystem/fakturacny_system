@@ -42,6 +42,14 @@ TESTNET_VALIDATED=false
 3. `live_canary` for 1-2 weeks at 1-5% risk.
 4. `live` full strict after stability.
 
+## Create a new local environment
+```bash
+make env
+source .venv/bin/activate
+```
+
+`make env` creates `.venv` and creates `.env` from `.env.example` if missing. Install dependencies afterwards with `pip install -e .`.
+
 ## Commands
 ```bash
 PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
