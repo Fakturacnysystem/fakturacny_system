@@ -1,4 +1,4 @@
-.PHONY: up down init paper paper-perps test replay
+.PHONY: up down init env paper paper-perps test replay
 
 up:
 	docker compose -f infra/docker-compose.yml up -d
@@ -8,6 +8,9 @@ down:
 
 init:
 	./scripts/init_db.sh
+
+env:
+	./scripts/create_env.sh
 
 paper:
 	PYTHONPATH=src python scripts/run_paper.py --config config.paper.yaml
