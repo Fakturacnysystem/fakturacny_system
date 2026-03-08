@@ -1095,6 +1095,24 @@ class RobotOrchestrator:
             "pretrade_max_position_notional",
             "pretrade_exposure_notional",
             "exchange_constraint_invalid",
+            # Decision/risk/market-watch guards can block intent before an exchange
+            # submit is attempted; they must not poison execution reject-rate.
+            "no_intent",
+            "confidence_guard",
+            "uncertainty_guard",
+            "drift_guard",
+            "regime_filter",
+            "liquidity_filter",
+            "liquidity_map",
+            "spread_spike",
+            "latency_guard",
+            "execution_risk",
+            "volatility_guard",
+            "drawdown_guard",
+            "portfolio_exposure_limit",
+            "risk_budget_exhausted",
+            "blackout_pause_buy",
+            "soft_pause_buy",
         }
         non_fatal_probe_block_reasons = {
             "entries_blocked_until_health_ok",
@@ -3302,8 +3320,7 @@ class RobotOrchestrator:
 
             if intent is None:
                 no_intent_events_total += 1.0
-                self.ops.inc_metric("orders_rejected_total")
-                orders_rejected += 1.0
+                self.ops.inc_metric("decision_skip_no_intent_total")
                 no_intent_debug = dict(getattr(self.policy, "last_no_intent_debug", {}) or {})
                 should_force_submit = submission_scheduler.should_submit(now_ts=now_ts)
                 should_extra_submit = (not should_force_submit) and _extra_probe_allowed(now_ts)
@@ -3374,8 +3391,7 @@ class RobotOrchestrator:
                 float((live_state or {}).get("min_trade_notional_quote", 0.0)) * rebalance_deadzone_factor,
             )
             if abs(delta_signed) < min_rebalance_notional:
-                self.ops.inc_metric("orders_rejected_total")
-                orders_rejected += 1.0
+                self.ops.inc_metric("decision_skip_rebalance_deadzone_total")
                 self.ops.audit_event(
                     "heartbeat",
                     {

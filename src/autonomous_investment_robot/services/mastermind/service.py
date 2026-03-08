@@ -101,7 +101,12 @@ class MastermindSupervisor:
         max_watch = None
         reason = "ok"
         conflicts: list[str] = []
-        if float(rate_limit_events) >= 3.0 or float(reject_rate) >= 0.5:
+        rate_limit_stress = float(rate_limit_events) >= 3.0
+        reject_rate_stress = (
+            float(reject_rate) >= 0.5
+            and (float(rate_limit_events) > 0.0 or float(insufficient_balance_events) > 0.0)
+        )
+        if rate_limit_stress or reject_rate_stress:
             pause = True
             size_scale = 0.4
             max_orders = max(1, int(base_max_orders_per_min * 0.5))
