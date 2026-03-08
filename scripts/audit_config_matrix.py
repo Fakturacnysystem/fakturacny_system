@@ -83,6 +83,12 @@ def _summarize_row(config_path: Path, settings: RobotSettings, resolved: dict[st
         "provider": provider,
         "run_dir": str(getattr(settings.storage, "run_dir", "")),
         "universe_size": len(getattr(settings, "universe", [])),
+        "llm_provider": str(getattr(settings.llm, "provider", "")),
+        "llm_model_primary": str(getattr(settings.llm, "model_primary", "") or getattr(settings.llm, "model", "")),
+        "llm_model_fallback": str(getattr(settings.llm, "model_fallback", "")),
+        "enable_xstocks": bool(getattr(settings.market_coverage, "enable_xstocks", False)),
+        "enable_xstocks_etf": bool(getattr(settings.market_coverage, "enable_xstocks_etf", False)),
+        "mixed_universe_mode": bool(getattr(settings.market_coverage, "mixed_universe_mode", False)),
         "order_cadence_s": float(resolved.get("order_cadence_s", 0.0)),
         "guards_mode": str(resolved.get("guards_mode", "")),
         "user_min_order_quote": float(resolved.get("user_min_order_quote", 0.0)),
@@ -208,7 +214,14 @@ def main() -> int:
 
     config_paths = [Path(p) for p in glob.glob(str(ROOT / args.config_glob))]
     env: dict[str, str] = dict(os.environ)
-    for secret_key in ("KRAKEN_API_KEY", "KRAKEN_API_SECRET", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "OPENAI_API_KEY"):
+    for secret_key in (
+        "KRAKEN_API_KEY",
+        "KRAKEN_API_SECRET",
+        "EXCHANGE_API_KEY",
+        "EXCHANGE_API_SECRET",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+    ):
         if secret_key in env:
             del env[secret_key]
 

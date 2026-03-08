@@ -117,6 +117,9 @@ def run_audit(*, run_dir: Path, event_limit: int = 3000) -> dict[str, Any]:
     harmony_path = run_dir / "harmony_report.json"
     mastermind_path = run_dir / "mastermind_status.json"
     governance_path = run_dir / "governance_audit.jsonl"
+    llm_diag_path = run_dir / "llm_self_improvement_diagnostics.json"
+    discovery_path = run_dir / "market_discovery.json"
+    universe_diag_path = run_dir / "universe_diagnostics.json"
 
     events_raw = _tail_jsonl(audit_path, event_limit)
     events = [_extract_row(row) for row in events_raw]
@@ -168,6 +171,9 @@ def run_audit(*, run_dir: Path, event_limit: int = 3000) -> dict[str, Any]:
     efficiency_group = groups.get("efficiency", {}) if isinstance(groups.get("efficiency"), dict) else {}
     topic_counts = _load_event_bus_topics(event_bus_path)
     mastermind = _read_json(mastermind_path)
+    llm_diag = _read_json(llm_diag_path)
+    discovery = _read_json(discovery_path)
+    universe_diag = _read_json(universe_diag_path)
 
     live_exec_presence = {
         "submitted": submitted_orders,
@@ -220,6 +226,9 @@ def run_audit(*, run_dir: Path, event_limit: int = 3000) -> dict[str, Any]:
             "harmony_report": str(harmony_path),
             "mastermind_status": str(mastermind_path),
             "governance_audit": str(governance_path),
+            "llm_diagnostics": str(llm_diag_path),
+            "market_discovery": str(discovery_path),
+            "universe_diagnostics": str(universe_diag_path),
         },
         "event_window": {
             "requested": int(event_limit),
@@ -273,6 +282,27 @@ def run_audit(*, run_dir: Path, event_limit: int = 3000) -> dict[str, Any]:
             "guardrails": mastermind.get("guardrails"),
             "conflicts": mastermind.get("conflicts"),
             "overrides": mastermind.get("overrides"),
+        },
+        "provider_diagnostics": {
+            "exists": llm_diag_path.exists(),
+            "provider": llm_diag.get("provider"),
+            "model": llm_diag.get("model"),
+            "model_fallback": llm_diag.get("model_fallback"),
+            "model_effective": llm_diag.get("model_effective"),
+            "llm_enabled": llm_diag.get("llm_enabled"),
+            "llm_augment_enabled": llm_diag.get("llm_augment_enabled"),
+            "provider_health": llm_diag.get("provider_health"),
+        },
+        "xstocks": {
+            "discovery_exists": discovery_path.exists(),
+            "universe_diag_exists": universe_diag_path.exists(),
+            "detected_symbols": discovery.get("xstocks_symbols", []),
+            "detected_etf_symbols": discovery.get("xstocks_etf_symbols", []),
+            "discovery_market_class_counts": discovery.get("market_class_counts", {}),
+            "eligible_market_class_counts": universe_diag.get("eligible_market_class_counts", {}),
+            "detected_market_class_counts": universe_diag.get("detected_market_class_counts", {}),
+            "filter_reasons": universe_diag.get("filter_reasons", {}),
+            "mixed_universe_mode": universe_diag.get("mixed_universe_mode"),
         },
         "execution_presence": {
             "live_exec_counts": live_exec_presence,

@@ -65,6 +65,7 @@ from autonomous_investment_robot.services.reliability.health_audit_110 import He
 from autonomous_investment_robot.services.reliability.rate_budget import RateBudget
 from autonomous_investment_robot.services.research.service import ResearchPlatformService
 from autonomous_investment_robot.services.research.online_validator import OnlineSignalValidator
+from autonomous_investment_robot.services.research.self_improvement import LLMSelfImprovementAdvisor
 from autonomous_investment_robot.services.replay.events import ComplianceEvent, FillEvent, OrderEvent, OrderIntentEvent, PositionEvent, RiskEvent, make_event, make_idempotency_key
 from autonomous_investment_robot.services.risk import CapitalUnlockManager, HedgeManager, StuckPositionGovernor
 from autonomous_investment_robot.services.risk_engine.service import RiskEngineService
@@ -187,6 +188,58 @@ class RobotOrchestrator:
             max_clock_drift_ms=max(1.0, float(os.getenv("AUTONOMOUS_MAX_CLOCK_DRIFT_MS", "500.0") or "500.0")),
         )
         self.research = ResearchPlatformService(settings.storage.run_dir)
+        llm_cfg = getattr(self.settings, "llm", SimpleNamespace())
+        llm_model_primary = str(getattr(llm_cfg, "model_primary", "") or "").strip()
+        if not llm_model_primary:
+            llm_model_primary = str(getattr(llm_cfg, "model", "") or "").strip()
+        self.self_improvement = LLMSelfImprovementAdvisor(
+            settings.storage.run_dir,
+            provider=str(getattr(llm_cfg, "provider", "") or "auto"),
+            model=llm_model_primary or None,
+            model_fallback=str(getattr(llm_cfg, "model_fallback", "") or "") or None,
+            base_url=str(getattr(llm_cfg, "base_url", "") or "") or None,
+            enabled=bool(getattr(llm_cfg, "enabled", True)),
+            remote_healthcheck=bool(getattr(llm_cfg, "healthcheck_remote", False)),
+            llm_augment_enabled=bool(getattr(llm_cfg, "llm_augment_enabled", False)),
+        )
+        self.self_improvement_enabled = bool(getattr(llm_cfg, "self_improvement_enabled", True))
+        self.self_improvement_hours = max(
+            1.0,
+            float(os.getenv("AUTONOMOUS_SELF_IMPROVEMENT_HOURS", str(getattr(llm_cfg, "self_improvement_hours", 24.0))) or str(getattr(llm_cfg, "self_improvement_hours", 24.0))),
+        )
+        self.self_improvement_every_s = max(
+            60.0,
+            float(os.getenv("AUTONOMOUS_SELF_IMPROVEMENT_EVERY_S", str(getattr(llm_cfg, "self_improvement_every_s", 1800.0))) or str(getattr(llm_cfg, "self_improvement_every_s", 1800.0))),
+        )
+        self.next_self_improvement_ts = 0.0
+        self.last_self_improvement_report: dict[str, object] = {}
+        try:
+            if self.self_improvement_enabled:
+                self.last_self_improvement_report = dict(self.self_improvement.run(last_hours=self.self_improvement_hours))
+            else:
+                health = self.self_improvement.provider_client.health_check(
+                    remote=bool(getattr(self.self_improvement.provider_config, "healthcheck_remote", False))
+                )
+                self.last_self_improvement_report = {
+                    "status": "disabled",
+                    "llm_enabled": bool(self.self_improvement.enabled),
+                    "provider": str(self.self_improvement.provider),
+                    "model": str(self.self_improvement.model),
+                    "provider_health": health,
+                }
+            self.ops.audit_event(
+                "self_improvement_boot",
+                {
+                    "status": str(self.last_self_improvement_report.get("status", "")),
+                    "llm_enabled": bool(self.last_self_improvement_report.get("llm_enabled", False)),
+                    "provider": str(self.last_self_improvement_report.get("provider", "")),
+                    "model": str(self.last_self_improvement_report.get("model", "")),
+                    "model_fallback": str(self.last_self_improvement_report.get("model_fallback", "")),
+                    "self_improvement_enabled": bool(self.self_improvement_enabled),
+                },
+            )
+        except Exception as exc:
+            self.ops.audit_event("self_improvement_boot_error", {"error": str(exc)})
         self.portfolio_optimizer = PortfolioOptimizerService()
         self.router = SmartOrderRouter()
         self.cost_engine = CostEngineService()
@@ -567,6 +620,8 @@ class RobotOrchestrator:
         self.exchange_status = self.exchange_manager.initialize()
         self.rate_budget = RateBudget()
         self.kraken_universe: KrakenUniverseService | None = None
+        self._symbol_market_class: dict[str, str] = {}
+        self._market_class_filter_stats: dict[str, object] = {}
         self._last_fee_profile_updated_ts = 0.0
         for venue, status in self.exchange_status.items():
             try:
@@ -726,6 +781,122 @@ class RobotOrchestrator:
             if sym and sym not in out:
                 out.append(sym)
         return out
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        return str(symbol or "").strip().upper().replace("/", "")
+
+    def _normalize_asset(self, asset: str) -> str:
+        raw = self._normalize_symbol(asset)
+        if raw.startswith("X") and len(raw) > 3 and raw[1:].isalpha():
+            return raw[1:]
+        if raw.startswith("Z") and len(raw) > 3 and raw[1:].isalpha():
+            return raw[1:]
+        return raw
+
+    def _guess_market_class(self, symbol: str) -> str:
+        sym = self._normalize_symbol(symbol)
+        if "XSTOCK" in sym:
+            return "xstock"
+        fiat_quotes = ("USD", "EUR", "GBP", "CHF", "CAD")
+        if any(sym.endswith(f"{q}") for q in fiat_quotes):
+            prefix = sym[:-3]
+            if prefix.endswith("X") and prefix[:-1].isalpha() and not prefix.startswith("X"):
+                core = prefix[:-1]
+                if core in {"SPY", "QQQ", "VTI", "GLD", "SLV", "TQQQ", "DIA", "IWM"}:
+                    return "xstock_etf"
+                return "xstock"
+        return "crypto_spot"
+
+    def _market_class_for_symbol(self, symbol: str) -> str:
+        key = self._normalize_symbol(symbol)
+        if key in self._symbol_market_class:
+            return str(self._symbol_market_class[key])
+        return self._guess_market_class(key)
+
+    def _coverage_flag(self, name: str, default: bool) -> bool:
+        env_raw = os.getenv(name)
+        if env_raw is not None:
+            return str(env_raw).strip().lower() in {"1", "true", "yes", "on"}
+        coverage = getattr(self.settings, "market_coverage", None)
+        map_name = {
+            "AUTONOMOUS_ENABLE_CRYPTO_SPOT": "enable_crypto_spot",
+            "AUTONOMOUS_ENABLE_XSTOCKS": "enable_xstocks",
+            "AUTONOMOUS_ENABLE_XSTOCKS_ETF": "enable_xstocks_etf",
+            "AUTONOMOUS_MIXED_UNIVERSE_MODE": "mixed_universe_mode",
+        }.get(name, "")
+        if coverage is not None and map_name and hasattr(coverage, map_name):
+            return bool(getattr(coverage, map_name))
+        return bool(default)
+
+    def _xstocks_allow_deny(self) -> tuple[set[str], set[str]]:
+        coverage = getattr(self.settings, "market_coverage", None)
+        allow_src = str(os.getenv("AUTONOMOUS_XSTOCKS_ALLOWLIST", "") or "").strip()
+        deny_src = str(os.getenv("AUTONOMOUS_XSTOCKS_DENYLIST", "") or "").strip()
+        if allow_src:
+            allow = {self._normalize_symbol(x) for x in allow_src.split(",") if str(x).strip()}
+        else:
+            allow = {
+                self._normalize_symbol(x)
+                for x in list(getattr(coverage, "xstocks_allowlist", []) or [])
+                if str(x).strip()
+            }
+        if deny_src:
+            deny = {self._normalize_symbol(x) for x in deny_src.split(",") if str(x).strip()}
+        else:
+            deny = {
+                self._normalize_symbol(x)
+                for x in list(getattr(coverage, "xstocks_denylist", []) or [])
+                if str(x).strip()
+            }
+        return allow, deny
+
+    def _market_class_allowed(self, symbol: str, market_class: str) -> tuple[bool, str]:
+        allow_crypto = self._coverage_flag("AUTONOMOUS_ENABLE_CRYPTO_SPOT", True)
+        allow_xstocks = self._coverage_flag("AUTONOMOUS_ENABLE_XSTOCKS", False)
+        allow_xstocks_etf = self._coverage_flag("AUTONOMOUS_ENABLE_XSTOCKS_ETF", False)
+        allow_x, deny_x = self._xstocks_allow_deny()
+        sym = self._normalize_symbol(symbol)
+        cls = str(market_class or "crypto_spot").lower()
+        if cls == "crypto_spot":
+            return (allow_crypto, "market_class_disabled:crypto_spot" if not allow_crypto else "ok")
+        if cls == "xstock":
+            if not allow_xstocks:
+                return False, "market_class_disabled:xstock"
+            if allow_x and sym not in allow_x:
+                return False, "xstocks_allowlist_block"
+            if deny_x and sym in deny_x:
+                return False, "xstocks_denylist_block"
+            return True, "ok"
+        if cls == "xstock_etf":
+            if not allow_xstocks_etf:
+                return False, "market_class_disabled:xstock_etf"
+            if allow_x and sym not in allow_x:
+                return False, "xstocks_allowlist_block"
+            if deny_x and sym in deny_x:
+                return False, "xstocks_denylist_block"
+            return True, "ok"
+        return True, "ok"
+
+    def _filter_symbols_for_market_coverage(self, symbols: list[str]) -> tuple[list[str], dict[str, object]]:
+        allowed: list[str] = []
+        blocked_reasons: dict[str, int] = {}
+        class_counts: dict[str, int] = {}
+        for sym in [self._normalize_symbol(s) for s in symbols if str(s).strip()]:
+            market_class = self._market_class_for_symbol(sym)
+            class_counts[market_class] = class_counts.get(market_class, 0) + 1
+            ok, reason = self._market_class_allowed(sym, market_class)
+            if ok:
+                allowed.append(sym)
+            else:
+                blocked_reasons[reason] = blocked_reasons.get(reason, 0) + 1
+        out = list(dict.fromkeys(allowed))
+        return out, {
+            "input_count": len(symbols),
+            "output_count": len(out),
+            "class_counts": class_counts,
+            "blocked_reasons": blocked_reasons,
+            "mixed_universe_mode": self._coverage_flag("AUTONOMOUS_MIXED_UNIVERSE_MODE", False),
+        }
 
     def _write_runtime_health(self, *, status: str, reason: str = "", extra: dict[str, object] | None = None) -> None:
         payload: dict[str, object] = {
@@ -1593,6 +1764,15 @@ class RobotOrchestrator:
                 return
             self.kraken_universe.refresh_if_needed(now_ts=now_ts_local)
             selected = [s for s in self.kraken_universe.select_active(now_ts=now_ts_local) if s]
+            selected, runtime_filter_diag = self._filter_symbols_for_market_coverage(selected)
+            if runtime_filter_diag.get("blocked_reasons"):
+                self.ops.audit_event(
+                    "market_class_filter",
+                    {
+                        "source": "runtime_auto_universe_refresh",
+                        **runtime_filter_diag,
+                    },
+                )
             if not selected:
                 return
             symbol_candidates = selected
@@ -2202,6 +2382,13 @@ class RobotOrchestrator:
                 "order_cadence_s": order_submission_interval_s,
                 "effective_min_order_quote": quote_notional_floor,
                 "sell_min_profit_bps": sell_profit_lock_min_bps,
+                "confidence_threshold": float(getattr(self.autonomous_decision_engine, "confidence_threshold", 0.0)),
+                "liquidity_night_edge_add_bps": float(getattr(self.liquidity_map, "night_edge_add_bps", 0.0)),
+                "market_class_router": live.market_classes_summary() if hasattr(live, "market_classes_summary") else {},
+                "market_class_filter_stats": dict(self._market_class_filter_stats),
+                "llm_provider": str(self.last_self_improvement_report.get("provider", "")),
+                "llm_model": str(self.last_self_improvement_report.get("model", "")),
+                "llm_model_fallback": str(self.last_self_improvement_report.get("model_fallback", "")),
             },
         )
         self._write_runtime_health(
@@ -3081,6 +3268,19 @@ class RobotOrchestrator:
             current_profit_bps = 0.0
             if avg_entry_live > 0.0 and bid > 0.0:
                 current_profit_bps = ((bid / max(avg_entry_live, 1e-9)) - 1.0) * 10000.0
+            symbol_market_class = self._market_class_for_symbol(symbol)
+            market_session_state = "always_open_24_7"
+            if self.settings.live_provider() == "kraken_spot":
+                if hasattr(live, "market_class_for_symbol"):
+                    try:
+                        symbol_market_class = str(live.market_class_for_symbol(symbol) or symbol_market_class)
+                    except Exception:
+                        symbol_market_class = self._market_class_for_symbol(symbol)
+                if hasattr(live, "session_state_for_symbol"):
+                    try:
+                        market_session_state = str(live.session_state_for_symbol(symbol, ts=now_ts) or market_session_state)
+                    except Exception:
+                        market_session_state = "session_unknown"
             try:
                 brain_decision = self.autonomous_decision_engine.run_decision_algorithm(
                     DecisionContext(
@@ -3137,6 +3337,8 @@ class RobotOrchestrator:
                         fee_bps=float(self.settings.execution.fee_bps),
                         slippage_bps=float(self.settings.execution.slippage_bps),
                         latency_ms=float(getattr(selected_quote, "latency_ms", 0.0) or 0.0),
+                        market_class=symbol_market_class,
+                        market_session=market_session_state,
                         guards_mode=str(guards_mode),
                         modeled_cost_floor_bps=float(modeled_cost_floor_bps),
                         sell_min_profit_bps=float(sell_profit_lock_min_bps),
@@ -3159,6 +3361,8 @@ class RobotOrchestrator:
                         "uncertainty_bps": float(brain_decision.uncertainty_bps),
                         "drift_score": float(brain_decision.drift_score),
                         "regime": str(brain_decision.regime),
+                        "market_class": str(symbol_market_class),
+                        "market_session": str(market_session_state),
                         "risk_flags": list(brain_decision.risk_flags),
                     },
                 )
@@ -4541,10 +4745,12 @@ class RobotOrchestrator:
                     now_ts=now_ts,
                 )
             count_as_attempt = not (status_norm in {"blocked", "skipped"} and reason_norm in non_attempt_block_reasons)
-            # Treat budget/rate-limit blocks as real attempts so per-symbol cadence
-            # can throttle retries and avoid private API hammer loops.
+            # Rate-limit cooldown/budget blocks without an outbound request are
+            # scheduler/guard outcomes, not real exchange execution attempts.
+            # Keep retry accounting clean and avoid inflating reject-rate metrics.
             if reason_norm in {"rate_limit_cooldown", "rate_budget_exhausted"}:
-                count_as_attempt = True
+                req_sent = bool((result.order or {}).get("request_sent", False)) if isinstance(result.order, dict) else False
+                count_as_attempt = bool(req_sent)
             if count_as_attempt:
                 executions_attempted_total += 1.0
                 last_order_attempt_ts = now_ts
@@ -4788,6 +4994,28 @@ class RobotOrchestrator:
                 )
 
             _update_live_kpis()
+            if self.self_improvement_enabled and time.time() >= self.next_self_improvement_ts:
+                try:
+                    self.last_self_improvement_report = dict(
+                        self.self_improvement.run(last_hours=float(self.self_improvement_hours))
+                    )
+                    self.ops.audit_event(
+                        "self_improvement_tick",
+                        {
+                            "status": str(self.last_self_improvement_report.get("status", "")),
+                            "llm_enabled": bool(self.last_self_improvement_report.get("llm_enabled", False)),
+                            "provider": str(self.last_self_improvement_report.get("provider", "")),
+                            "suggestions_count": len(
+                                self.last_self_improvement_report.get("suggestions", [])
+                                if isinstance(self.last_self_improvement_report.get("suggestions", []), list)
+                                else []
+                            ),
+                        },
+                    )
+                except Exception as exc:
+                    self.ops.audit_event("self_improvement_tick_error", {"error": str(exc)})
+                finally:
+                    self.next_self_improvement_ts = time.time() + float(self.self_improvement_every_s)
             attempts_now = orders_submitted + orders_rejected
             reject_rate_now = float(self.ops.metrics.get("reject_rate", 0.0))
             if attempts_now >= 3 and reject_rate_now >= alert_reject_rate:
@@ -4859,6 +5087,15 @@ class RobotOrchestrator:
         configured_universe = [s for s in configured_universe if str(s).upper() != auto_universe_token]
         if configured_universe:
             self.settings.universe = configured_universe
+        filtered_boot_universe, boot_filter_diag = self._filter_symbols_for_market_coverage(list(self.settings.universe))
+        if filtered_boot_universe:
+            if len(filtered_boot_universe) != len(self.settings.universe):
+                self.ops.audit_event(
+                    "market_class_filter",
+                    {"source": "boot_universe", **boot_filter_diag},
+                )
+            self.settings.universe = filtered_boot_universe
+            self._market_class_filter_stats = dict(boot_filter_diag)
         if not self.settings.universe:
             self.settings.universe = ["XBTUSD"]
         symbol = self.settings.universe[0]
@@ -4933,13 +5170,23 @@ class RobotOrchestrator:
                         )
                     auto_symbols = self.kraken_universe.select_active(now_ts=time.time())
                     if auto_symbols:
-                        self.settings.universe = auto_symbols
-                        symbol = auto_symbols[0]
+                        filtered_auto_symbols, auto_filter_diag = self._filter_symbols_for_market_coverage(list(auto_symbols))
+                        selected_auto = filtered_auto_symbols or list(auto_symbols)
+                        self.settings.universe = selected_auto
+                        symbol = selected_auto[0]
+                        if auto_filter_diag.get("blocked_reasons"):
+                            self.ops.audit_event(
+                                "market_class_filter",
+                                {
+                                    "source": "auto_universe",
+                                    **auto_filter_diag,
+                                },
+                            )
                         self.ops.audit_event(
                             "auto_universe_loaded",
                             {
                                 "mode": auto_mode_env,
-                                "symbols_loaded": len(auto_symbols),
+                                "symbols_loaded": len(selected_auto),
                                 "first_symbol": symbol,
                             },
                         )
@@ -4982,6 +5229,33 @@ class RobotOrchestrator:
                     self.ops.set_metric("discovery_perp_symbols", float(len(discovery.perp_symbols)))
                     self.ops.set_metric("discovery_optional_symbols", float(len(discovery.optional_symbols)))
                     discovery_instruments = [x.__dict__ for x in discovery.instruments]
+                    self._symbol_market_class = {}
+                    for row in discovery_instruments:
+                        if not isinstance(row, dict):
+                            continue
+                        sym = self._normalize_symbol(str(row.get("symbol", "") or ""))
+                        if not sym:
+                            continue
+                        self._symbol_market_class[sym] = str(row.get("market_class", "") or "crypto_spot").lower()
+                    xstocks_detected = int(
+                        len(
+                            [
+                                s
+                                for s, cls in self._symbol_market_class.items()
+                                if cls in {"xstock", "xstock_etf", "xstock_perp", "xstock_etf_perp"}
+                            ]
+                        )
+                    )
+                    self.ops.set_metric("discovery_xstocks_symbols", float(xstocks_detected))
+                    self.ops.audit_event(
+                        "xstocks_discovery_summary",
+                        {
+                            "detected": xstocks_detected,
+                            "market_class_counts": dict(getattr(discovery, "market_class_counts", {}) or {}),
+                            "xstocks_symbols": list(getattr(discovery, "xstocks_symbols", []) or []),
+                            "xstocks_etf_symbols": list(getattr(discovery, "xstocks_etf_symbols", []) or []),
+                        },
+                    )
 
                     # Auto-build a broader spot universe and prefer the top trade candidate in canary/live.
                     if self.rate_budget.allow_public(2, now_ts=time.time()):
@@ -5025,6 +5299,16 @@ class RobotOrchestrator:
                         allowlist = self._universe_allowlist()
                         if allowlist:
                             built_symbols = [s for s in built_symbols if str(s).upper() in allowlist]
+                        built_symbols, market_filter_diag = self._filter_symbols_for_market_coverage(built_symbols)
+                        self._market_class_filter_stats = dict(market_filter_diag)
+                        if market_filter_diag.get("blocked_reasons"):
+                            self.ops.audit_event(
+                                "market_class_filter",
+                                {
+                                    "source": "dynamic_universe",
+                                    **market_filter_diag,
+                                },
+                            )
                         if built_symbols:
                             self.settings.universe = built_symbols
                             symbol = built_symbols[0]
@@ -5039,6 +5323,7 @@ class RobotOrchestrator:
                                     "perp_symbols": len(discovery.perp_symbols),
                                     "optional_symbols": len(discovery.optional_symbols),
                                     "first_symbol": symbol,
+                                    "market_class_filter": market_filter_diag,
                                 },
                             )
                 except Exception as exc:
@@ -5060,6 +5345,16 @@ class RobotOrchestrator:
                     futures_service=futures_live,
                     discovered_instruments=discovery_instruments,
                 )
+                try:
+                    self.ops.audit_event(
+                        "market_class_router_summary",
+                        {
+                            "market_classes": live.market_classes_summary() if hasattr(live, "market_classes_summary") else {},
+                            "mixed_universe_mode": self._coverage_flag("AUTONOMOUS_MIXED_UNIVERSE_MODE", False),
+                        },
+                    )
+                except Exception:
+                    pass
             else:
                 live = LiveBinanceService(
                     settings=self.settings,

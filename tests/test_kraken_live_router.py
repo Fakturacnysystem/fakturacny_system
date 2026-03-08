@@ -87,7 +87,7 @@ def test_router_routes_perp_symbol_to_futures_service() -> None:
         spot_service=spot,
         futures_service=perp,
         discovered_instruments=[
-            {"symbol": "ETHEUR", "market_type": "spot", "venue": "kraken"},
+            {"symbol": "ETHEUR", "market_type": "spot", "market_class": "crypto_spot", "venue": "kraken"},
             {"symbol": "PI_XBTUSD", "market_type": "perp", "venue": "kraken_futures"},
         ],
     )
@@ -101,6 +101,7 @@ def test_router_routes_perp_symbol_to_futures_service() -> None:
     assert perp.calls == [("execute_intent", "PI_XBTUSD")]
     assert router.venue_for_symbol("PI_XBTUSD") == "kraken_futures"
     assert router.market_type_for_symbol("PI_XBTUSD") == "perp"
+    assert router.market_class_for_symbol("ETHEUR") == "crypto_spot"
 
 
 def test_router_flatten_aggregates_subservice_results() -> None:
@@ -137,3 +138,19 @@ def test_router_preflight_only_requires_configured_market_types() -> None:
     ok_perp, reason_perp = router_with_perp.preflight()
     assert ok_perp is False
     assert reason_perp == "missing_futures_credentials"
+
+
+def test_router_exposes_market_class_summary() -> None:
+    router = LiveKrakenRouterService(
+        spot_service=_FakeSpot(),
+        futures_service=_FakePerp(),
+        discovered_instruments=[
+            {"symbol": "TSLAXUSD", "market_type": "spot", "market_class": "xstock", "venue": "kraken"},
+            {"symbol": "SPYXUSD", "market_type": "spot", "market_class": "xstock_etf", "venue": "kraken"},
+            {"symbol": "PI_XBTUSD", "market_type": "perp", "market_class": "crypto_perp", "venue": "kraken_futures"},
+        ],
+    )
+    summary = router.market_classes_summary()
+    assert summary.get("xstock", 0) == 1
+    assert summary.get("xstock_etf", 0) == 1
+    assert router.market_class_for_symbol("PI_XBTUSD") == "crypto_perp"

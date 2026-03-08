@@ -228,3 +228,76 @@ After:
 - connector diagnostics classification in this shell:
   - `{"ok": false, "classification": "missing_credentials", "scope": "credentials"}`
 - result: internal code-side blockers addressed; remaining live blocker is external environment credential/auth state.
+
+## 2026-03-08 ULTRA Profit Full Throttle Pass
+
+### Architecture Map (Current Runtime)
+
+Runtime flow wired in code:
+1. Discovery + universe classification
+- `src/autonomous_investment_robot/services/market_discovery/service.py`
+- `src/autonomous_investment_robot/services/universe/kraken_universe.py`
+
+2. Orchestration + config truth + market-class filtering
+- `src/autonomous_investment_robot/core/orchestrator.py`
+- `src/autonomous_investment_robot/services/ops/harmony.py`
+
+3. Decision brain (probabilistic/UQ/conformal/regime/drift/execution/risk)
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+
+4. Execution routing + session-aware live guardrails
+- `src/autonomous_investment_robot/services/execution/live_kraken_router_service.py`
+- `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py`
+
+5. Advisory/provider + runtime audit
+- `src/autonomous_investment_robot/services/llm/provider.py`
+- `src/autonomous_investment_robot/services/research/self_improvement.py`
+- `scripts/runtime_audit.py`
+
+### Runtime Flow Map
+
+`ingestion -> features -> probabilistic forecast/UQ/conformal -> market regime + market state + nowcast -> alpha ensemble + confidence -> risk/execution gating -> position sizing + allocation -> execution routing/session checks -> audit/events/dashboard`
+
+### Blocker Map (Reason -> File:Line -> Exact Fix)
+
+| Reason | Source | Exact fix |
+|---|---|---|
+| xStocks were not first-class in discovery payload | `src/autonomous_investment_robot/services/market_discovery/service.py:107` | Added spot/perp market-class classification and explicit `xstocks_symbols`, `xstocks_etf_symbols`, `market_class_counts` outputs. |
+| Universe selection did not enforce market-class toggles/allow-deny | `src/autonomous_investment_robot/services/universe/kraken_universe.py:203` | Added `enable_xstocks`, `enable_xstocks_etf`, allow/deny filters, diagnostics persistence (`universe_diagnostics.json`). |
+| Router did not expose market class to downstream runtime | `src/autonomous_investment_robot/services/execution/live_kraken_router_service.py:64` | Added market-class map, `market_class_for_symbol()`, `market_classes_summary()`, and `session_state_for_symbol()`. |
+| Live execution session adapter treated all symbols as 24/7 | `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py:184` | Added xStocks weekday session awareness, explicit `session_closed` blocking for entry intents, diagnostics fields. |
+| Decision brain was not market-class/session aware | `src/autonomous_investment_robot/services/autonomous_decision/engine.py:39` | Added `market_class` modifiers + `market_session` guard integration into slippage/cadence thresholds and sizing/gating diagnostics. |
+| Orchestrator did not propagate market class/session into central brain | `src/autonomous_investment_robot/core/orchestrator.py:3271` | Added market-class map lifecycle, universe market-class filtering, and `DecisionContext.market_class/market_session` wiring. |
+| LLM model fallback not propagated through runtime constructor | `src/autonomous_investment_robot/core/orchestrator.py:192` | Added `model_primary`/`model_fallback` handoff to `LLMSelfImprovementAdvisor`. |
+| Runtime audit lacked provider/xStocks diagnostics | `scripts/runtime_audit.py:286` | Added `provider_diagnostics` and `xstocks` sections sourced from run artifacts. |
+
+### Weak-Point Map
+
+- External live dependency remains the dominant blocker: Kraken credentials/scopes/lockout state are external to code execution environment.
+- xStocks data availability still depends on account-level market availability and exchange metadata completeness.
+- LLM advisory is optional by design; when keys are missing, core trading remains operational and advisory is disabled safely.
+
+### Remaining Partial/Scaffolded Areas
+
+- Multimodal external feeds (news/macro/fundamental/sentiment) are fully wired as ingestion interfaces but remain partially active when external feeds are absent.
+- Transformer/foundation backend support is production-ready abstraction with optional plugin backend; heavy model backends remain scaffolded-by-plugin unless explicitly installed.
+- SelfOptimizationEngine is bounded and active for threshold tuning, but still intentionally conservative (safe-range only).
+
+### Before / After Expected Behavior
+
+Before:
+- xStocks not consistently classified and not surfaced in runtime diagnostics.
+- Session awareness for xStocks not enforced in live entry path.
+- Runtime audit did not report provider/xStocks health context.
+
+After:
+- xStocks market class is detected, filtered, routed, audited, and propagated into decision/execution context.
+- Session-aware xStocks gating blocks entries when market session is closed.
+- Runtime audit includes provider diagnostics + xStocks eligibility/filtering telemetry.
+- ULTRA script exists and sets safe throughput + Groq/OpenAI-compatible advisory defaults.
+
+### Safe Path vs Live Path Differences
+
+- Safe path (`./scripts/run_paper.sh`): validated and green in this environment.
+- Live path (`./scripts/run_kraken_ultra_profit_full_throttle.sh`): blocked in this shell by missing Kraken env credentials before startup.
+- Therefore live readiness is code-ready but environment-blocked at credential gate in this execution context.

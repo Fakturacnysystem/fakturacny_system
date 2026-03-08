@@ -22,13 +22,14 @@ execution:
   maker_timeout_s: 90
   kraken_spot:
     allow_unknown_permissions: true
+    require_open_orders_scope: false
     dry_run_long_only: false
 policy:
   confidence_threshold: 0.0
   safety_buffer_bps: 3.0
   base_risk_budget: 25.0
 autonomous:
-  confidence_threshold: 0.52
+  confidence_threshold: 0.44
   uncertainty_threshold_bps: 85.0
   conformal_alpha: 0.1
   drift_threshold: 0.2
@@ -53,6 +54,20 @@ autonomous:
   self_optimization_window: 120
   self_optimization_min_samples: 24
   self_optimization_apply_every: 12
+llm:
+  provider: groq
+  model: openai/gpt-oss-120b
+  model_primary: openai/gpt-oss-120b
+  model_fallback: openai/gpt-oss-20b
+  base_url: https://api.groq.com/openai/v1
+  enabled: true
+  timeout_s: 12.0
+  max_retries: 1
+  healthcheck_remote: false
+  self_improvement_enabled: true
+  self_improvement_hours: 24.0
+  self_improvement_every_s: 1800.0
+  llm_augment_enabled: false
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0
@@ -95,6 +110,12 @@ market_coverage:
   enable_optional_venues: true
   discover_all_symbols: true
   max_symbols: 120
+  enable_crypto_spot: true
+  enable_xstocks: true
+  enable_xstocks_etf: true
+  xstocks_allowlist: []
+  xstocks_denylist: []
+  mixed_universe_mode: true
 watchdog:
   enabled: true
   poll_interval_s: 5.0

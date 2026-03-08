@@ -219,3 +219,16 @@ def test_portfolio_diversification_and_rotation_scales_present() -> None:
     assert "capital_rotation_scale" in out.diagnostics
     assert float(out.diagnostics["portfolio_diversification_scale"]) > 0.0
     assert float(out.diagnostics["capital_rotation_scale"]) > 0.0
+
+
+def test_decision_engine_respects_xstock_session_closed_guard() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.40,
+        uncertainty_threshold_bps=160.0,
+    )
+    ctx = _base_context()
+    ctx.market_class = "xstock"
+    ctx.market_session = "xstock_session_closed"
+    out = engine.run_decision_algorithm(ctx)
+    assert "session_closed" in out.risk_flags
+    assert out.action in {"skip", "hold"}

@@ -69,9 +69,44 @@ def test_runtime_audit_summarizes_blockers_and_invariants(tmp_path: Path) -> Non
         json.dumps({"health": {"status": "OK"}, "guardrails": {}, "conflicts": [], "overrides": {}}),
         encoding="utf-8",
     )
+    (run_dir / "llm_self_improvement_diagnostics.json").write_text(
+        json.dumps(
+            {
+                "provider": "groq",
+                "model": "openai/gpt-oss-120b",
+                "model_fallback": "openai/gpt-oss-20b",
+                "model_effective": "openai/gpt-oss-20b",
+                "llm_enabled": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "market_discovery.json").write_text(
+        json.dumps(
+            {
+                "xstocks_symbols": ["TSLAXUSD"],
+                "xstocks_etf_symbols": ["SPYXUSD"],
+                "market_class_counts": {"xstock": 1, "xstock_etf": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "universe_diagnostics.json").write_text(
+        json.dumps(
+            {
+                "eligible_market_class_counts": {"xstock": 1},
+                "detected_market_class_counts": {"xstock": 2},
+                "filter_reasons": {"xstocks_allowlist_block": 1},
+                "mixed_universe_mode": True,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     report = mod.run_audit(run_dir=run_dir, event_limit=3000)
     assert report["order_stats"]["submitted_orders"] == 1
     assert report["hard_invariants"]["ok"] is True
     assert report["harmony"]["sell_min_profit_ok"] is True
     assert report["event_bus_topics"]["execution"] > 0
+    assert report["provider_diagnostics"]["provider"] == "groq"
+    assert report["xstocks"]["detected_symbols"] == ["TSLAXUSD"]

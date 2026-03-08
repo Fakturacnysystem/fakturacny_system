@@ -94,6 +94,8 @@ def test_market_discovery_collects_and_persists(tmp_path) -> None:
     assert "PF_XBTUSD" in result.perp_symbols
     assert "PF_XSTOCK_NVDAUSD" in result.perp_symbols
     assert "PF_XSTOCK_NVDAUSD" in result.optional_symbols
+    assert "PF_XSTOCK_NVDAUSD" in result.xstocks_symbols
+    assert result.market_class_counts.get("xstock_perp", 0) >= 1
     assert "FI_XBTUSD_240628" not in result.perp_symbols
     assert result.errors == []
 
@@ -102,3 +104,4 @@ def test_market_discovery_collects_and_persists(tmp_path) -> None:
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert "ETHEUR" in payload.get("spot_symbols", [])
     assert "PF_XBTUSD" in payload.get("perp_symbols", [])
+    assert "PF_XSTOCK_NVDAUSD" in payload.get("xstocks_symbols", [])

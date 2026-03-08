@@ -28,6 +28,7 @@ class LiveKrakenRouterService:
         self.futures_service = futures_service
         self._symbol_market_type: dict[str, str] = {}
         self._symbol_venue: dict[str, str] = {}
+        self._symbol_market_class: dict[str, str] = {}
         self.register_discovery(discovered_instruments or [])
 
     def register_discovery(self, instruments: list[dict[str, Any]]) -> None:
@@ -39,12 +40,15 @@ class LiveKrakenRouterService:
                 continue
             market_type = str(row.get("market_type", "spot") or "spot").strip().lower()
             venue = str(row.get("venue", "kraken") or "kraken").strip().lower()
+            market_class = str(row.get("market_class", "") or "").strip().lower()
             if market_type == "perp":
                 self._symbol_market_type[symbol] = "perp"
                 self._symbol_venue[symbol] = "kraken_futures"
+                self._symbol_market_class[symbol] = market_class or "crypto_perp"
             else:
                 self._symbol_market_type.setdefault(symbol, "spot")
                 self._symbol_venue.setdefault(symbol, "kraken_spot")
+                self._symbol_market_class.setdefault(symbol, market_class or "crypto_spot")
 
     def _norm_symbol(self, symbol: Any) -> str:
         return str(symbol or "").strip().upper()
@@ -56,6 +60,19 @@ class LiveKrakenRouterService:
     def venue_for_symbol(self, symbol: str) -> str:
         key = self._norm_symbol(symbol)
         return self._symbol_venue.get(key, "kraken_spot")
+
+    def market_class_for_symbol(self, symbol: str) -> str:
+        key = self._norm_symbol(symbol)
+        return self._symbol_market_class.get(key, "crypto_spot")
+
+    def market_classes_summary(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for market_class in self._symbol_market_class.values():
+            cls = str(market_class or "").strip().lower()
+            if not cls:
+                continue
+            out[cls] = out.get(cls, 0) + 1
+        return out
 
     def _service_for_symbol(self, symbol: str) -> Any:
         market_type = self.market_type_for_symbol(symbol)
@@ -71,6 +88,15 @@ class LiveKrakenRouterService:
         svc = self._service_for_symbol(symbol)
         venue = self.venue_for_symbol(symbol)
         return {venue: svc}
+
+    def session_state_for_symbol(self, symbol: str, *, ts: float | None = None) -> str:
+        svc = self._service_for_symbol(symbol)
+        if hasattr(svc, "session_state"):
+            try:
+                return str(svc.session_state(symbol, ts=ts))
+            except Exception:
+                return "session_state_error"
+        return "session_unknown"
 
     def preflight(self) -> tuple[bool, str]:
         checked: list[str] = []

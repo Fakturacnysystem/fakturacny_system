@@ -36,6 +36,33 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return float(out)
 
 
+def _market_class_modifiers(market_class: str) -> dict[str, float]:
+    cls = str(market_class or "crypto_spot").strip().lower()
+    if cls == "xstock_etf":
+        return {
+            "confidence_add": 0.04,
+            "uncertainty_delta_bps": -6.0,
+            "latency_delta": -0.08,
+            "slippage_mult": 0.82,
+            "size_mult": 0.74,
+        }
+    if cls == "xstock":
+        return {
+            "confidence_add": 0.03,
+            "uncertainty_delta_bps": -4.0,
+            "latency_delta": -0.06,
+            "slippage_mult": 0.88,
+            "size_mult": 0.82,
+        }
+    return {
+        "confidence_add": 0.0,
+        "uncertainty_delta_bps": 0.0,
+        "latency_delta": 0.0,
+        "slippage_mult": 1.0,
+        "size_mult": 1.0,
+    }
+
+
 @dataclass(frozen=True)
 class DistributionForecast:
     """Parametric forecast represented as normal distribution in basis points."""
@@ -110,6 +137,8 @@ class DecisionContext:
     macro_features: dict[str, float] = field(default_factory=dict)
     fundamental_features: dict[str, float] = field(default_factory=dict)
     sentiment_features: dict[str, float] = field(default_factory=dict)
+    market_class: str = "crypto_spot"
+    market_session: str = "always_open_24_7"
     guards_mode: str = "strict"
     modeled_cost_floor_bps: float = 120.0
     sell_min_profit_bps: float = 120.0
@@ -1977,13 +2006,34 @@ def run_decision_algorithm(
         spread_bps=context.spread_bps,
         liquidity_pressure=liquidity_pressure,
     )
+    regime_params = engine.regime_params.parameters(regime)
+    market_mod = _market_class_modifiers(context.market_class)
+    effective_max_slippage_bps = _clamp(
+        engine.max_slippage_bps * _safe_float(market_mod.get("slippage_mult"), 1.0),
+        0.5,
+        30.0,
+    )
+    effective_conf_threshold = _clamp(
+        _safe_float(regime_params.get("confidence_threshold"), engine.confidence_threshold)
+        + _safe_float(market_mod.get("confidence_add"), 0.0),
+        0.0,
+        0.95,
+    )
+    effective_uncertainty_threshold_bps = max(
+        20.0,
+        _safe_float(regime_params.get("uncertainty_threshold_bps"), engine.uncertainty_threshold_bps)
+        + _safe_float(market_mod.get("uncertainty_delta_bps"), 0.0),
+    )
+    effective_latency_threshold = _clamp(
+        engine.latency_risk_threshold + _safe_float(market_mod.get("latency_delta"), 0.0),
+        0.05,
+        1.0,
+    )
     execution_monitor_score = engine.execution_quality_monitor.score(cost["total_bps"], signal.score_bps)
     slippage_ok = engine.execution.control_slippage(
         expected_slippage_bps=cost["slippage_bps"] + cost["impact_bps"],
-        max_slippage_bps=engine.max_slippage_bps,
+        max_slippage_bps=effective_max_slippage_bps,
     )
-
-    regime_params = engine.regime_params.parameters(regime)
     budget = engine.sizing.optimize_risk_budget(
         base_risk_budget_quote=engine.base_risk_budget_quote,
         regime=regime,
@@ -1999,6 +2049,7 @@ def run_decision_algorithm(
     )
     size *= engine.adaptive_sizing.scale(confidence, uq.total_bps)
     size *= engine.liquidity_aware_sizing.scale(context.depth_notional, context.spread_bps)
+    size *= _clamp(_safe_float(market_mod.get("size_mult"), 1.0), 0.25, 1.5)
     cross_pair_score = _safe_float(alpha_signals.get("cross_pair_opportunity"), 0.0)
     portfolio_div_scale = engine.portfolio_diversifier.scale(
         cross_pair_score=cross_pair_score,
@@ -2035,12 +2086,18 @@ def run_decision_algorithm(
         current_exposure_notional=context.signed_exposure_notional_quote,
         incoming_notional=alloc,
         max_exposure_notional=context.max_exposure_notional,
-        confidence_threshold=_safe_float(regime_params.get("confidence_threshold"), engine.confidence_threshold),
-        uncertainty_threshold_bps=_safe_float(regime_params.get("uncertainty_threshold_bps"), engine.uncertainty_threshold_bps),
-        latency_threshold=engine.latency_risk_threshold,
+        confidence_threshold=effective_conf_threshold,
+        uncertainty_threshold_bps=effective_uncertainty_threshold_bps,
+        latency_threshold=effective_latency_threshold,
         liquidity_threshold=engine.liquidity_pressure_guard_threshold,
     )
-    latency_allowed = engine.latency_protection.allow(latency_risk, engine.latency_risk_threshold)
+    if str(context.market_session or "").lower() in {"xstock_session_closed", "xstock_weekend_closed"}:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "session_closed" not in reasons:
+            reasons.append("session_closed")
+        risk_validation["reasons"] = reasons
+    latency_allowed = engine.latency_protection.allow(latency_risk, effective_latency_threshold)
     if not latency_allowed:
         risk_validation["allowed"] = False
         reasons = list(risk_validation.get("reasons", []))
@@ -2221,6 +2278,7 @@ def run_decision_algorithm(
             "execution_quality_ratio": execution_monitor_score,
             "liquidity_pressure": liquidity_pressure,
             "total_modeled_cost_bps": cost["total_bps"],
+            "max_slippage_bps_effective": effective_max_slippage_bps,
         },
         profit_protection=profit_protection,
         online_adaptation=online_adaptation,
@@ -2236,6 +2294,9 @@ def run_decision_algorithm(
             "liquidity_threshold": engine.liquidity_pressure_guard_threshold,
             "adaptive_hold_s": adaptive_hold_s,
             "smart_hold_extend": 1.0 if smart_hold_extend else 0.0,
+            "market_class": str(context.market_class),
+            "market_session": str(context.market_session),
+            "market_class_modifiers": dict(market_mod),
             "portfolio_diversification_scale": portfolio_div_scale,
             "capital_rotation_score": rotation_score,
             "capital_rotation_scale": rotation_scale,
@@ -2247,10 +2308,10 @@ def run_decision_algorithm(
             "drift_top_features": drift_report.get("top_features", []),
             "self_optimization": self_optimization,
             "adaptive_thresholds": {
-                "confidence_threshold": engine.confidence_threshold,
-                "uncertainty_threshold_bps": engine.uncertainty_threshold_bps,
-                "max_slippage_bps": engine.max_slippage_bps,
-                "latency_risk_threshold": engine.latency_risk_threshold,
+                "confidence_threshold": effective_conf_threshold,
+                "uncertainty_threshold_bps": effective_uncertainty_threshold_bps,
+                "max_slippage_bps": effective_max_slippage_bps,
+                "latency_risk_threshold": effective_latency_threshold,
                 "liquidity_pressure_guard_threshold": engine.liquidity_pressure_guard_threshold,
             },
         },

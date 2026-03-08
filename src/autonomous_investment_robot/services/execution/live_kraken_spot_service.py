@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -181,17 +182,50 @@ class FillLedger:
 
 
 class MarketSessionAdapter:
-    """Drop-in session adapter; Kraken spot is 24/7 but this keeps venue-aware interface stable."""
+    """Session-aware adapter supporting 24/7 crypto and weekday xStocks windows."""
 
-    def __init__(self, *, enabled: bool = True) -> None:
+    def __init__(self, *, enabled: bool = True, is_xstock_pair: Any | None = None) -> None:
         self.enabled = bool(enabled)
+        self._is_xstock_pair = is_xstock_pair
+        self._xstocks_allow_off_hours = _env_bool("AUTONOMOUS_XSTOCKS_ALLOW_OFF_HOURS", False)
+        self._xstocks_open_hour_utc = max(0, min(23, int(float(os.getenv("AUTONOMOUS_XSTOCKS_OPEN_HOUR_UTC", "13") or "13"))))
+        self._xstocks_open_minute_utc = max(0, min(59, int(float(os.getenv("AUTONOMOUS_XSTOCKS_OPEN_MINUTE_UTC", "30") or "30"))))
+        self._xstocks_close_hour_utc = max(0, min(23, int(float(os.getenv("AUTONOMOUS_XSTOCKS_CLOSE_HOUR_UTC", "20") or "20"))))
+        self._xstocks_close_minute_utc = max(0, min(59, int(float(os.getenv("AUTONOMOUS_XSTOCKS_CLOSE_MINUTE_UTC", "0") or "0"))))
+        self._xstocks_session_enabled = _env_bool("AUTONOMOUS_XSTOCKS_SESSION_AWARE", True)
+
+    def _is_xstock(self, pair: str) -> bool:
+        if callable(self._is_xstock_pair):
+            try:
+                return bool(self._is_xstock_pair(pair))
+            except Exception:
+                return False
+        return False
+
+    def session_state(self, pair: str, *, ts: float | None = None) -> str:
+        if not self.enabled:
+            return "session_adapter_disabled"
+        if not self._xstocks_session_enabled:
+            return "session_awareness_disabled"
+        if not self._is_xstock(pair):
+            return "always_open_24_7"
+        if self._xstocks_allow_off_hours:
+            return "xstock_offhours_override"
+        now = datetime.fromtimestamp(float(ts if ts is not None else time.time()), tz=timezone.utc)
+        if now.weekday() >= 5:
+            return "xstock_weekend_closed"
+        open_min = (self._xstocks_open_hour_utc * 60) + self._xstocks_open_minute_utc
+        close_min = (self._xstocks_close_hour_utc * 60) + self._xstocks_close_minute_utc
+        now_min = (now.hour * 60) + now.minute
+        if open_min <= now_min < close_min:
+            return "xstock_session_open"
+        return "xstock_session_closed"
 
     def is_open(self, pair: str, *, ts: float | None = None) -> tuple[bool, str]:
-        _ = pair
-        _ = ts
-        if not self.enabled:
-            return True, "session_adapter_disabled"
-        return True, "always_open_24_7"
+        state = self.session_state(pair, ts=ts)
+        if state in {"always_open_24_7", "session_adapter_disabled", "session_awareness_disabled", "xstock_offhours_override", "xstock_session_open"}:
+            return True, state
+        return False, state
 
 
 class KrakenMinOrderGuard:
@@ -533,7 +567,10 @@ class LiveKrakenSpotService:
         self._entries_blocked_until_health_ok = False
         self._entries_blocked_until_ts = 0.0
         self._session_adapter_enabled = _env_bool("AUTONOMOUS_SESSION_AWARENESS_ENABLED", True)
-        self._session_adapter = MarketSessionAdapter(enabled=self._session_adapter_enabled)
+        self._session_adapter = MarketSessionAdapter(
+            enabled=self._session_adapter_enabled,
+            is_xstock_pair=self._is_xstock_pair,
+        )
         self._position_age_escalation_enabled = _env_bool("AUTONOMOUS_POSITION_AGE_ESCALATION_ENABLED", True)
         self._position_age_escalation_s = max(60.0, _env_float("AUTONOMOUS_POSITION_AGE_ESCALATION_S", 3600.0))
         self._position_age_entry_scale = max(0.05, min(1.0, _env_float("AUTONOMOUS_POSITION_AGE_ENTRY_SCALE", 0.5)))
@@ -1537,6 +1574,13 @@ class LiveKrakenSpotService:
                 return dict(self._balance_cache)
             self._balance_cache_ts = now
             return {}
+        if now < self.rate_limit_cooldown_until_s:
+            # Respect active private-endpoint cooldown and serve last known state.
+            if self._balance_cache:
+                self._balance_cache_ts = now
+                return dict(self._balance_cache)
+            self._balance_cache_ts = now
+            return {}
         if self._balance_cache and not force_refresh and (now - self._balance_cache_ts) <= self._balance_ttl_s:
             return dict(self._balance_cache)
         try:
@@ -1559,6 +1603,13 @@ class LiveKrakenSpotService:
     def _trades_snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
         now = time.time()
         if now < self._temporary_lockout_until_s:
+            if self._trades_cache:
+                self._trades_cache_ts = now
+                return dict(self._trades_cache)
+            self._trades_cache_ts = now
+            return {}
+        if now < self.rate_limit_cooldown_until_s:
+            # Avoid repeated trades-history calls while exchange cooldown is active.
             if self._trades_cache:
                 self._trades_cache_ts = now
                 return dict(self._trades_cache)
@@ -1622,6 +1673,37 @@ class LiveKrakenSpotService:
 
     def _ledger_for(self, pair: str) -> FillLedger:
         return self._ledgers.setdefault(pair, FillLedger())
+
+    def _normalize_asset(self, value: Any) -> str:
+        raw = str(value or "").strip().upper().replace("/", "")
+        if not raw:
+            return ""
+        if raw.startswith("X") and len(raw) > 3 and raw[1:].isalpha():
+            return raw[1:]
+        if raw.startswith("Z") and len(raw) > 3 and raw[1:].isalpha():
+            return raw[1:]
+        return raw
+
+    def _is_xstock_pair(self, pair: str) -> bool:
+        meta = self.min_guard.pair_meta(pair)
+        base = self._normalize_asset(meta.get("base", ""))
+        quote = self._normalize_asset(meta.get("quote", ""))
+        marker = " ".join(
+            str(x or "").lower()
+            for x in (
+                pair,
+                meta.get("altname", ""),
+                meta.get("wsname", ""),
+                meta.get("category", ""),
+                meta.get("tags", ""),
+            )
+        )
+        if any(tok in marker for tok in ("xstock", "equity", "stock", "share")):
+            return True
+        return quote in {"USD", "EUR", "GBP", "CHF", "CAD"} and base.endswith("X") and base[:-1].isalpha()
+
+    def session_state(self, pair: str, *, ts: float | None = None) -> str:
+        return str(self._session_adapter.session_state(pair, ts=ts))
 
     def _pair_aliases(self, pair: str) -> set[str]:
         aliases = {pair, pair.replace("/", "")}
@@ -2142,6 +2224,8 @@ class LiveKrakenSpotService:
             return "unknown"
         if txt == "ok":
             return "ok"
+        if "optional_scope_unavailable" in txt:
+            return "optional_scope_unavailable"
         if "missing_credentials" in txt:
             return "missing_credentials"
         if "kraken_permission_denied" in txt or "invalid_permissions" in txt:
@@ -2170,6 +2254,14 @@ class LiveKrakenSpotService:
         if ok:
             if cls == "ok":
                 return True, "ok"
+            if cls == "optional_scope_unavailable":
+                optional_scope = str(diag.get("optional_scope", scope) or scope)
+                optional_cls = str(diag.get("optional_classification", "unknown_error") or "unknown_error")
+                optional_reason = str(diag.get("optional_reason", reason) or reason)
+                return (
+                    True,
+                    f"permissions_verified_optional_scope_unavailable:{optional_scope}:{optional_cls}:{optional_reason}",
+                )
             if cls.endswith("_override"):
                 return True, f"permissions_unverified_operator_override:{scope}:{cls}:{reason}"
             return True, f"permissions_verified:{scope}:{cls}"
@@ -2207,8 +2299,15 @@ class LiveKrakenSpotService:
             "has_credentials": bool(self.connector.has_credentials),
             "temporary_lockout_until_s": float(self._temporary_lockout_until_s),
             "rate_limit_cooldown_until_s": float(self.rate_limit_cooldown_until_s),
+            "rate_limit_cooldown_s": float(self._rate_limit_cooldown_s),
+            "balance_ttl_s": float(self._balance_ttl_s),
+            "trades_ttl_s": float(self._trades_ttl_s),
+            "trades_sync_min_interval_s": float(self._trades_sync_min_interval_s),
             "mode": str(self.settings.execution_mode_enum().value),
             "run_id": str(self.run_id),
+            "session_awareness_enabled": bool(self._session_adapter_enabled),
+            "xstocks_session_aware": bool(getattr(self._session_adapter, "_xstocks_session_enabled", False)),
+            "xstocks_allow_off_hours": bool(getattr(self._session_adapter, "_xstocks_allow_off_hours", False)),
         }
         if permission_diag:
             payload["permission_diag"] = {
@@ -2216,6 +2315,9 @@ class LiveKrakenSpotService:
                 "scope": str(permission_diag.get("scope", "")),
                 "classification": str(permission_diag.get("classification", "")),
                 "reason": str(permission_diag.get("reason", "")),
+                "optional_scope": str(permission_diag.get("optional_scope", "")),
+                "optional_classification": str(permission_diag.get("optional_classification", "")),
+                "optional_reason": str(permission_diag.get("optional_reason", "")),
             }
         out = Path(self.settings.storage.run_dir) / "live_startup_diagnostics.json"
         try:
