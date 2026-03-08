@@ -30,3 +30,18 @@ def test_rate_limit_retry_budget() -> None:
     assert gov.allow_retry(endpoint="add_order", now_ts=now + 0.2) is True
     gov.note_retry(endpoint="add_order", now_ts=now + 0.3)
     assert gov.allow_retry(endpoint="add_order", now_ts=now + 0.4) is False
+
+
+def test_rate_limit_governor_counts_temporary_lockout() -> None:
+    gov = RateLimitGovernor(
+        window_s=60.0,
+        max_rate_limit_events_60s=1,
+        storm_cooldown_s=30.0,
+        retry_budget_per_endpoint=2,
+    )
+    now = 500.0
+    gov.record_error(endpoint="balance", error_text="EGeneral:Temporary lockout", now_ts=now)
+    state = gov.state(now_ts=now, base_extra_submissions=3)
+    assert state.storm_active is True
+    assert state.recent_events_60s >= 1
+    assert state.recommended_extra_submissions_max_per_min == 0

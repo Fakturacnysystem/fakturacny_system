@@ -311,6 +311,7 @@ class LiveKrakenSpotService:
         self.rate_limits = RateLimitTracker()
         self.cooldown_until_s = 0.0
         self.rate_limit_cooldown_until_s = 0.0
+        self._temporary_lockout_until_s = 0.0
         self._recent_ids: dict[str, float] = {}
         self._recent_ttl_s = 600.0
         self._ledgers: dict[str, FillLedger] = {}
@@ -330,6 +331,13 @@ class LiveKrakenSpotService:
             os.getenv("AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S", "4.0"),
         )
         self._rate_limit_cooldown_s = max(0.25, float(cooldown_env or "4.0"))
+        self._temporary_lockout_cooldown_s = max(
+            self._rate_limit_cooldown_s,
+            _env_float(
+                "AUTONOMOUS_KRAKEN_TEMP_LOCKOUT_COOLDOWN_S",
+                max(20.0, self._rate_limit_cooldown_s * 4.0),
+            ),
+        )
         self._rate_limit_storm_threshold = max(3, int(os.getenv("AUTONOMOUS_KRAKEN_RATE_LIMIT_STORM", "8") or "8"))
         self._max_consecutive_rejects = max(1, int(os.getenv("AUTONOMOUS_MAX_CONSEC_REJECTS", "5") or "5"))
         self._reject_cooldown_s = max(5.0, _env_float("AUTONOMOUS_REJECT_COOLDOWN_S", 120.0))
@@ -1375,7 +1383,7 @@ class LiveKrakenSpotService:
 
     def _classify_reject(self, exc: Exception | str) -> str:
         text = str(exc).lower()
-        if "rate limit" in text or "429" in text:
+        if "rate limit" in text or "429" in text or "temporary lockout" in text:
             return "rate_limit"
         if "insufficient funds" in text or "insufficient balance" in text:
             return "insufficient_funds"
@@ -1523,6 +1531,11 @@ class LiveKrakenSpotService:
 
     def _balance_snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
         now = time.time()
+        if now < self._temporary_lockout_until_s:
+            if self._balance_cache:
+                return dict(self._balance_cache)
+            self._balance_cache_ts = now
+            return {}
         if self._balance_cache and not force_refresh and (now - self._balance_cache_ts) <= self._balance_ttl_s:
             return dict(self._balance_cache)
         try:
@@ -1530,13 +1543,26 @@ class LiveKrakenSpotService:
             self._balance_cache = dict(bal) if isinstance(bal, dict) else {}
             self._balance_cache_ts = now
             return dict(self._balance_cache)
-        except Exception:
+        except Exception as exc:
+            if self._is_temporary_lockout_error(exc):
+                self._activate_temporary_lockout(now)
+                if self._balance_cache:
+                    self._balance_cache_ts = now
+                    return dict(self._balance_cache)
+                self._balance_cache_ts = now
+                return {}
             if self._balance_cache:
                 return dict(self._balance_cache)
             raise
 
     def _trades_snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
         now = time.time()
+        if now < self._temporary_lockout_until_s:
+            if self._trades_cache:
+                self._trades_cache_ts = now
+                return dict(self._trades_cache)
+            self._trades_cache_ts = now
+            return {}
         if self._trades_cache and not force_refresh and (now - self._trades_cache_ts) <= self._trades_ttl_s:
             return dict(self._trades_cache)
         try:
@@ -1545,6 +1571,13 @@ class LiveKrakenSpotService:
             self._trades_cache_ts = now
             return dict(self._trades_cache)
         except Exception as exc:
+            if self._is_temporary_lockout_error(exc):
+                self._activate_temporary_lockout(now)
+                if self._trades_cache:
+                    self._trades_cache_ts = now
+                    return dict(self._trades_cache)
+                self._trades_cache_ts = now
+                return {}
             if self._trades_cache:
                 self._trades_cache_ts = now
                 return dict(self._trades_cache)
@@ -1567,6 +1600,9 @@ class LiveKrakenSpotService:
                 if not self._is_rate_limit_err(exc):
                     raise
                 now = time.time()
+                if self._is_temporary_lockout_error(exc):
+                    self._activate_temporary_lockout(now)
+                    raise
                 hit_count = self._endpoint_rate_limit_count(stage, now)
                 cooldown_mult = self._endpoint_retry_backoff_mult ** max(0, hit_count - 1)
                 self._activate_rate_limit_cooldown(now, multiplier=cooldown_mult)
@@ -1881,6 +1917,9 @@ class LiveKrakenSpotService:
     def sync_fill_ledger(self, pair: str, mark_price: float) -> dict[str, Any]:
         ledger = self._ledger_for(pair)
         now = time.time()
+        if now < self._temporary_lockout_until_s:
+            self._last_ledger_sync_ts[pair] = now
+            return self._ledger_snapshot(pair, mark_price)
         last_sync = self._last_ledger_sync_ts.get(pair, 0.0)
         if now - last_sync < self._trades_sync_min_interval_s:
             return self._ledger_snapshot(pair, mark_price)
@@ -2074,12 +2113,23 @@ class LiveKrakenSpotService:
             return False, details
         return True, details
 
+    def _is_temporary_lockout_error(self, exc: Exception | str) -> bool:
+        text = str(exc).lower()
+        return "temporary lockout" in text
+
     def _is_rate_limit_err(self, exc: Exception) -> bool:
-        return isinstance(exc, KrakenRateLimitError) or "rate limit" in str(exc).lower() or "429" in str(exc)
+        text = str(exc).lower()
+        return (
+            isinstance(exc, KrakenRateLimitError)
+            or "rate limit" in text
+            or "429" in text
+            or self._is_exchange_rate_limit_exceeded(exc)
+            or self._is_temporary_lockout_error(exc)
+        )
 
     def _is_exchange_rate_limit_exceeded(self, exc: Exception | str) -> bool:
         text = str(exc).lower()
-        return "eapi:rate limit exceeded" in text
+        return ("eapi:rate limit exceeded" in text) or ("temporary lockout" in text)
 
     def _is_exchange_restriction_error(self, exc: Exception | str) -> bool:
         text = str(exc).lower()
@@ -2101,6 +2151,12 @@ class LiveKrakenSpotService:
             ),
         )
 
+    def _activate_temporary_lockout(self, now: float | None = None) -> None:
+        ts = time.time() if now is None else float(now)
+        self._temporary_lockout_until_s = max(self._temporary_lockout_until_s, ts + self._temporary_lockout_cooldown_s)
+        cooldown_mult = max(1.0, self._temporary_lockout_cooldown_s / max(self._rate_limit_cooldown_s, 1e-9))
+        self._activate_rate_limit_cooldown(ts, multiplier=cooldown_mult)
+
     def _rate_limit_cooldown_result(self, order_meta: dict[str, Any] | None = None) -> LiveExecutionResult:
         now = time.time()
         order: dict[str, Any] = dict(order_meta or {})
@@ -2119,6 +2175,13 @@ class LiveKrakenSpotService:
         if self._is_exchange_restriction_error(exc):
             meta["error"] = str(exc)
             return LiveExecutionResult(status="rejected", reason="restricted_instrument_hard_reject", order=meta)
+        if self._is_temporary_lockout_error(exc):
+            self._activate_temporary_lockout(now)
+            self.rate_limits.add(now)
+            meta["error"] = str(exc)
+            meta["reject_category"] = "rate_limit"
+            meta["temporary_lockout"] = True
+            return self._rate_limit_cooldown_result(meta)
         if self._is_rate_limit_err(exc):
             self._activate_rate_limit_cooldown(now)
             self.rate_limits.add(now)
@@ -2836,7 +2899,7 @@ class LiveKrakenSpotService:
                     submit_ok = True
                     maker_price = maker_attempt_price
                     break
-                except (KrakenInsufficientFundsError, KrakenConnectorError) as exc:
+                except Exception as exc:
                     if side == "buy" and self._entry_maker_only and self._is_post_only_reject(exc):
                         maker_attempt_price = self.min_guard.round_price(
                             pair,
@@ -2936,7 +2999,7 @@ class LiveKrakenSpotService:
         params = {**base_order, "ordertype": "market"}
         try:
             out = self._call_with_retry(lambda: self.connector.add_order(params), "taker_submit")
-        except (KrakenInsufficientFundsError, KrakenConnectorError) as exc:
+        except Exception as exc:
             return self._reject_guard(exc, {"pair": pair, "volume": vol, "price": price, "stage": "taker_submit", "request_sent": True})
 
         self._recent_ids[dedupe] = now

@@ -27,6 +27,9 @@ class _FakeKrakenSpotConnector:
         self.trade_volume_calls = 0
         self.fail_rate_limit = False
         self.fail_eapi_rate_limit = False
+        self.fail_temporary_lockout = False
+        self.fail_balance_temporary_lockout = False
+        self.fail_trades_temporary_lockout = False
         self.rate_limit_failures_remaining = 0
         self.fail_insufficient = False
         self.never_fill_maker = False
@@ -70,11 +73,15 @@ class _FakeKrakenSpotConnector:
         }
 
     def balance(self):
+        if self.fail_balance_temporary_lockout:
+            raise RuntimeError("EGeneral:Temporary lockout")
         return dict(self._balance)
 
     def add_order(self, params):
         self.add_calls += 1
         self.add_params.append(dict(params))
+        if self.fail_temporary_lockout:
+            raise RuntimeError("EGeneral:Temporary lockout")
         if self.fail_eapi_rate_limit:
             from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenRateLimitError
 
@@ -131,6 +138,8 @@ class _FakeKrakenSpotConnector:
 
     def trades_history(self, start=None):  # noqa: ARG002
         self.trades_history_calls += 1
+        if self.fail_trades_temporary_lockout:
+            raise RuntimeError("EGeneral:Temporary lockout")
         return dict(self._trades_history)
 
     def trade_volume(self, pair=None, fee_info=True):  # noqa: ARG002
@@ -1098,6 +1107,52 @@ def test_execute_intent_enforces_eapi_rate_limit_cooldown(monkeypatch):
     assert fake.add_calls == 1
     assert fake.cancel_calls == 0
     assert svc.killed is False
+
+
+def test_execute_intent_temporary_lockout_enters_extended_cooldown(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_RATE_LIMIT_COOLDOWN_S", "0.25")
+    monkeypatch.setenv("AUTONOMOUS_KRAKEN_TEMP_LOCKOUT_COOLDOWN_S", "1.0")
+    monkeypatch.setenv("AUTONOMOUS_KRAKEN_EXEC_RETRY_ATTEMPTS", "1")
+    fake = _FakeKrakenSpotConnector()
+    fake.fail_temporary_lockout = True
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+
+    first = svc.execute_intent(OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={}))
+    assert first.status == "blocked"
+    assert first.reason == "rate_limit_cooldown"
+    assert fake.add_calls == 1
+    assert svc._temporary_lockout_until_s >= time.time()
+
+    fake.fail_temporary_lockout = False
+    second = svc.execute_intent(OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={}))
+    assert second.status == "blocked"
+    assert second.reason == "rate_limit_cooldown"
+    assert fake.add_calls == 1
+
+    time.sleep(1.1)
+    third = svc.execute_intent(OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={}))
+    assert third.status in {"filled_maker", "submitted", "filled_taker_fallback"}
+    assert fake.add_calls == 2
+
+
+def test_sync_fill_ledger_temporary_lockout_uses_snapshot_fallback(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_KRAKEN_TEMP_LOCKOUT_COOLDOWN_S", "1.0")
+    fake = _FakeKrakenSpotConnector()
+    fake.fail_trades_temporary_lockout = True
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+
+    snap = svc.sync_fill_ledger("XBTUSD", mark_price=50000.0)
+    assert isinstance(snap, dict)
+    assert "position_qty" in snap
+    assert fake.trades_history_calls == 1
+    assert svc.rate_limit_cooldown_until_s >= time.time()
+
+    _ = svc.sync_fill_ledger("XBTUSD", mark_price=50000.0)
+    assert fake.trades_history_calls == 1
 
 
 def test_sync_fill_ledger_respects_min_interval(monkeypatch):

@@ -1129,7 +1129,12 @@ class RobotOrchestrator:
             "session_closed",
             "cooldown",
             "cadence_cooldown",
+            "rate_limit_cooldown",
         }
+
+        def _is_rate_limited_reason(reason: object) -> bool:
+            txt = str(reason or "").strip().lower()
+            return ("rate_limit" in txt) or ("429" in txt) or ("temporary lockout" in txt)
         failed_probe_block_cooldown_s = max(
             60.0,
             float(os.getenv("AUTONOMOUS_FAILED_PROBE_BLOCK_COOLDOWN_S", "300") or "300"),
@@ -1671,7 +1676,7 @@ class RobotOrchestrator:
             reason_text = str(probe_result.reason)
             reason_lower = reason_text.strip().lower()
             non_fatal_block = probe_result.status in {"blocked", "skipped"} and reason_lower in non_fatal_probe_block_reasons
-            if "rate_limit" in reason_text.lower():
+            if _is_rate_limited_reason(reason_text):
                 self.rate_budget.record_reject("private", reason_text, now_ts=time.time())
                 self.rate_limit_governor.record_error(
                     endpoint="scheduler_probe",
@@ -1699,7 +1704,7 @@ class RobotOrchestrator:
                 failed_probe_streak = 0
             else:
                 failed_probe_streak += 1
-                if "rate_limit" in str(probe_result.reason).lower():
+                if _is_rate_limited_reason(probe_result.reason):
                     extra_probe_backoff_until_ts = max(extra_probe_backoff_until_ts, time.time() + order_submission_interval_s)
                 if failed_probe_streak >= failed_probe_block_n:
                     block_new_entries_until_health_ok = True
@@ -2005,7 +2010,7 @@ class RobotOrchestrator:
                     insufficient += 1
                 if "min_order_block" in reason:
                     min_order_blocks += 1
-                if "rate_limit" in reason:
+                if _is_rate_limited_reason(reason):
                     rate_limits += 1
 
             n_f = float(max(n, 1))
@@ -2925,7 +2930,7 @@ class RobotOrchestrator:
                             "result_reason": str(hedge_result.reason),
                         },
                     )
-                    if str(hedge_result.reason).lower().find("rate_limit") >= 0:
+                    if _is_rate_limited_reason(hedge_result.reason):
                         self.rate_budget.record_reject("private", str(hedge_result.reason), now_ts=now_ts)
                         self.rate_limit_governor.record_error(
                             endpoint="hedge_execution",
@@ -3270,7 +3275,14 @@ class RobotOrchestrator:
                 gated_by_decision.append("blackout_pause_buy")
             if spread_state.active:
                 gated_by_decision.append("spread_spike")
-            if liquidity_decision.active:
+            liquidity_map_is_restrictive = (
+                bool(liquidity_decision.active)
+                and (
+                    float(liquidity_decision.edge_add_bps) > 0.0
+                    or float(liquidity_decision.size_scale) < 0.999
+                )
+            )
+            if liquidity_map_is_restrictive:
                 gated_by_decision.append(f"liquidity_map_{liquidity_decision.session}")
             _emit_decision_tick(
                 now_ts_local=now_ts,
@@ -4359,7 +4371,7 @@ class RobotOrchestrator:
                 "restricted" in reason_norm or "unknown asset pair" in reason_norm or "not available" in reason_norm
             ):
                 self.kraken_universe.note_runtime_error(adjusted.symbol, reason_norm)
-            if "rate_limit" in reason_norm:
+            if _is_rate_limited_reason(reason_norm):
                 self.rate_budget.record_reject("private", reason_norm, now_ts=now_ts)
                 self.rate_limit_governor.record_error(
                     endpoint="execution",
@@ -4595,7 +4607,7 @@ class RobotOrchestrator:
                 if count_as_attempt:
                     self.ops.inc_metric("orders_rejected_total")
                     orders_rejected += 1.0
-            if "rate_limit" in str(result.reason).lower():
+            if _is_rate_limited_reason(result.reason):
                 rate_limit_events_total += 1.0
 
             try:

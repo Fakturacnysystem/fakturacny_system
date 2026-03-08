@@ -7,7 +7,12 @@ import time
 
 def _is_rate_limit_message(error_text: str) -> bool:
     txt = str(error_text or "").strip().lower()
-    return ("rate limit" in txt) or ("429" in txt) or ("too many requests" in txt)
+    return (
+        ("rate limit" in txt)
+        or ("429" in txt)
+        or ("too many requests" in txt)
+        or ("temporary lockout" in txt)
+    )
 
 
 @dataclass
