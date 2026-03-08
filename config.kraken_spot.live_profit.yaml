@@ -6,7 +6,14 @@ safe_mode_default: false
 provider_whitelist:
 - kraken_spot
 universe:
-- XBTUSD
+  - ADAXBT
+  - ALGOXBT
+  - DOTXBT
+  - SOLXBT
+  - XXRPXXBT
+  - XXLMXXBT
+  - LINKXBT
+  - XETHXXBT
 execution:
   mode: live
   fee_bps: 25.0
@@ -19,7 +26,7 @@ execution:
 policy:
   confidence_threshold: 0.0
   safety_buffer_bps: 3.0
-  base_risk_budget: 1000000.0
+  base_risk_budget: 25.0
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0
@@ -28,12 +35,12 @@ risk:
   max_exposure_notional: 1000000.0
   max_symbol_exposure_notional: 1000000.0
   max_cluster_exposure_notional: 1000000.0
-  max_orders_per_min: 2
+  max_orders_per_min: 30
   leverage: 0
   target_portfolio_vol: 0.12
   cvar_limit_pct: 200.0
   stress_loss_limit_pct: 3.0
-  max_spread_bps: 35.0
+  max_spread_bps: 120.0
   min_depth_notional: 0.0
   stale_data_seconds: 30.0
   min_margin_buffer: 1.0
@@ -46,13 +53,13 @@ tco:
   max_total_cost_bps: 45.0
   max_impact_bps: 20.0
 storage:
-  run_dir: runs/kraken_spot_live
+  run_dir: runs/kraken_spot_live_profit09
 fixtures:
   ohlcv_csv: data/fixtures/btcusdt_1h.csv
 universe_builder:
   top_n_target: 60
   candidate_max: 120
-  trade_max_positions: 1
+  trade_max_positions: 4
   min_24h_quote_volume: 100000.0
   max_spread_bps: 60.0
 market_coverage:
@@ -64,17 +71,17 @@ market_coverage:
   max_symbols: 120
 watchdog:
   enabled: true
-  poll_interval_s: 2.0
-  stall_timeout_s: 45.0
+  poll_interval_s: 5.0
+  stall_timeout_s: 300.0
   restart_backoff_s: 5.0
   max_restarts: 0
   heartbeat_file: health.json
   state_file: watchdog_state.json
 health_audit_110:
-  enabled: true
+  enabled: false
   interval_s: 600.0
-  health_threshold: 90.0
+  health_threshold: 60.0
   stream_stale_after_s: 20.0
   scheduler_lag_grace_s: 5.0
-  max_rate_limit_events_60s: 14.0
+  max_rate_limit_events_60s: 100.0
   pause_openings_s: 180.0

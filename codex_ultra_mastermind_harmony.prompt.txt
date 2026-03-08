@@ -1,0 +1,443 @@
+YOU ARE CODEX.
+Repo root: /Users/martinholik/Projects/fakturacny_system
+Project: autonomous_investment_robot
+
+GOAL:
+Make the system fully harmonized, flexible, correct, and testable end-to-end. No hidden conflicting knobs. Must pass tests.
+Kraken SPOT oriented (long-only). No profit guarantees. No secrets printed/logged/persisted.
+
+CORE RULE (ABSOLUTE):
+NEVER submit SELL under entry (cost_basis) OR below minimum NET profit after ALL modeled costs.
+This MUST be enforced TWICE:
+(1) orchestrator gating
+(2) live_kraken_spot_service pre-submit fence
+
+=================================================
+KROK 0 — SCOPE, HARD INVARIANTS (MUST)
+=================================================
+SCOPE:
+- Kraken SPOT (long-only). No forced loss-flattening on spot.
+
+FATAL INVARIANTS (HARD STOPS ALWAYS):
+- invalid/missing auth or permissions
+- invalid symbol mapping
+- invalid exchange constraints (precision/min_notional/min_cost)
+- NaN/<=0 bid/ask
+- idempotency duplicate on order submit
+- persistent rate-limit storm beyond threshold (cooldown/quarantine)
+
+Everything else should be WARN-ONLY when AUTONOMOUS_GUARDS_MODE=fatal_only.
+
+=========================================================
+KROK 1 — DEEP AUDIT + HARMONIZATION FIXES (END-TO-END)
+=========================================================
+1.1 DEEP AUDIT (repo-wide)
+- Build full flow map: ingestion -> features -> model -> policy -> (risk/governance) -> execution -> reconciliation -> ops -> artifacts.
+- Identify every reason for low trading activity (safe_mode_default, min_order, insufficient_balance, dust, cooldown, no_intent, cvar_guard, rate_limit, reject storm).
+- Identify ALL conflicting knobs: cadence, cooldown, poll_s, min order, TP locks, scripts exporting defaults overriding env.
+
+Deliver: AUDIT_REPORT.md with:
+- blocker matrix: reason -> source file:line -> fix/mitigation
+- knob collision matrix: keys -> precedence -> final single truth
+- before/after semantics and how to run profit profile
+- NEVER include secrets.
+
+---------------------------------------------------------
+1.2 SINGLE SOURCE OF TRUTH — HARMONY CONFIG RESOLVER
+---------------------------------------------------------
+Create: src/autonomous_investment_robot/services/ops/harmony.py
+
+HarmonyConfigResolver must:
+A) Cadence single truth:
+- New knob: AUTONOMOUS_ORDER_CADENCE_S (float seconds)
+- If set => overrides all legacy cadence/cooldown knobs.
+- If not set => infer from legacy: AUTONOMOUS_MIN_SECONDS_BETWEEN_ORDERS, AUTONOMOUS_TRADE_COOLDOWN_S, any scheduler interval/poll_s if used.
+- If both set => new wins; record collision.
+
+B) Guards mode:
+- AUTONOMOUS_GUARDS_MODE strict|fatal_only (default strict)
+
+C) Min order single truth:
+- AUTONOMOUS_USER_MIN_ORDER_QUOTE default 2.0
+- Legacy: AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE if present
+- Exchange min quote from ExchangeConstraintsOracle OR fallback for dry-run:
+  AUTONOMOUS_EXCHANGE_MIN_ORDER_QUOTE_FALLBACK default 2.0
+- effective_min = max(exchange_min_quote, user_min, legacy_min)
+
+D) Sell profit-lock single truth:
+- HARD floor: NET profit after modeled costs >= 1.2% (120 bps)
+- Env:
+  AUTONOMOUS_TP_ONLY_MODE
+  AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS (default 120, NEVER lower)
+  AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS default 200
+  AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS default false
+  AUTONOMOUS_SPOT_SELL_REQUIRE_COST_BASIS true
+  AUTONOMOUS_MIN_TP_AFTER_COSTS default true in profit profile
+- Modeled cost floor must include fee/slippage/spread/impact components if available.
+- final_min_profit_bps = max(user_floor, modeled_floor)
+
+E) Budgets:
+- AUTONOMOUS_MAX_ORDERS_PER_MIN default 10 (must be enforced)
+- AUTONOMOUS_MARKET_WATCH_MAX_CALLS_PER_MIN default 60
+- AUTONOMOUS_MAX_PUBLIC_CALLS_PER_MIN default 120
+
+BOOT OUTPUT:
+- Emit audit event: harmony_boot_report with resolved values + collisions
+- Write runs/<run_dir>/harmony_report.json (resolved config + precedence winners/losers)
+- Add dashboard group "harmony" showing resolved values:
+  order_cadence_s, effective_min_order_quote, sell_min_profit_bps, guards_mode.
+
+Expose resolver API:
+- resolve(settings, env_snapshot, *, exchange_min_quote_fallback: float, dry_run: bool) -> ResolvedHarmonyConfig
+- ResolvedHarmonyConfig includes:
+  order_cadence_s, guards_mode, user_min_order_quote, exchange_min_order_quote, effective_min_order_quote,
+  sell_min_profit_bps, sell_target_profit_bps, tp_only_mode, max_orders_per_min,
+  market_watch_every_s, blackout_enabled, blackout_windows_present,
+  spread_spike_enabled + params, liquidity_map_enabled,
+  collisions(list of {key, winner, losers}).
+
+---------------------------------------------------------
+1.3 CORE RULE — SELL ONLY IN PROFIT (ENFORCE TWICE)
+---------------------------------------------------------
+Must be enforced in TWO places:
+(1) orchestrator intent creation/gating
+(2) live_kraken_spot_service before placing SELL
+
+Rules:
+- NEVER submit SELL if bid < cost_basis_price (entry).
+- NEVER submit SELL if net profit after modeled costs < final_min_profit_bps.
+- If violated:
+  - DO NOT place order, emit audit reason:
+    profit_lock_sell_below_entry OR profit_lock_sell_below_min_profit
+  - Include details: bid, cost_basis, min_sell_price, modeled_cost_bps, min_profit_bps.
+
+Ensure:
+- AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS stays false by default.
+
+Tests:
+- tests/test_profit_lock_core_rule.py:
+  - no sell below entry
+  - no sell below min net profit bps
+  - both enforced even if orchestrator misses (double safety)
+
+---------------------------------------------------------
+1.3.1 TP SCHEDULE + GREEDY TARGETS (NO CONFLICTS)
+---------------------------------------------------------
+Objective:
+- HARD invariants:
+  (A) NEVER submit SELL below entry/cost_basis
+  (B) NEVER submit SELL unless NET profit after modeled costs >= 1.2% (120 bps)
+- Add deterministic target schedule that decreases with hold time to keep inventory moving,
+  BUT it can never reduce the HARD minimum. It only changes target, not minimum.
+- Add greedy targets so the bot can aim for >2% when trend favorable.
+
+New env knobs:
+- AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS (int, default 120)  # HARD MIN net after costs
+- AUTONOMOUS_TP_SCHEDULE_TARGET_GROSS_BPS (string, default:
+    "0:200,600:150,1200:100,1800:70,2400:50,3600:35")
+  Meaning: HOLD_SECONDS:TARGET_GROSS_PROFIT_BPS (profit over entry BEFORE modeled costs)
+  NOTE: TARGET only; effective target clamped to >= HARD MIN net after costs.
+- AUTONOMOUS_TP_GREEDY_MODE (bool, default true)
+- AUTONOMOUS_TP_GREEDY_NET_BPS_UP (int, default 280)
+- AUTONOMOUS_TP_GREEDY_NET_BPS_MID (int, default 220)
+- AUTONOMOUS_TP_GREEDY_NET_BPS_DOWN (int, default 150)  # still >= 120
+- AUTONOMOUS_EXIT_HOLD_MAX_S (int, default 90)
+
+Implementation:
+Create src/autonomous_investment_robot/services/policy/tp_schedule.py with:
+- parse_schedule
+- target_gross_bps_for_hold
+- compute_effective_sell_thresholds_bps(...) producing:
+  hard_min_net_bps, hard_min_gross_bps,
+  schedule_target_gross_bps, schedule_target_net_bps,
+  greedy_target_net_bps, effective_target_net_bps, effective_target_gross_bps
+
+Integrate:
+- orchestrator uses it for SELL eligibility (hard) + SELL target (soft timing)
+- live_kraken_spot_service recomputes hard fence and blocks if violated
+- never sell below hard min, ever
+
+Add observability:
+- dashboard group "tp" or in efficiency:
+  tp_hard_min_net_bps, tp_effective_target_net_bps, modeled_cost_bps,
+  min_sell_price_hard, target_sell_price, hold_s, last_tp_reason
+
+Add tests:
+- tests/test_tp_schedule.py
+- extend tests/test_profit_lock_core_rule.py
+- tests/test_greedy_tp_targets.py
+
+---------------------------------------------------------
+1.4 EXCHANGE CONSTRAINTS ORACLE (VALIDATE + ROUND)
+---------------------------------------------------------
+Create/extend:
+- src/autonomous_investment_robot/services/exchange_constraints/service.py
+Must provide:
+- refresh_if_needed()
+- effective_min_quote(symbol)
+- validate_and_round(symbol, side, notional, price) -> (ok, rounded, reason)
+
+Use it in live_kraken_spot_service BEFORE submit:
+- If invalid => fatal stop that intent (audit + metric), no spamming Kraken.
+
+Tests:
+- tests/test_exchange_constraints.py
+
+---------------------------------------------------------
+1.5 INVENTORY-AWARE SPOT + DUST (NO DUST LOOPS)
+---------------------------------------------------------
+- Never generate SELL intents without inventory.
+- If inventory quote value < effective_min_order_quote:
+  - do not attempt SELL, reason: inventory_below_min_order
+  - accumulate dust until tradable OR freeze SELL intent generation until tradable.
+
+Tests:
+- tests/test_inventory_dust_accumulator.py
+
+---------------------------------------------------------
+1.6 AUTO-SIZING FOR SMALL BALANCE
+---------------------------------------------------------
+Create:
+- src/autonomous_investment_robot/services/portfolio/sizing.py
+Sizing rules:
+- reserve ratio: AUTONOMOUS_QUOTE_RESERVE_RATIO default 0.15
+- sizing fraction: AUTONOMOUS_SIZING_FRACTION default 0.25
+- risk_budget_quote = free_quote*(1-reserve)
+- trade_notional_quote = clamp(risk_budget_quote*sizing_fraction, effective_min, risk_budget_quote)
+- per-symbol cap: AUTONOMOUS_MAX_NOTIONAL_PER_SYMBOL_QUOTE default 0.5*free_quote
+- If trade_notional_quote < effective_min => pause_buy + reason insufficient_quote_for_min_order
+
+Integrate:
+- orchestrator uses SizingService so BUY notional never exceeds balance.
+
+Tests:
+- tests/test_auto_sizing_small_balance.py
+
+---------------------------------------------------------
+1.7 NONSTOP MARKET WATCH (EVERY 30s) + REGIME ASSISTS
+---------------------------------------------------------
+Create:
+- src/autonomous_investment_robot/services/market_watch/service.py
+Env:
+- AUTONOMOUS_MARKET_WATCH_EVERY_S default 30
+- AUTONOMOUS_MARKET_WATCH_MAX_CALLS_PER_MIN default 60
+
+Compute deterministic MarketState:
+- trend_30s_bps, trend_2m_bps, trend_10m_bps
+- realized_vol_2m, realized_vol_10m
+- spread_bps, depth_notional
+- liquidity_regime THIN/NORMAL/DEEP
+- regime_hint TREND_UP/TREND_DOWN/RANGE/PANIC
+- confidence 0..1
+- data_quality_score
+
+Use MarketWatch:
+- Entry: adjust edge threshold & sizing via modifiers (bounded)
+- Exit: if already eligible by profit-lock, adjust timing/targets (never violate hard min)
+
+Audit:
+- market_watch_tick every 30s
+
+Tests:
+- tests/test_market_watch_service.py
+- tests/test_market_watch_integration.py
+
+---------------------------------------------------------
+1.8 BLACKOUT + SPREAD SPIKE + LIQUIDITY MAP
+---------------------------------------------------------
+A) Blackout:
+- src/autonomous_investment_robot/services/risk_calendar/service.py
+Env:
+  AUTONOMOUS_BLACKOUT_ENABLED=true
+  AUTONOMOUS_BLACKOUT_WINDOWS="" (default empty)
+  AUTONOMOUS_BLACKOUT_DAILY_RANGES=""
+During blackout:
+- pause BUY via modifiers
+- allow SELL only if profit-lock satisfied
+
+B) Spread spike:
+- src/autonomous_investment_robot/services/microstructure/spread_spike.py
+Env:
+  AUTONOMOUS_SPREAD_SPIKE_MULT=2.5
+  AUTONOMOUS_SPREAD_SPIKE_MIN_BPS=8.0
+  AUTONOMOUS_SPREAD_SPIKE_EDGE_ADD_BPS=6.0
+  AUTONOMOUS_SPREAD_SPIKE_HOLD_S=45
+Effects:
+- maker_only + edge_add + size_scale reduction; never violates profit-lock
+
+C) Liquidity map:
+- src/autonomous_investment_robot/services/liquidity_map/service.py
+Env:
+  AUTONOMOUS_LIQUIDITY_MAP_ENABLED=true
+  day/night windows
+night => more maker bias, smaller sizing, fewer child orders
+
+Tests:
+- tests/test_spread_spike_detector.py
+- tests/test_liquidity_map.py
+- tests/test_blackout_windows.py
+
+---------------------------------------------------------
+1.9 ONE DECISION MODIFIERS PIPELINE (NO COLLISIONS)
+---------------------------------------------------------
+Create:
+- src/autonomous_investment_robot/services/ops/modifiers.py
+DecisionModifiers:
+- pause_buy
+- edge_add_bps
+- size_scale (bounded)
+- maker_only
+- taker_allowed
+- max_child_orders_override
+- reason_tags
+
+Compute modifiers in fixed priority:
+1) Fatal invariants (hard stop)
+2) Rate-limit cooldown (pause_buy + maker_only)
+3) Blackout (pause_buy for BUY)
+4) Spread spike
+5) Liquidity map
+6) MarketWatch
+7) Soft risk/governance signals
+
+Orchestrator must not have scattered continues/blocks; apply modifiers consistently.
+
+---------------------------------------------------------
+1.10 GUARDS MODE strict|fatal_only
+---------------------------------------------------------
+AUTONOMOUS_GUARDS_MODE:
+- strict: existing blocks remain
+- fatal_only:
+  - risk/governance do not block, only annotate + warn
+  - fatal invariants still hard stop
+
+Audit includes:
+- original allowed/reason
+- fatal true/false
+- overridden_by_fatal_only true/false
+- kind risk/governance
+
+Tests:
+- tests/test_guards_mode_overrides.py
+
+---------------------------------------------------------
+1.11 RATE LIMIT COOLDOWN + REJECT STORM CONTROL
+---------------------------------------------------------
+Implement deterministic cooldown & quarantine:
+- On Kraken EAPI:Rate limit exceeded:
+  - exponential backoff capped
+  - pause_buy during cooldown
+  - reduce attempt rate without violating cadence knob
+- Prevent infinite storms.
+
+Tests:
+- tests/test_rate_limit_cooldown.py
+
+---------------------------------------------------------
+1.12 DIAGNOSTICS EMITTER (WHY NOT TRADING)
+---------------------------------------------------------
+Add deterministic summary emitter:
+- parse last reasons (audit tail) and update dashboard diagnosis:
+  - diagnosis.top_reasons
+  - diagnosis.recommendations (deterministic)
+
+Ensure dashboard groups include:
+execution, efficiency, market_data, market_watch, liquidity_map, governance, reliability, harmony, mastermind
+
+live_loop_start payload includes:
+guards_mode, order_cadence_s, effective_min_order_quote, sell_min_profit_bps
+
+Tests:
+- tests/test_diagnosis_emitter.py
+
+---------------------------------------------------------
+1.13 SCRIPTS (NO HIDDEN OVERRIDES) + PROFIT FULL THROTTLE
+---------------------------------------------------------
+Create:
+- scripts/run_kraken_spot_profit_full_throttle.sh
+
+Must set ONLY harmonized knobs:
+- AUTONOMOUS_GUARDS_MODE=fatal_only
+- AUTONOMOUS_ORDER_CADENCE_S=5
+- AUTONOMOUS_USER_MIN_ORDER_QUOTE=2.0
+- AUTONOMOUS_MAX_ORDERS_PER_MIN=10
+
+SELL invariants:
+- AUTONOMOUS_TP_ONLY_MODE=1
+- AUTONOMOUS_MIN_TP_AFTER_COSTS=1
+- AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS=120
+- AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS=200
+- AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS=false
+
+TP schedule + greedy:
+- AUTONOMOUS_TP_SCHEDULE_TARGET_GROSS_BPS="0:200,600:150,1200:100,1800:70,2400:50,3600:35"
+- AUTONOMOUS_TP_GREEDY_MODE=true
+- AUTONOMOUS_TP_GREEDY_NET_BPS_UP=280
+- AUTONOMOUS_TP_GREEDY_NET_BPS_MID=220
+- AUTONOMOUS_TP_GREEDY_NET_BPS_DOWN=150
+- AUTONOMOUS_EXIT_HOLD_MAX_S=90
+
+MarketWatch:
+- AUTONOMOUS_MARKET_WATCH_EVERY_S=30
+
+Enable blackout/spread spike/liquidity map (safe defaults; blackout empty):
+- AUTONOMOUS_BLACKOUT_ENABLED=true
+- AUTONOMOUS_BLACKOUT_WINDOWS=""
+- AUTONOMOUS_SPREAD_SPIKE_MULT=2.5
+- AUTONOMOUS_SPREAD_SPIKE_MIN_BPS=8.0
+- AUTONOMOUS_LIQUIDITY_MAP_ENABLED=true
+
+Back-compat:
+- export AUTONOMOUS_MIN_SECONDS_BETWEEN_ORDERS="$AUTONOMOUS_ORDER_CADENCE_S"
+- export AUTONOMOUS_TRADE_COOLDOWN_S="$AUTONOMOUS_ORDER_CADENCE_S"
+
+Update scripts/run_kraken_spot_live.sh:
+- remove silent cadence=30 unless explicitly set
+- default min order must be 2.0 not 8.0
+- never echo secrets
+
+---------------------------------------------------------
+1.14 CONFIG MATRIX AUDIT GENERATOR (DRY-RUN RESOLVED VALUES)
+---------------------------------------------------------
+Create:
+- scripts/audit_config_matrix.py
+- docs/config_matrix.md
+- docs/config_matrix.json
+with DRY-RUN HarmonyConfigResolver for each config.
+
+Must NOT load .env automatically.
+Must scrub keys/secrets.
+
+Add tests:
+- tests/test_audit_config_matrix.py ensures outputs contain resolved fields and no secrets.
+
+---------------------------------------------------------
+1.15 VERIFICATION + DOCS
+---------------------------------------------------------
+Run:
+- python3 -m py_compile changed/new files
+- pytest -q must pass
+
+Generate:
+- AUDIT_REPORT.md
+- RUNBOOK.md
+- docs/operator_checklist.md
+- docs/config_matrix.md + docs/config_matrix.json
+
+FINAL OUTPUT (MUST PRINT):
+- single start command (no secrets printed):
+  cd /Users/martinholik/Projects/fakturacny_system
+  export KRAKEN_API_KEY="..."
+  export KRAKEN_API_SECRET="..."
+  ./scripts/run_kraken_spot_profit_full_throttle.sh
+
+Monitoring paths:
+- runs/<run_dir>/audit.log
+- runs/<run_dir>/dashboard_snapshot.json
+- runs/<run_dir>/event_bus.jsonl
+- runs/<run_dir>/governance_audit.jsonl
+- runs/<run_dir>/harmony_report.json
+- runs/<run_dir>/mastermind_status.json
+- runs/<run_dir>/mastermind_overrides.json
+
+Start implementing now. Be strict, deterministic, and thorough. Don’t ask questions.

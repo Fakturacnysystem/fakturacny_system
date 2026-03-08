@@ -25,6 +25,7 @@ class WatchdogState:
     last_restart_reason: str = ""
     child_pid: int = 0
     running: bool = False
+    child_started_ts: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,6 +56,7 @@ class WatchdogSupervisor:
                 last_restart_reason=str(raw.get("last_restart_reason", "") or ""),
                 child_pid=int(raw.get("child_pid", 0) or 0),
                 running=bool(raw.get("running", False)),
+                child_started_ts=float(raw.get("child_started_ts", 0.0) or 0.0),
             )
         except Exception:
             return WatchdogState()
@@ -71,11 +73,13 @@ class WatchdogSupervisor:
     def mark_child_started(self, pid: int) -> None:
         self.state.child_pid = int(pid)
         self.state.running = True
+        self.state.child_started_ts = time.time()
         self.persist_state()
 
     def mark_child_stopped(self) -> None:
         self.state.running = False
         self.state.child_pid = 0
+        self.state.child_started_ts = 0.0
         self.persist_state()
 
     def register_restart(self, reason: str) -> None:
@@ -87,6 +91,8 @@ class WatchdogSupervisor:
     def heartbeat_age_s(self, now_ts: float | None = None) -> float:
         now = time.time() if now_ts is None else float(now_ts)
         if not self.heartbeat_path.exists():
+            if bool(self.state.running) and self.state.child_started_ts > 0.0:
+                return max(0.0, now - float(self.state.child_started_ts))
             return float("inf")
         try:
             payload = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))

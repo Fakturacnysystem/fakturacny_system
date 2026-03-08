@@ -19,6 +19,19 @@ class Constraints:
     lot_step: float
     order_types_allowed: list[str]
     refreshed_ts: float
+    source_metadata: dict[str, Any] | None = None
+
+    @property
+    def price_decimals(self) -> int:
+        return int(self.price_precision)
+
+    @property
+    def qty_decimals(self) -> int:
+        return int(self.qty_precision)
+
+    @property
+    def last_refresh_ts(self) -> float:
+        return float(self.refreshed_ts)
 
 
 @dataclass
@@ -75,6 +88,11 @@ class ExchangeConstraintsOracle:
                     lot_step=float(row.get("lot_step", 0.0) or 0.0),
                     order_types_allowed=[str(x).lower() for x in (row.get("order_types_allowed", []) or [])],
                     refreshed_ts=float(row.get("refreshed_ts", self._last_refresh_ts) or self._last_refresh_ts),
+                    source_metadata=(
+                        dict(row.get("source_metadata", {}))
+                        if isinstance(row.get("source_metadata"), dict)
+                        else {}
+                    ),
                 )
             except Exception:
                 continue
@@ -170,6 +188,11 @@ class ExchangeConstraintsOracle:
             lot_step=lot_step,
             order_types_allowed=[str(x).lower() for x in ordertypes],
             refreshed_ts=time.time(),
+            source_metadata={
+                "source": "kraken_asset_pairs",
+                "pair_meta_found": bool(meta),
+                "ticker_mid_used": float(mid),
+            },
         )
 
     def get_constraints(self, symbol: str) -> Constraints:
@@ -182,6 +205,19 @@ class ExchangeConstraintsOracle:
         self._constraints_cache[sym] = fresh
         self._save_disk()
         return fresh
+
+    # Compatibility alias used by higher-level control-plane requirements.
+    def refresh_if_needed(self, now_ts: float | None = None) -> None:
+        _ = now_ts
+        self._refresh_pairs()
+
+    # Compatibility alias used by orchestrator/services.
+    def get(self, symbol: str) -> Constraints:
+        return self.get_constraints(symbol)
+
+    def effective_min_quote(self, symbol: str, user_floor: float) -> float:
+        c = self.get_constraints(symbol)
+        return max(float(c.min_quote_notional), max(0.0, float(user_floor)))
 
     def validate_and_round_order(
         self,
@@ -245,3 +281,46 @@ class ExchangeConstraintsOracle:
             min_quote_notional=c.min_quote_notional,
             max_quote_notional=max_notional,
         )
+
+    # Compatibility API expected by integration docs/tests.
+    def validate_and_round(
+        self,
+        symbol: str,
+        side: str,
+        target_notional_quote: float,
+        bid: float,
+        ask: float,
+        *,
+        user_floor: float = 0.0,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        c = self.get_constraints(symbol)
+        effective_min = max(float(c.min_quote_notional), max(0.0, float(user_floor)))
+        ok, out = self.validate_and_round_order(
+            symbol=symbol,
+            side=side,
+            notional_quote=max(float(target_notional_quote), effective_min),
+            bid=bid,
+            ask=ask,
+            order_type="limit",
+        )
+        if not ok:
+            return False, str(out), {}
+        assert isinstance(out, ValidatedOrder)
+        rounded_price = float(out.rounded_price)
+        rounded_qty = float(out.rounded_qty)
+        rounded_notional = float(out.rounded_notional_quote)
+        if rounded_notional + 1e-12 < effective_min and rounded_price > 0.0:
+            qty_scale = 10 ** max(0, int(c.qty_precision))
+            needed_qty = math.ceil((effective_min / max(rounded_price, 1e-12)) * qty_scale) / qty_scale
+            rounded_qty = max(rounded_qty, needed_qty)
+            rounded_notional = rounded_qty * rounded_price
+        payload = {
+            "order_price": rounded_price,
+            "order_qty": rounded_qty,
+            "rounded_notional_quote": rounded_notional,
+            "effective_min_notional_quote": float(effective_min),
+            "exchange_min_notional_quote": float(c.min_quote_notional),
+            "price_precision": int(c.price_precision),
+            "qty_precision": int(c.qty_precision),
+        }
+        return True, "ok", payload

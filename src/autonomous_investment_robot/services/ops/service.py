@@ -130,6 +130,41 @@ class OpsService:
                 "toxicity_throttle",
                 "toxicity_freeze_events",
             ],
+            "decision": [
+                "decision_tick_total",
+                "decision_tick_skip_total",
+                "decision_tick_last_reason",
+                "active_universe_count",
+            ],
+            "harmony": [
+                "harmony_order_cadence_s",
+                "harmony_effective_min_order_quote",
+                "harmony_sell_min_profit_bps",
+                "harmony_guards_mode",
+            ],
+            "tp": [
+                "tp_hard_min_net_bps",
+                "tp_effective_target_net_bps",
+                "tp_effective_target_gross_bps",
+                "tp_blocks_total",
+                "modeled_cost_bps",
+                "min_sell_price_hard",
+                "target_sell_price",
+                "tp_ladder_hold_s_last",
+            ],
+            "diagnosis": [
+                "diagnosis_reason_count",
+                "diagnosis_last_reason",
+            ],
+            "market_watch": [
+                "market_watch_trend_30s_bps",
+                "market_watch_trend_2m_bps",
+                "market_watch_trend_10m_bps",
+                "market_watch_realized_vol_2m",
+                "market_watch_realized_vol_10m",
+                "market_watch_confidence",
+                "spread_spike_active",
+            ],
         }
         payload = {
             "groups": {g: {k: self.metrics.get(k, 0.0) for k in keys} for g, keys in groups.items()},

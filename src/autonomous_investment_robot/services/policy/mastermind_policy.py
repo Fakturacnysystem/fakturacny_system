@@ -47,6 +47,9 @@ class MastermindPolicy:
             return "exits_only"
         if rate_limit_storm:
             return "normal"
+        profile = str(os.getenv("AUTONOMOUS_PROFILE", "") or "").strip().lower()
+        if profile in {"normal", "balanced", "conservative"}:
+            return "normal"
         return "aggressive_hf"
 
     def _trim(self, now_ts: float) -> None:
@@ -139,7 +142,8 @@ class MastermindPolicy:
             if not isinstance(comp, dict):
                 continue
             c_edge = float(comp.get("final_edge_bps", comp.get("edge_bps", 0.0)) or 0.0)
-            c_conf = float(comp.get("confidence", 0.0) or 0.0)
+            # Backward-compatible default: legacy components often omit confidence.
+            c_conf = float(comp.get("confidence", 1.0) or 1.0)
             c_cost = float(comp.get("cost_total_bps", 0.0) or 0.0)
             sc = self.score_candidate(
                 edge_bps=c_edge,

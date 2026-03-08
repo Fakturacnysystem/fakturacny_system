@@ -16,9 +16,25 @@ from autonomous_investment_robot.services.data_ingestion.kraken_spot_poller impo
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
 
 
+def _startup_trace(run_dir: str, stage: str) -> None:
+    try:
+        p = Path(run_dir) / "startup_trace.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        ts = f"{time.time():.6f}"
+        p.write_text(
+            (p.read_text(encoding="utf-8") if p.exists() else "") + f"{ts} {stage}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
 def run_with_config(config_path: str) -> dict:
+    _startup_trace("runs/latest", f"run_with_config_start config={config_path}")
     settings = RobotSettings.from_file(config_path)
+    _startup_trace(settings.storage.run_dir, "settings_loaded")
     orchestrator = RobotOrchestrator(settings)
+    _startup_trace(settings.storage.run_dir, "orchestrator_initialized")
     return orchestrator.boot()
 
 

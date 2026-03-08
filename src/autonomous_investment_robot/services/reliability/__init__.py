@@ -4,6 +4,7 @@ from .health_audit_110 import (
     HealthAudit110,
     HealthAuditReport,
 )
+from .rate_budget import RateBudget, RateBudgetState
 from .watchdog import (
     WatchdogConfig,
     WatchdogState,
@@ -16,6 +17,8 @@ __all__ = [
     "AuditCheck",
     "HealthAudit110",
     "HealthAuditReport",
+    "RateBudget",
+    "RateBudgetState",
     "WatchdogConfig",
     "WatchdogState",
     "WatchdogSupervisor",

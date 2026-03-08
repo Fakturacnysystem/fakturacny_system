@@ -398,12 +398,24 @@ python3 -m cli.paper --config config.kraken_spot.paper.yaml
     - `GET /health`, `GET /status`, `GET /positions`, `GET /pnl`, `GET /metrics`, `GET /audit-events`, `GET /slippage`
     - `GET /config`, `POST /config`, `POST /reload`
   - runtime overrides are stored in `run_dir/override.yaml` and merged into `run_dir/runtime_config.effective.yaml`.
+  - see [docs/operator_ui.md](docs/operator_ui.md) and [docs/gpt_control_plane.md](docs/gpt_control_plane.md)
+
+- Decision tick cadence (observability invariant):
+  - emits `decision_tick` audit events + reliability bus events every bucket:
+    - `AUTONOMOUS_DECISION_TICK_S=60`
+    - `AUTONOMOUS_DECISION_PER_SYMBOL=1`
+    - `AUTONOMOUS_DECISION_EMIT_TOPIC=intent`
+  - dashboard metrics:
+    - `decision_tick_total`
+    - `decision_tick_skip_total`
+    - `decision_tick_last_reason`
 
 - Extended CLI:
   - portfolio backtest: `python -m cli.backtest --config backtest.yaml`
   - replay CSV summary: `python -m cli.replay --file trades.csv`
   - ML skeleton training: `python -m cli.train_model --input features.csv --output model.pkl`
   - SQLite/self-audit summary: `python -m cli.audit --config config.kraken_spot.live_profit.yaml --since 2026-03-01`
+  - market/config matrix audit: `python scripts/audit_market_matrix.py --output docs/market_matrix.md`
 
 - Hybrid paper/live symbol mode:
   - `AUTONOMOUS_HYBRID_SYMBOLS=[\"XBTUSD\",\"ETHUSD\"]`

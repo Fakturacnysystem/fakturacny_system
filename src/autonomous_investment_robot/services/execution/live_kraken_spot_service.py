@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Mapping
 import hashlib
+import json
 import math
 import os
 import time
@@ -22,6 +24,7 @@ from autonomous_investment_robot.services.execution.profit_gate import (
     ProfitGate,
     ProfitGateConfig,
 )
+from autonomous_investment_robot.services.execution.tp_ladder import TPLadderConfig, desired_tp_pct, ladder_floor_tp_pct
 from autonomous_investment_robot.services.execution.exit_order_manager import (
     ExitOrderManager,
     ExitOrderManagerConfig,
@@ -328,6 +331,8 @@ class LiveKrakenSpotService:
         )
         self._rate_limit_cooldown_s = max(0.25, float(cooldown_env or "4.0"))
         self._rate_limit_storm_threshold = max(3, int(os.getenv("AUTONOMOUS_KRAKEN_RATE_LIMIT_STORM", "8") or "8"))
+        self._max_consecutive_rejects = max(1, int(os.getenv("AUTONOMOUS_MAX_CONSEC_REJECTS", "5") or "5"))
+        self._reject_cooldown_s = max(5.0, _env_float("AUTONOMOUS_REJECT_COOLDOWN_S", 120.0))
         self._exec_retry_attempts = max(1, int(os.getenv("AUTONOMOUS_KRAKEN_EXEC_RETRY_ATTEMPTS", "3") or "3"))
         self._exec_retry_backoff_s = max(0.05, float(os.getenv("AUTONOMOUS_KRAKEN_EXEC_BACKOFF_BASE_S", "0.25") or "0.25"))
         self._exec_retry_backoff_max_s = max(self._exec_retry_backoff_s, float(os.getenv("AUTONOMOUS_KRAKEN_EXEC_BACKOFF_MAX_S", "2.5") or "2.5"))
@@ -337,10 +342,16 @@ class LiveKrakenSpotService:
         self._taker_fallback_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK", True)
         self._taker_fallback_buy_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK_BUY", self._taker_fallback_enabled)
         self._taker_fallback_sell_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK_SELL", self._taker_fallback_enabled)
-        self._profit_target_net = max(0.02, _env_float("AUTONOMOUS_PROFIT_TARGET_NET", 0.02))
-        # Enforce hard +2% net floor and a round-trip break-even floor from costs.
+        self._profit_target_net = max(0.0, _env_float("AUTONOMOUS_PROFIT_TARGET_NET", 0.02))
+        self._tp_only_mode = _env_bool("AUTONOMOUS_TP_ONLY_MODE", False)
+        self._tp_ladder_cfg = TPLadderConfig.from_env()
+        # Enforce a configurable hard net-profit floor and round-trip break-even floor from costs.
+        hard_floor_bps = max(
+            0.0,
+            _env_float("AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", 90.0),
+        )
         self._sell_profit_lock_floor_bps = max(
-            200.0,
+            hard_floor_bps,
             (2.0 * float(self.settings.execution.fee_bps)) + (2.0 * float(self.settings.execution.slippage_bps)),
         )
         default_sell_profit_bps = max(self._sell_profit_lock_floor_bps, self._profit_target_net * 10000.0)
@@ -367,6 +378,9 @@ class LiveKrakenSpotService:
         )
         self._sell_profit_lock_require_cost_basis = _env_bool("AUTONOMOUS_SPOT_SELL_REQUIRE_COST_BASIS", True)
         self._sell_all_in_on_profit = _env_bool("AUTONOMOUS_SELL_ALL_IN_ON_PROFIT", False)
+        self._tp_state_path = os.path.join(self.settings.storage.run_dir, "position_state.json")
+        self._tp_peak_profit_pct: dict[str, float] = {}
+        self._load_tp_state()
         accounting_method = str(os.getenv("AUTONOMOUS_POSITION_ACCOUNTING", "fifo") or "fifo").strip().lower()
         self._position_accounting_method: AccountingMethod = "average" if accounting_method == "average" else "fifo"
         self._entry_fee_bps = max(
@@ -445,6 +459,9 @@ class LiveKrakenSpotService:
         )
         self._max_open_orders_global = max(1, _env_int_profile("AUTONOMOUS_MAX_OPEN_ORDERS_GLOBAL", 50))
         self._max_open_orders_per_symbol = max(1, _env_int_profile("AUTONOMOUS_MAX_OPEN_ORDERS_PER_SYMBOL", 5))
+        self._open_orders_ttl_s = max(1.0, _env_float("AUTONOMOUS_OPEN_ORDERS_TTL_S", 15.0))
+        self._open_orders_cache: dict[str, Any] = {}
+        self._open_orders_cache_ts = 0.0
         self._vol_regime_enabled = _env_bool("AUTONOMOUS_VOL_REGIME_ENABLED", _env_bool("AUTONOMOUS_REGIME_ENABLED", True))
         vol_high_z = max(0.25, _env_float("AUTONOMOUS_VOL_HIGH_Z", 2.0))
         vol_high_default = 0.0015 * (vol_high_z / 2.0)
@@ -700,6 +717,92 @@ class LiveKrakenSpotService:
     def _round_volume_down_to_step(self, pair: str, qty: float) -> float:
         return self.min_guard.round_volume(pair, max(0.0, float(qty)))
 
+    def _load_tp_state(self) -> None:
+        self._tp_peak_profit_pct = {}
+        path = str(self._tp_state_path or "")
+        if not path:
+            return
+        try:
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                return
+            for symbol, row in raw.items():
+                if not isinstance(row, dict):
+                    continue
+                self._tp_peak_profit_pct[str(symbol).upper()] = float(row.get("peak_profit_pct", 0.0) or 0.0)
+        except Exception:
+            self._tp_peak_profit_pct = {}
+
+    def _save_tp_state(self, pair: str, peak_profit_pct: float) -> None:
+        path = str(self._tp_state_path or "")
+        if not path:
+            return
+        try:
+            payload: dict[str, Any] = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    prev = json.load(fh)
+                if isinstance(prev, dict):
+                    payload = prev
+            key = str(pair).upper()
+            row = payload.get(key)
+            if not isinstance(row, dict):
+                row = {}
+                payload[key] = row
+            row["peak_profit_pct"] = float(peak_profit_pct)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, sort_keys=True, indent=2)
+        except Exception:
+            pass
+
+    def _desired_tp_pct_for_sell(
+        self,
+        *,
+        pair: str,
+        hold_s: float,
+        avg_entry_price: float,
+        bid: float,
+        intent: Any,
+    ) -> tuple[float, float, float]:
+        baseline_min_tp_pct = max(
+            float(self._profit_target_net) * 100.0,
+            float(os.getenv("AUTONOMOUS_MIN_TAKE_PROFIT_PCT", "0.9") or "0.9"),
+        )
+        # Backward-compatible behavior: when TP ladder is disabled, keep a stable
+        # fixed threshold and do not let historical peak state unexpectedly raise
+        # required profit for legacy profit-lock tests.
+        if not bool(self._tp_ladder_cfg.enabled):
+            return float(baseline_min_tp_pct), float(baseline_min_tp_pct), 0.0
+        sym = str(pair).upper()
+        current_profit_pct = 0.0
+        if avg_entry_price > 0.0 and bid > 0.0:
+            current_profit_pct = ((bid - avg_entry_price) / max(avg_entry_price, 1e-12)) * 100.0
+        peak_profit = max(float(self._tp_peak_profit_pct.get(sym, 0.0) or 0.0), float(current_profit_pct))
+        self._tp_peak_profit_pct[sym] = peak_profit
+        self._save_tp_state(sym, peak_profit)
+        why = intent.why if hasattr(intent, "why") and isinstance(intent.why, dict) else {}
+        confidence = float(why.get("fc_confidence", 0.0) or 0.0)
+        regime = str(why.get("regime", why.get("market_regime", "")) or "")
+        toxicity = float(why.get("toxicity_score", 0.0) or 0.0)
+        floor = ladder_floor_tp_pct(hold_s=hold_s, cfg=self._tp_ladder_cfg, baseline_pct=baseline_min_tp_pct)
+        desired = desired_tp_pct(
+            hold_s=hold_s,
+            baseline_pct=baseline_min_tp_pct,
+            cfg=self._tp_ladder_cfg,
+            confidence=confidence,
+            regime=regime,
+            toxicity_score=toxicity,
+            peak_profit_pct=peak_profit,
+        )
+        desired = max(floor, desired)
+        if self._tp_only_mode:
+            desired = max(desired, baseline_min_tp_pct)
+        return float(floor), float(desired), float(peak_profit)
+
     def set_exits_only_mode(self, *, reason: str, duration_s: float = 180.0) -> None:
         self._exits_only_mode_until_s = max(self._exits_only_mode_until_s, time.time() + max(1.0, float(duration_s)))
         self._exits_only_reason = str(reason or "exits_only_mode")
@@ -825,9 +928,19 @@ class LiveKrakenSpotService:
     def _open_order_counts(self, pair: str) -> tuple[int, int]:
         if not hasattr(self.connector, "open_orders"):
             return 0, 0
-        try:
-            raw = self.connector.open_orders()
-        except Exception:
+        now = time.time()
+        raw: Any = None
+        if self._open_orders_cache and (now - self._open_orders_cache_ts) <= self._open_orders_ttl_s:
+            raw = self._open_orders_cache
+        else:
+            try:
+                raw = self.connector.open_orders()
+                if isinstance(raw, dict):
+                    self._open_orders_cache = raw
+                    self._open_orders_cache_ts = now
+            except Exception:
+                raw = self._open_orders_cache if self._open_orders_cache else None
+        if raw is None:
             return 0, 0
         rows = raw.get("open", raw) if isinstance(raw, dict) else {}
         if not isinstance(rows, dict):
@@ -1292,7 +1405,8 @@ class LiveKrakenSpotService:
                 ),
             )
         elif category == "insufficient_funds":
-            self._quarantine_pair(key, minutes=max(2, self._symbol_quarantine_min // 2))
+            # Funding/balance can change quickly; avoid long quarantine on temporary balance rejects.
+            self._activate_rate_limit_cooldown(multiplier=1.05)
         elif category in {"constraints", "restricted"}:
             self._quarantine_pair(key, minutes=self._symbol_quarantine_min)
         elif self._pair_reject_counts[key] >= 3:
@@ -1835,13 +1949,29 @@ class LiveKrakenSpotService:
         position_age_s = 0.0
         if ledger.position_open_ts is not None:
             position_age_s = max(0.0, time.time() - float(ledger.position_open_ts))
-        required_profit_bps = (
+        legacy_required_profit_bps = (
             self._sell_profit_lock_target_bps
             if position_age_s < self._sell_profit_lock_target_hold_s
             else self._sell_profit_lock_min_bps
         )
-        required_profit_bps = max(required_profit_bps, self._profit_target_net * 10000.0)
-        required_profit_ratio = max(self._profit_target_net, required_profit_bps / 10000.0)
+        floor_tp_pct, desired_tp_pct_val, peak_profit_pct = self._desired_tp_pct_for_sell(
+            pair=pair,
+            hold_s=position_age_s,
+            avg_entry_price=float(ledger.avg_entry_price),
+            bid=float(bid),
+            intent=intent,
+        )
+        required_profit_bps = max(float(legacy_required_profit_bps), float(desired_tp_pct_val) * 100.0)
+        required_profit_ratio = max(float(self._profit_target_net), required_profit_bps / 10000.0)
+        modeled_tco_bps = max(
+            0.0,
+            (2.0 * float(self._entry_fee_bps))
+            + (2.0 * float(self._slippage_bps_profit_gate))
+            + max(0.0, ((ask - bid) / max((ask + bid) / 2.0, 1e-12)) * 10000.0 if ask > 0.0 and bid > 0.0 else 0.0),
+        )
+        if bool(self._tp_ladder_cfg.enabled) and bool(self._tp_ladder_cfg.after_costs):
+            required_profit_ratio = required_profit_ratio + (modeled_tco_bps / 10000.0)
+        required_profit_bps_effective = required_profit_ratio * 10000.0
         if ledger.avg_entry_price <= 0.0:
             if not self._sell_profit_lock_require_cost_basis:
                 return False, {}
@@ -1850,7 +1980,11 @@ class LiveKrakenSpotService:
                 "bid": bid,
                 "ask": ask,
                 "required_profit_bps": required_profit_bps,
+                "required_profit_bps_effective": required_profit_bps_effective,
                 "required_net_profit_ratio": required_profit_ratio,
+                "tp_ladder_floor_pct": floor_tp_pct,
+                "tp_ladder_desired_pct": desired_tp_pct_val,
+                "tp_ladder_peak_profit_pct": peak_profit_pct,
                 "position_age_s": position_age_s,
                 "target_profit_bps": self._sell_profit_lock_target_bps,
                 "target_hold_s": self._sell_profit_lock_target_hold_s,
@@ -1867,7 +2001,11 @@ class LiveKrakenSpotService:
                 "bid": bid,
                 "ask": ask,
                 "required_profit_bps": required_profit_bps,
+                "required_profit_bps_effective": required_profit_bps_effective,
                 "required_net_profit_ratio": required_profit_ratio,
+                "tp_ladder_floor_pct": floor_tp_pct,
+                "tp_ladder_desired_pct": desired_tp_pct_val,
+                "tp_ladder_peak_profit_pct": peak_profit_pct,
                 "position_age_s": position_age_s,
                 "target_profit_bps": self._sell_profit_lock_target_bps,
                 "target_hold_s": self._sell_profit_lock_target_hold_s,
@@ -1916,7 +2054,12 @@ class LiveKrakenSpotService:
             "ask": ask,
             "min_sell_price": gate.required_exit_price,
             "required_profit_bps": required_profit_bps,
+            "required_profit_bps_effective": required_profit_bps_effective,
             "required_net_profit_ratio": required_profit_ratio,
+            "tp_ladder_floor_pct": floor_tp_pct,
+            "tp_ladder_desired_pct": desired_tp_pct_val,
+            "tp_ladder_peak_profit_pct": peak_profit_pct,
+            "modeled_tco_bps": modeled_tco_bps,
             "position_age_s": position_age_s,
             "target_profit_bps": self._sell_profit_lock_target_bps,
             "target_hold_s": self._sell_profit_lock_target_hold_s,
@@ -1983,9 +2126,17 @@ class LiveKrakenSpotService:
             meta["reject_category"] = category
             return self._rate_limit_cooldown_result(meta)
         self.rejects.add(now)
-        if self.rejects.storm(5):
-            self.request_kill("reject_storm")
-            return LiveExecutionResult(status="killed", reason="reject_storm", order=order_meta)
+        if self.rejects.storm(self._max_consecutive_rejects):
+            if pair:
+                self._quarantine_pair(
+                    pair,
+                    minutes=max(1, int(math.ceil(self._reject_cooldown_s / 60.0))),
+                )
+            self._activate_rate_limit_cooldown(now, multiplier=max(1.0, self._reject_cooldown_s / max(self._rate_limit_cooldown_s, 1e-9)))
+            meta["reject_storm"] = True
+            meta["reject_cooldown_s"] = float(self._reject_cooldown_s)
+            meta["reject_category"] = category
+            return LiveExecutionResult(status="blocked", reason="reject_storm_cooldown", order=meta)
         meta["reject_category"] = category
         return LiveExecutionResult(status="rejected", reason=str(exc), order=meta)
 
@@ -2124,7 +2275,8 @@ class LiveKrakenSpotService:
             return LiveExecutionResult(status="deduped", reason="intent_dedupe", order={"intent_id": dedupe})
 
         pair = intent.symbol
-        why = intent.why if isinstance(intent.why, dict) else {}
+        why_raw = getattr(intent, "why", {})
+        why = dict(why_raw) if isinstance(why_raw, Mapping) else {}
         is_probe = bool(why.get("scheduler_probe", False))
         self._maybe_refresh_fee_profile(pair=pair)
         self._maybe_calibrate_slippage(now)
@@ -2256,23 +2408,25 @@ class LiveKrakenSpotService:
                     )
                 ms_ok, ms_reason = self._entry_allowed_by_microstructure(side, micro)
                 if not ms_ok:
-                    return LiveExecutionResult(
-                        status="blocked",
-                        reason=ms_reason,
-                        order={
-                            "pair": pair,
-                            "side": side,
-                            "imbalance": float(micro.get("imbalance", 0.0)),
-                            "microprice": float(micro.get("microprice", 0.0)),
-                        },
-                    )
+                    if not is_probe:
+                        return LiveExecutionResult(
+                            status="blocked",
+                            reason=ms_reason,
+                            order={
+                                "pair": pair,
+                                "side": side,
+                                "imbalance": float(micro.get("imbalance", 0.0)),
+                                "microprice": float(micro.get("microprice", 0.0)),
+                            },
+                        )
                 edge_ok, edge_diag = self._fee_aware_entry_allows(intent, spread_bps, slippage_for_gate)
                 if not edge_ok:
-                    return LiveExecutionResult(
-                        status="blocked",
-                        reason="fee_aware_no_edge",
-                        order={"pair": pair, "side": side, **edge_diag},
-                    )
+                    if not is_probe:
+                        return LiveExecutionResult(
+                            status="blocked",
+                            reason="fee_aware_no_edge",
+                            order={"pair": pair, "side": side, **edge_diag},
+                        )
         except Exception as exc:
             return self._reject_guard(exc)
 
@@ -2308,6 +2462,9 @@ class LiveKrakenSpotService:
                 scale = max(0.05, 1.0 - (pressure * self._inventory_throttle_step))
                 target_notional *= scale
         quote_reserve = min(0.999, max(0.5, float(os.getenv("AUTONOMOUS_QUOTE_RESERVE_RATIO", "0.985") or "0.985")))
+        if is_probe:
+            probe_quote_reserve = float(os.getenv("AUTONOMOUS_PROBE_QUOTE_RESERVE_RATIO", str(quote_reserve)) or quote_reserve)
+            quote_reserve = min(1.0, max(0.0, probe_quote_reserve))
         # Keep a fee/safety reserve from free quote balance.
         quote_usable = max(0.0, available_quote * quote_reserve)
         meta = self.min_guard.pair_meta(pair)
@@ -2317,6 +2474,12 @@ class LiveKrakenSpotService:
         if side == "buy":
             min_required_quote = min_order_base * ask
             effective_min_quote = max(costmin, min_required_quote)
+            quote_min_buffer_env = (
+                os.getenv("AUTONOMOUS_PROBE_QUOTE_MIN_BUFFER_MULT", "1.0")
+                if is_probe
+                else os.getenv("AUTONOMOUS_QUOTE_MIN_BUFFER_MULT", "1.02")
+            )
+            quote_min_buffer_mult = max(0.9 if is_probe else 1.0, float(quote_min_buffer_env or "1.0"))
             constraints = self.min_guard.constraint_snapshot(pair, ask)
             if quote_usable <= 0:
                 return LiveExecutionResult(
@@ -2330,7 +2493,8 @@ class LiveKrakenSpotService:
                         "exchange_constraints": constraints,
                     },
                 )
-            if effective_min_quote > 0 and quote_usable < effective_min_quote:
+            buffered_min_quote = effective_min_quote * quote_min_buffer_mult
+            if effective_min_quote > 0 and quote_usable < buffered_min_quote:
                 return LiveExecutionResult(
                     status="blocked",
                     reason="insufficient_balance_block",
@@ -2339,7 +2503,7 @@ class LiveKrakenSpotService:
                         "side": side,
                         "available_quote": available_quote,
                         "quote_ccy": quote_ccy,
-                        "min_required_quote": effective_min_quote,
+                        "min_required_quote": buffered_min_quote,
                         "exchange_constraints": constraints,
                     },
                 )

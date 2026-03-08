@@ -60,3 +60,23 @@ def test_validate_and_round_rejects_invalid_inputs(tmp_path):
     )
     assert ok is False
     assert reason == "invalid_book"
+
+
+def test_compat_api_effective_min_and_validate_and_round(tmp_path):
+    svc = ExchangeConstraintsOracle(_FakeConnector(), run_dir=str(tmp_path), ttl_s=1800)
+    svc.refresh_if_needed()
+    c = svc.get("XBTUSD")
+    assert c.symbol == "XBTUSD"
+    eff = svc.effective_min_quote("XBTUSD", user_floor=25.0)
+    assert eff >= 25.0
+    ok, reason, payload = svc.validate_and_round(
+        symbol="XBTUSD",
+        side="buy",
+        target_notional_quote=5.0,
+        bid=50000.0,
+        ask=50010.0,
+        user_floor=20.0,
+    )
+    assert ok is True
+    assert reason == "ok"
+    assert payload["rounded_notional_quote"] >= payload["effective_min_notional_quote"] >= 20.0

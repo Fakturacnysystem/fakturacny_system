@@ -49,3 +49,15 @@ def test_watchdog_disabled_never_stalls(tmp_path) -> None:
     assert sup.stalled(now_ts=100.0) is False
     health = sup.health(now_ts=100.0)
     assert health["ok"] is True
+
+
+def test_watchdog_grace_period_before_first_heartbeat(tmp_path) -> None:
+    cfg = WatchdogConfig(stall_timeout_s=30.0, poll_interval_s=1.0)
+    sup = WatchdogSupervisor(run_dir=str(tmp_path), config=cfg)
+
+    # Child started but has not written first heartbeat yet.
+    sup.mark_child_started(999)
+    started = sup.state.child_started_ts
+    assert started > 0.0
+    assert sup.stalled(now_ts=started + 10.0) is False
+    assert sup.stalled(now_ts=started + 31.0) is True

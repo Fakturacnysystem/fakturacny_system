@@ -39,6 +39,7 @@ class StuckPositionGovernorConfig:
     stuck_age_s: float = 3600.0
     stuck_dd_trigger: float = -0.012
     blocked_sells_trigger: int = 5
+    blocked_sells_min_age_s: float = 900.0
     entries_pause_min_s: float = 900.0
 
     @classmethod
@@ -48,6 +49,7 @@ class StuckPositionGovernorConfig:
             stuck_age_s=max(60.0, _env_float("AUTONOMOUS_STUCK_AGE_S", 3600.0)),
             stuck_dd_trigger=min(-1e-6, _env_float("AUTONOMOUS_STUCK_DD_TRIGGER", -0.012)),
             blocked_sells_trigger=max(1, _env_int("AUTONOMOUS_STUCK_BLOCKED_SELLS_TRIGGER", 5)),
+            blocked_sells_min_age_s=max(0.0, _env_float("AUTONOMOUS_STUCK_BLOCKED_SELLS_MIN_AGE_S", 900.0)),
             entries_pause_min_s=max(60.0, _env_float("AUTONOMOUS_STUCK_ENTRIES_PAUSE_MIN_S", 900.0)),
         )
 
@@ -137,7 +139,7 @@ class StuckPositionGovernor:
             if age_s >= self.config.stuck_age_s and pnl_ratio <= self.config.stuck_dd_trigger:
                 trigger = True
                 reason = "stuck_age_and_drawdown"
-            elif st.blocked_sell_count >= self.config.blocked_sells_trigger:
+            elif age_s >= self.config.blocked_sells_min_age_s and st.blocked_sell_count >= self.config.blocked_sells_trigger:
                 trigger = True
                 reason = "stuck_blocked_sells"
         else:

@@ -104,6 +104,20 @@ class HealthAudit110:
             out.append(key)
         return out
 
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception | str | None) -> bool:
+        text = str(exc or "").lower()
+        if not text:
+            return False
+        tokens = (
+            "rate limit",
+            "rate-limit",
+            "too many requests",
+            "eapi:rate limit exceeded",
+            "429",
+        )
+        return any(token in text for token in tokens)
+
     def _load_json_file(self, path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
@@ -283,14 +297,19 @@ class HealthAudit110:
 
         checks_ok = True
         details: dict[str, Any] = {}
+        degraded_rate_limit = 0
         try:
             if hasattr(live, "_available_quote_balance"):
                 ccy, free = live._available_quote_balance(symbol)
                 details["quote_currency"] = str(ccy)
                 details["quote_free"] = self._safe_float(free, 0.0)
         except Exception as exc:
-            checks_ok = False
-            details["balance_error"] = str(exc)
+            if self._is_rate_limit_error(exc):
+                degraded_rate_limit += 1
+                details["balance_error_rate_limited"] = str(exc)
+            else:
+                checks_ok = False
+                details["balance_error"] = str(exc)
 
         try:
             if hasattr(live, "sync_fill_ledger"):
@@ -298,8 +317,12 @@ class HealthAudit110:
                 if isinstance(snap, dict):
                     details["ledger_keys"] = sorted(list(snap.keys()))[:10]
         except Exception as exc:
-            checks_ok = False
-            details["ledger_error"] = str(exc)
+            if self._is_rate_limit_error(exc):
+                degraded_rate_limit += 1
+                details["ledger_error_rate_limited"] = str(exc)
+            else:
+                checks_ok = False
+                details["ledger_error"] = str(exc)
 
         try:
             if hasattr(live, "reconcile_live_state"):
@@ -308,8 +331,12 @@ class HealthAudit110:
                 if not bool(ok):
                     checks_ok = False
         except Exception as exc:
-            checks_ok = False
-            details["reconcile_error"] = str(exc)
+            if self._is_rate_limit_error(exc):
+                degraded_rate_limit += 1
+                details["reconcile_error_rate_limited"] = str(exc)
+            else:
+                checks_ok = False
+                details["reconcile_error"] = str(exc)
 
         services = self._extract_services(live)
         open_order_queries = 0
@@ -324,16 +351,25 @@ class HealthAudit110:
                     _ = conn.open_orders()
                 except Exception as exc:
                     open_order_errors += 1
-                    details[f"open_orders_error_{open_order_queries}"] = str(exc)
+                    if self._is_rate_limit_error(exc):
+                        degraded_rate_limit += 1
+                        details[f"open_orders_error_{open_order_queries}_rate_limited"] = str(exc)
+                    else:
+                        details[f"open_orders_error_{open_order_queries}"] = str(exc)
             if hasattr(conn, "open_positions"):
                 try:
                     _ = conn.open_positions()
                 except Exception as exc:
-                    details.setdefault("open_positions_error", str(exc))
-                    checks_ok = False
+                    if self._is_rate_limit_error(exc):
+                        degraded_rate_limit += 1
+                        details.setdefault("open_positions_error_rate_limited", str(exc))
+                    else:
+                        details.setdefault("open_positions_error", str(exc))
+                        checks_ok = False
         details["open_order_queries"] = open_order_queries
         details["open_order_errors"] = open_order_errors
-        if open_order_errors > 0:
+        details["rate_limited_errors"] = degraded_rate_limit
+        if open_order_errors > degraded_rate_limit:
             checks_ok = False
 
         return AuditCheck(
@@ -461,7 +497,7 @@ class HealthAudit110:
             details=details,
         )
 
-    def _count_recent_rate_limit_errors(self, max_lines: int = 400) -> int:
+    def _count_recent_rate_limit_errors(self, max_lines: int = 120) -> int:
         path = self.run_dir / "audit.log"
         if not path.exists():
             return 0
@@ -590,7 +626,7 @@ class HealthAudit110:
         safe_probe_submitter: SafeProbeSubmitter | None,
         auto_repair: bool,
     ) -> AuditCheck:
-        max_age = max(60.0, float(order_submission_interval_s))
+        max_age = max(60.0, float(order_submission_interval_s)) + self.scheduler_lag_grace_s
         age = self._latest_submission_age_s(
             now_ts=now_ts,
             sqlite=sqlite,
@@ -630,7 +666,10 @@ class HealthAudit110:
         restart_count = int(self._safe_float(wd.get("restart_count", 0), 0.0))
         last_restart_ts = self._safe_float(wd.get("last_restart_ts", 0.0), 0.0)
         running = bool(wd.get("running", True if not wd else False))
-        restart_loop = restart_count >= 3 and (last_restart_ts > 0.0 and (now_ts - last_restart_ts) < 180.0)
+        recent_restart = last_restart_ts > 0.0 and (now_ts - last_restart_ts) < 180.0
+        restart_loop = restart_count >= 3 and recent_restart and (
+            (not running) or (heartbeat_age > max(30.0, self.stream_stale_after_s * 2.0))
+        )
         ok = (heartbeat_age <= (self.watchdog_stall_timeout_s * 1.2)) and running and (not restart_loop)
         return AuditCheck(
             name="watchdog_integrity",

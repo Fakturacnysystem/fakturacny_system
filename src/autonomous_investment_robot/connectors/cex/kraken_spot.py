@@ -36,6 +36,10 @@ class KrakenInsufficientFundsError(KrakenOrderError):
     pass
 
 
+class KrakenInvalidNonceError(KrakenConnectorError):
+    pass
+
+
 @dataclass
 class _RateLimiter:
     rps: float
@@ -61,6 +65,8 @@ class KrakenSpotConnector:
         self._api_key = os.getenv(settings.api_key_env, "")
         self._api_secret = os.getenv(settings.api_secret_env, "")
         self._rate = _RateLimiter(max(0.1, settings.rate_limit_rps))
+        self._nonce_lock = Lock()
+        self._last_nonce = 0
 
     @property
     def has_credentials(self) -> bool:
@@ -78,7 +84,7 @@ class KrakenSpotConnector:
     def _signed_headers(self, api_path: str, params: dict[str, Any]) -> dict[str, str]:
         if not self.has_credentials:
             raise KrakenAuthError("Missing Kraken API credentials")
-        nonce = str(int(time.time() * 1000))
+        nonce = str(self._next_nonce())
         post_data = urlencode({"nonce": nonce, **params})
         sig = self.sign_payload(api_path=api_path, nonce=nonce, payload=post_data, api_secret_b64=self._api_secret)
         return {
@@ -91,6 +97,8 @@ class KrakenSpotConnector:
         t = text.lower()
         if "eapi:invalid key" in t or "eapi:invalid signature" in t or "401" in t or "403" in t:
             return KrakenAuthError(f"Kraken auth error: {text}")
+        if "invalid nonce" in t or "eapi:invalid nonce" in t:
+            return KrakenInvalidNonceError(f"Kraken invalid nonce: {text}")
         if "rate limit" in t or "too many requests" in t or "429" in t:
             return KrakenRateLimitError(f"Kraken rate limit: {text}")
         if "insufficient funds" in t:
@@ -126,6 +134,15 @@ class KrakenSpotConnector:
                     if errors:
                         raise self._classify_error(";".join(errors))
                     return data.get("result", data)
+            except KrakenInvalidNonceError:
+                if attempt >= self.settings.max_retries:
+                    raise
+                # Regenerate signed payload with a newer nonce and retry quickly.
+                time.sleep(0.05 * (attempt + 1))
+                if private:
+                    headers, full_params = self._signed_headers(path, params)
+                    payload = urlencode(full_params).encode("utf-8")
+                continue
             except (KrakenConnectorError, KrakenAuthError, KrakenRateLimitError, KrakenOrderError):
                 raise
             except Exception as exc:  # pragma: no cover
@@ -135,6 +152,14 @@ class KrakenSpotConnector:
                 sleep_s = sleep_s * (1.0 + random.uniform(-0.1, 0.1))
                 time.sleep(max(0.01, sleep_s))
         raise KrakenConnectorError(f"Kraken request failed {method} {path}")
+
+    def _next_nonce(self) -> int:
+        now_ms = int(time.time() * 1000)
+        with self._nonce_lock:
+            if now_ms <= self._last_nonce:
+                now_ms = self._last_nonce + 1
+            self._last_nonce = now_ms
+            return now_ms
 
     def verify_live_permissions(self) -> tuple[bool, str]:
         if not self.has_credentials:
