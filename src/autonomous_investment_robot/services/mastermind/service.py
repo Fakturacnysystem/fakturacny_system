@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,10 @@ class MastermindSupervisorState:
     max_orders_per_min_override: int | None
     market_watch_max_calls_per_min_override: int | None
     invariant_breach: bool
+    health: dict[str, Any] = field(default_factory=dict)
+    guardrails: dict[str, Any] = field(default_factory=dict)
+    conflicts: list[str] = field(default_factory=list)
+    overrides: dict[str, Any] = field(default_factory=dict)
 
 
 class MastermindSupervisor:
@@ -41,6 +45,10 @@ class MastermindSupervisor:
                 max_orders_per_min_override=1,
                 market_watch_max_calls_per_min_override=10,
                 invariant_breach=True,
+                health={"status": "FATAL", "component": "preflight"},
+                guardrails={"sell_min_profit_bps": float(harmony.sell_min_profit_bps)},
+                conflicts=["sell_min_profit_bps_below_120"],
+                overrides={"pause_buy": True, "size_scale": 0.05, "max_orders_per_min": 1},
             )
             self._persist(state)
             return state
@@ -52,6 +60,10 @@ class MastermindSupervisor:
             max_orders_per_min_override=None,
             market_watch_max_calls_per_min_override=None,
             invariant_breach=False,
+            health={"status": "OK", "component": "preflight"},
+            guardrails={"sell_min_profit_bps": float(harmony.sell_min_profit_bps)},
+            conflicts=[],
+            overrides={},
         )
         self._persist(state)
         return state
@@ -76,6 +88,10 @@ class MastermindSupervisor:
                 max_orders_per_min_override=1,
                 market_watch_max_calls_per_min_override=10,
                 invariant_breach=True,
+                health={"status": "FATAL", "component": "runtime"},
+                guardrails={"invariant_breach": True},
+                conflicts=["profit_lock_invariant_breach"],
+                overrides={"pause_buy": True, "size_scale": 0.05, "max_orders_per_min": 1},
             )
             self._persist(state)
             return state
@@ -84,21 +100,30 @@ class MastermindSupervisor:
         max_orders = None
         max_watch = None
         reason = "ok"
+        conflicts: list[str] = []
         if float(rate_limit_events) >= 3.0 or float(reject_rate) >= 0.5:
             pause = True
             size_scale = 0.4
             max_orders = max(1, int(base_max_orders_per_min * 0.5))
             max_watch = max(10, int(base_market_watch_budget * 0.5))
             reason = "rate_stress"
+            conflicts.append("rate_limit_stress")
         elif float(insufficient_balance_events) >= 3.0:
             pause = True
             size_scale = 0.5
             max_orders = max(1, int(base_max_orders_per_min * 0.6))
             max_watch = max(10, int(base_market_watch_budget * 0.7))
             reason = "insufficient_balance_stress"
+            conflicts.append("insufficient_balance")
         elif float(no_intent_events) >= 10.0:
             size_scale = 0.8
             reason = "no_intent_soft"
+            conflicts.append("no_intent")
+        overrides: dict[str, Any] = {"pause_buy": bool(pause), "size_scale": float(size_scale)}
+        if max_orders is not None:
+            overrides["max_orders_per_min"] = int(max_orders)
+        if max_watch is not None:
+            overrides["market_watch_max_calls_per_min"] = int(max_watch)
         state = MastermindSupervisorState(
             ok=True,
             reason=reason,
@@ -107,6 +132,15 @@ class MastermindSupervisor:
             max_orders_per_min_override=max_orders,
             market_watch_max_calls_per_min_override=max_watch,
             invariant_breach=False,
+            health={"status": "WARN" if conflicts else "OK", "component": "runtime"},
+            guardrails={
+                "reject_rate": float(reject_rate),
+                "rate_limit_events": float(rate_limit_events),
+                "insufficient_balance_events": float(insufficient_balance_events),
+                "no_intent_events": float(no_intent_events),
+            },
+            conflicts=conflicts,
+            overrides=overrides,
         )
         self._persist(state)
         return state
@@ -123,4 +157,3 @@ class MastermindSupervisor:
         if state.market_watch_max_calls_per_min_override is not None:
             overrides["market_watch_max_calls_per_min"] = int(state.market_watch_max_calls_per_min_override)
         self.overrides_path.write_text(json.dumps(overrides, sort_keys=True, indent=2), encoding="utf-8")
-

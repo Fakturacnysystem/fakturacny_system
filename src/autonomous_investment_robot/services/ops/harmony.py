@@ -90,6 +90,10 @@ class HarmonyConfigResolver:
         "AUTONOMOUS_TRADE_COOLDOWN_S",
         "ORDER_SUBMISSION_INTERVAL_SECONDS",
     )
+    _MARKET_WATCH_KEYS = (
+        "AUTONOMOUS_MARKET_WATCH_INTERVAL_S",
+        "AUTONOMOUS_MARKET_WATCH_SECONDS",
+    )
 
     def _pick(self, env: dict[str, str], key: str, default: Any) -> Any:
         if key in env and str(env[key]).strip():
@@ -193,9 +197,26 @@ class HarmonyConfigResolver:
         if "profit" in str(getattr(settings.storage, "run_dir", "") or "").lower():
             tp_only_mode = _as_bool(self._pick(env, "AUTONOMOUS_TP_ONLY_MODE", True), True)
         max_orders_per_min = max(1, _as_int(self._pick(env, "AUTONOMOUS_MAX_ORDERS_PER_MIN", 10), 10))
+        explicit_market_watch = self._pick(env, "AUTONOMOUS_MARKET_WATCH_EVERY_S", None)
+        legacy_market_watch = [k for k in self._MARKET_WATCH_KEYS if self._pick(env, k, None) is not None]
+        if explicit_market_watch is not None and legacy_market_watch:
+            collisions.append(
+                HarmonyCollision(
+                    key="market_watch_every_s",
+                    winner="AUTONOMOUS_MARKET_WATCH_EVERY_S",
+                    losers=list(legacy_market_watch),
+                )
+            )
         market_watch_every_s = max(
             5.0,
-            _as_float(self._pick(env, "AUTONOMOUS_MARKET_WATCH_EVERY_S", 30.0), 30.0),
+            _as_float(
+                self._pick(
+                    env,
+                    "AUTONOMOUS_MARKET_WATCH_EVERY_S",
+                    self._pick(env, "AUTONOMOUS_MARKET_WATCH_INTERVAL_S", 30.0),
+                ),
+                30.0,
+            ),
         )
         market_watch_max_calls = max(
             1,
@@ -237,3 +258,21 @@ class HarmonyConfigResolver:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(resolved.to_dict(), sort_keys=True, indent=2), encoding="utf-8")
         return str(out)
+
+    def resolve_from_config(
+        self,
+        config_path: str,
+        *,
+        env_snapshot: dict[str, str] | None = None,
+        exchange_min_quote_fallback: float = 2.0,
+        dry_run: bool = True,
+    ) -> ResolvedHarmonyConfig:
+        """Resolve harmony for an arbitrary config file (used by audit matrix tooling)."""
+
+        settings = RobotSettings.from_file(config_path)
+        return self.resolve(
+            settings=settings,
+            env_snapshot=env_snapshot or {},
+            exchange_min_quote_fallback=exchange_min_quote_fallback,
+            dry_run=dry_run,
+        )

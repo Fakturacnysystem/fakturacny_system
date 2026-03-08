@@ -1,0 +1,92 @@
+# AUDIT REPORT
+
+## Architecture Map
+
+Flow map (runtime wired):
+
+1. Ingestion and market microstructure:
+- `src/autonomous_investment_robot/services/data_ingestion/service.py`
+- `src/autonomous_investment_robot/services/data_ingestion/multi_venue_engine.py`
+- `src/autonomous_investment_robot/services/market_watch/service.py`
+- `src/autonomous_investment_robot/services/microstructure/spread_spike.py`
+- `src/autonomous_investment_robot/services/liquidity_map/service.py`
+
+2. Feature generation and forecasting:
+- `src/autonomous_investment_robot/services/feature_store/service.py`
+- `src/autonomous_investment_robot/services/models/service.py`
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+
+3. Central decision brain (new):
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+  - `AutonomousMarketPredictionAndDecisionEngine`
+  - probabilistic forecasting, UQ, conformal, regime, drift, multimodal fusion, order-flow/LOB, execution-risk, trade management, self-optimization hooks
+
+4. Policy, risk, governance, execution:
+- `src/autonomous_investment_robot/services/policy/service.py`
+- `src/autonomous_investment_robot/services/risk_engine/service.py`
+- `src/autonomous_investment_robot/services/governance/service.py`
+- `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py`
+
+5. Orchestration and observability:
+- `src/autonomous_investment_robot/core/orchestrator.py`
+  - wired central decision brain into live decision path
+  - maintained hard sell-invariant checks in orchestrator and live execution layer
+- `src/autonomous_investment_robot/services/ops/harmony.py`
+- `src/autonomous_investment_robot/services/mastermind/service.py`
+
+6. Audit tooling:
+- `scripts/audit_config_matrix.py` (resolved harmony matrix)
+- `scripts/runtime_audit.py` (post-start runtime audit)
+- `docs/config_matrix.json`, `docs/config_matrix.md`
+
+## Blocker Matrix
+
+| Reason | Source file:line | Exact fix |
+|---|---|---|
+| Required function-level autonomous APIs were missing from runtime | `src/autonomous_investment_robot/services/autonomous_decision/engine.py:1402`, `:1716` | Implemented all required named functions and integrated class graph; added central `run_decision_algorithm()` used by orchestrator. |
+| Decision brain not connected to real runtime decision path | `src/autonomous_investment_robot/core/orchestrator.py:226`, `:2974`, `:3013` | Instantiated decision engine in orchestrator, built `DecisionContext` per tick, emitted decision brain audit/metrics, and advisory/enforceable intent shaping. |
+| Mastermind supervisor preflight/runtime state existed but was not operationally enforced | `src/autonomous_investment_robot/core/orchestrator.py:1829`, `:1840`; `src/autonomous_investment_robot/services/mastermind/service.py:71` | Wired runtime `observe_runtime()` call, wrote metrics/overrides, added invariant-breach fatal handling and richer status schema (`health/guardrails/conflicts/overrides`). |
+| Harmony dry-run matrix audit did not resolve configs via HarmonyResolver and produced weak audit output | `scripts/audit_config_matrix.py:105`, `:134`; `src/autonomous_investment_robot/services/ops/harmony.py:262` | Rebuilt matrix script to resolve every config through Harmony in dry-run mode and generate `docs/config_matrix.json` + `docs/config_matrix.md`. |
+| Full-throttle script used conflicting legacy cadence knobs and incompatible fallback allowlist | `scripts/run_kraken_spot_profit_full_throttle.sh:33`, `:52` | Removed legacy cadence exports (`unset ...`) and aligned default allowlist with live-profit symbols. |
+| Run-dir override from launcher was ignored by runtime config loader | `src/autonomous_investment_robot/cli_runtime_config.py:29`; `cli/run.py:39` | Added `AUTONOMOUS_RUN_DIR` precedence so launcher run-dir and watchdog run-dir align. |
+| Remaining runtime blocker: live child can start without producing downstream artifacts in this environment | `runs/kraken_spot_live_profit_full_throttle/watchdog_state.json` | Not fully resolved in this pass; live launch reached child start but runtime artifacts (`audit.log`, `event_bus.jsonl`) were not emitted before blocking/termination in sandbox environment. |
+
+## Knob Collision Matrix
+
+| Setting group | Winner | Losers | Final precedence |
+|---|---|---|---|
+| Order cadence | `AUTONOMOUS_ORDER_CADENCE_S` | `AUTONOMOUS_MIN_SECONDS_BETWEEN_ORDERS`, `AUTONOMOUS_TRADE_COOLDOWN_S`, `ORDER_SUBMISSION_INTERVAL_SECONDS` | If primary cadence is set, it wins; otherwise cadence is derived from legacy knobs (`max` with collision recording). |
+| Min order quote | `max(exchange_min, user_min, legacy_min)` | lower values among `AUTONOMOUS_EXCHANGE_MIN_ORDER_QUOTE_FALLBACK`, `AUTONOMOUS_USER_MIN_ORDER_QUOTE`, `AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE` | Effective min order quote is always the strictest maximum. |
+| Sell minimum profit floor | `max(120, explicit floor, modeled cost floor, configured net target)` | any lower configured value | Hard floor never below 120 bps. |
+| Market watch interval | `AUTONOMOUS_MARKET_WATCH_EVERY_S` | legacy `AUTONOMOUS_MARKET_WATCH_INTERVAL_S`, `AUTONOMOUS_MARKET_WATCH_SECONDS` | Primary key wins if set; otherwise legacy fallback applies; collisions recorded. |
+| Guards mode | `AUTONOMOUS_GUARDS_MODE` normalized to `strict` or `fatal_only` | invalid values | Invalid inputs normalize to default safe value. |
+
+## Before/After Behavior
+
+Before:
+- No explicit central autonomous decision brain API surface with required function names.
+- Orchestrator relied on policy/risk path only, without integrated probabilistic/UQ/conformal/drift decision object.
+- Mastermind runtime status was preflight-only in orchestrator flow.
+- Config matrix audit did not provide Harmony-resolved matrix outputs for all configs.
+- Full-throttle script had cadence knob conflicts and allowlist mismatch risk.
+
+After:
+- Added modular AutonomousMarketPredictionAndDecisionEngine with required function-level APIs and named engine classes.
+- Wired decision brain into live loop with decision tick audits/metrics and optional enforce mode (`AUTONOMOUS_DECISION_BRAIN_ENFORCE`).
+- Added runtime mastermind observation wiring and deterministic bounded overrides.
+- Hardened Harmony resolver for market-watch collision recording and config-path dry-run resolution.
+- Rebuilt config matrix audit tooling and generated resolved matrix docs.
+- Added runtime audit script to compute blocker categories, invariants, event bus coverage, and system verdict.
+- Harmonized full-throttle launcher cadence and allowlist defaults.
+
+## Remaining Blockers
+
+1. Live artifact generation in current environment remains blocked/intermittent:
+- Observed run-dir: `runs/kraken_spot_live_profit_full_throttle`
+- State: watchdog child started, but runtime artifacts required for full post-start execution audit were not emitted.
+- Immediate safe action: treat live mode as withheld; continue with paper/live-readonly validation in this environment.
+
+2. Runtime audit verdict (latest live launcher attempt):
+- `SYSTEM_STATE=BLOCKED`
+- Execution topic absent and no submitted/blocked/rejected trade events were emitted.
+

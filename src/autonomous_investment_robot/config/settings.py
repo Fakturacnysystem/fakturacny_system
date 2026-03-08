@@ -226,6 +226,23 @@ class MLOpsSettings:
 
 
 @dataclass
+class AutonomousDecisionSettings:
+    confidence_threshold: float = 0.55
+    uncertainty_threshold_bps: float = 85.0
+    conformal_alpha: float = 0.1
+    drift_threshold: float = 0.2
+    regime_hold_s: float = 30.0
+    max_slippage_guard_bps: float = 8.0
+    latency_risk_threshold: float = 0.65
+    max_drawdown_guard_pct: float = 8.0
+    online_learning_enabled: bool = True
+    online_learning_rate: float = 0.02
+    enable_news_features: bool = False
+    enable_macro_features: bool = False
+    enable_fundamental_features: bool = False
+
+
+@dataclass
 class RobotSettings:
     trading_mode: TradingMode = TradingMode.PAPER
     explicit_live_enable: bool = False
@@ -251,6 +268,7 @@ class RobotSettings:
     replay: ReplaySettings = field(default_factory=ReplaySettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
     universe_builder: UniverseBuilderSettings = field(default_factory=UniverseBuilderSettings)
+    autonomous: AutonomousDecisionSettings = field(default_factory=AutonomousDecisionSettings)
 
     @classmethod
     def from_env(cls) -> "RobotSettings":
@@ -323,6 +341,7 @@ class RobotSettings:
             replay=ReplaySettings(**data.get("replay", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
             universe_builder=UniverseBuilderSettings(**data.get("universe_builder", {})),
+            autonomous=AutonomousDecisionSettings(**data.get("autonomous", {})),
         )
 
     def __post_init__(self) -> None:

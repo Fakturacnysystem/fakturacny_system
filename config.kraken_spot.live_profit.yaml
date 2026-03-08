@@ -27,6 +27,20 @@ policy:
   confidence_threshold: 0.0
   safety_buffer_bps: 3.0
   base_risk_budget: 25.0
+autonomous:
+  confidence_threshold: 0.52
+  uncertainty_threshold_bps: 85.0
+  conformal_alpha: 0.1
+  drift_threshold: 0.2
+  regime_hold_s: 30.0
+  max_slippage_guard_bps: 8.0
+  latency_risk_threshold: 0.65
+  max_drawdown_guard_pct: 8.0
+  online_learning_enabled: true
+  online_learning_rate: 0.02
+  enable_news_features: false
+  enable_macro_features: false
+  enable_fundamental_features: false
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0

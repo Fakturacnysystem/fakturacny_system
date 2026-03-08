@@ -79,6 +79,10 @@ from autonomous_investment_robot.services.risk_calendar import RiskCalendarServi
 from autonomous_investment_robot.services.microstructure import SpreadSpikeDetector
 from autonomous_investment_robot.services.liquidity_map import LiquidityMapService
 from autonomous_investment_robot.services.mastermind import MastermindSupervisor
+from autonomous_investment_robot.services.autonomous_decision import (
+    AutonomousMarketPredictionAndDecisionEngine,
+    DecisionContext,
+)
 
 
 AGGRESSIVE_HF_PROFILE_DEFAULTS: dict[str, str] = {
@@ -218,6 +222,62 @@ class RobotOrchestrator:
         )
         self.mastermind_supervisor = MastermindSupervisor(settings.storage.run_dir)
         self.mastermind_preflight = self.mastermind_supervisor.preflight(self.harmony_resolved)
+        autonomous_cfg = getattr(self.settings, "autonomous", None)
+        self.autonomous_decision_engine = AutonomousMarketPredictionAndDecisionEngine(
+            base_risk_budget_quote=float(getattr(self.settings.policy, "base_risk_budget", 25.0) or 25.0),
+            confidence_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_CONFIDENCE_THRESHOLD",
+                            str(getattr(autonomous_cfg, "confidence_threshold", getattr(self.settings.policy, "confidence_threshold", 0.55))),
+                        )
+                        or str(getattr(autonomous_cfg, "confidence_threshold", getattr(self.settings.policy, "confidence_threshold", 0.55)))
+                    ),
+                ),
+            ),
+            uncertainty_threshold_bps=max(
+                1.0,
+                float(os.getenv("AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS", str(getattr(autonomous_cfg, "uncertainty_threshold_bps", 85.0))) or str(getattr(autonomous_cfg, "uncertainty_threshold_bps", 85.0))),
+            ),
+            drift_threshold=max(
+                0.01,
+                float(os.getenv("AUTONOMOUS_DRIFT_THRESHOLD", str(getattr(autonomous_cfg, "drift_threshold", getattr(self.settings.mlops, "drift_psi_threshold", 0.2)))) or str(getattr(autonomous_cfg, "drift_threshold", getattr(self.settings.mlops, "drift_psi_threshold", 0.2)))),
+            ),
+            conformal_alpha=max(
+                0.01,
+                min(
+                    0.4,
+                    float(os.getenv("AUTONOMOUS_CONFORMAL_ALPHA", str(getattr(autonomous_cfg, "conformal_alpha", 0.1))) or str(getattr(autonomous_cfg, "conformal_alpha", 0.1))),
+                ),
+            ),
+            regime_hold_s=max(
+                5.0,
+                float(os.getenv("AUTONOMOUS_REGIME_HOLD_S", str(getattr(autonomous_cfg, "regime_hold_s", 30.0))) or str(getattr(autonomous_cfg, "regime_hold_s", 30.0))),
+            ),
+            max_drawdown_pct=max(
+                0.0,
+                float(os.getenv("AUTONOMOUS_MAX_DRAWDOWN_GUARD_PCT", str(getattr(autonomous_cfg, "max_drawdown_guard_pct", self._limit_float(getattr(self.settings.risk, "max_drawdown_pct", 8.0), 8.0)))) or str(getattr(autonomous_cfg, "max_drawdown_guard_pct", self._limit_float(getattr(self.settings.risk, "max_drawdown_pct", 8.0), 8.0)))),
+            ),
+            max_slippage_bps=max(
+                0.5,
+                float(os.getenv("AUTONOMOUS_MAX_SLIPPAGE_GUARD_BPS", str(getattr(autonomous_cfg, "max_slippage_guard_bps", 8.0))) or str(getattr(autonomous_cfg, "max_slippage_guard_bps", 8.0))),
+            ),
+            latency_risk_threshold=max(
+                0.05,
+                min(1.0, float(os.getenv("AUTONOMOUS_LATENCY_RISK_THRESHOLD", str(getattr(autonomous_cfg, "latency_risk_threshold", 0.65))) or str(getattr(autonomous_cfg, "latency_risk_threshold", 0.65)))),
+            ),
+            online_learning_enabled=self._bool_env("AUTONOMOUS_ONLINE_LEARNING_ENABLED", bool(getattr(autonomous_cfg, "online_learning_enabled", True))),
+            base_learning_rate=max(
+                1e-4,
+                min(0.2, float(os.getenv("AUTONOMOUS_ONLINE_LEARNING_RATE", str(getattr(autonomous_cfg, "online_learning_rate", 0.02))) or str(getattr(autonomous_cfg, "online_learning_rate", 0.02)))),
+            ),
+            enable_news=self._bool_env("AUTONOMOUS_ENABLE_NEWS_FEATURES", bool(getattr(autonomous_cfg, "enable_news_features", False))),
+            enable_macro=self._bool_env("AUTONOMOUS_ENABLE_MACRO_FEATURES", bool(getattr(autonomous_cfg, "enable_macro_features", False))),
+            enable_fundamentals=self._bool_env("AUTONOMOUS_ENABLE_FUNDAMENTAL_FEATURES", bool(getattr(autonomous_cfg, "enable_fundamental_features", False))),
+        )
         self.toxicity = ToxicityScorer(window=max(8, int(os.getenv("AUTONOMOUS_TOXICITY_WINDOW", "32") or "32")))
         self.treasury = TreasuryService(
             reserve_cash_ratio=max(0.0, float(os.getenv("AUTONOMOUS_RESERVE_CASH_RATIO", "0.12") or "0.12")),
@@ -699,6 +759,17 @@ class RobotOrchestrator:
 
     def _live_loop(self, live: object, symbol: str, mode: ExecutionMode) -> dict:
         harmony = getattr(self, "harmony_resolved", None)
+        if bool(getattr(getattr(self, "mastermind_preflight", None), "invariant_breach", False)):
+            reason = str(getattr(self.mastermind_preflight, "reason", "mastermind_preflight_invariant_breach") or "mastermind_preflight_invariant_breach")
+            self.ops.audit_event(
+                "fatal_kill_switch",
+                {
+                    "reason": reason,
+                    "source": "mastermind_preflight",
+                },
+            )
+            self._write_runtime_health(status="FATAL", reason=reason)
+            return {"status": "blocked", "mode": mode.value, "reason": reason}
         default_poll = "2" if self.settings.live_provider() == "kraken_spot" else "5"
         poll_s = max(0.5, float(os.getenv("AUTONOMOUS_LIVE_POLL_SECONDS", default_poll)))
         rebalance_deadzone_factor = max(0.0, min(1.0, float(os.getenv("AUTONOMOUS_REBALANCE_DEADZONE_FACTOR", "0.5"))))
@@ -951,6 +1022,7 @@ class RobotOrchestrator:
         mandate_max_leverage = max(1, int(os.getenv("AUTONOMOUS_MANDATE_MAX_LEVERAGE", "1") or "1"))
         guards_mode = self._guards_mode()
         fatal_only_mode = guards_mode == "fatal_only"
+        decision_brain_enforce = self._bool_env("AUTONOMOUS_DECISION_BRAIN_ENFORCE", False)
         failed_probe_block_n = max(
             1,
             int(os.getenv("AUTONOMOUS_NO_NEW_ENTRIES_AFTER_FAILED_PROBES_N", "5") or "5"),
@@ -973,6 +1045,8 @@ class RobotOrchestrator:
         orders_submitted = 0.0
         orders_rejected = 0.0
         rate_limit_events_total = 0.0
+        insufficient_balance_events_total = 0.0
+        no_intent_events_total = 0.0
         fills_confirmed = 0.0
         maker_fills = 0.0
         taker_fills = 0.0
@@ -1043,6 +1117,8 @@ class RobotOrchestrator:
             float(os.getenv("AUTONOMOUS_FAILED_PROBE_BLOCK_COOLDOWN_S", "300") or "300"),
         )
         max_drawdown_seen = 0.0
+        mastermind_runtime_state = self.mastermind_preflight
+        brain_decision_snapshot: dict[str, object] = {}
         toxicity_freeze_until_ts = 0.0
         toxicity_freeze_events = 0.0
         volstop_cooldown_until_ts = 0.0
@@ -1685,6 +1761,7 @@ class RobotOrchestrator:
             return snap
 
         def _update_live_kpis() -> None:
+            nonlocal mastermind_runtime_state
             attempts = orders_submitted + orders_rejected
             fill_rate = fills_confirmed / max(executions_submitted_total, 1.0)
             maker_fill_rate = maker_fills / max(maker_fills + taker_fills, 1.0)
@@ -1744,6 +1821,35 @@ class RobotOrchestrator:
                 "rate_budget_circuit_breaker_active",
                 1.0 if self.rate_budget.circuit_breaker_active(now_ts=time.time()) else 0.0,
             )
+            sell_breach_detected = (
+                bool(self.ops.metrics.get("profit_lock_sell_below_entry_total", 0.0) or 0.0) > 0.0
+                or bool(self.ops.metrics.get("profit_lock_sell_below_min_profit_total", 0.0) or 0.0) > 0.0
+            )
+            try:
+                mastermind_runtime_state = self.mastermind_supervisor.observe_runtime(
+                    reject_rate=float(reject_rate),
+                    rate_limit_events=float(rate_limit_events_total),
+                    insufficient_balance_events=float(insufficient_balance_events_total),
+                    no_intent_events=float(no_intent_events_total),
+                    sell_breach_detected=sell_breach_detected,
+                    base_max_orders_per_min=int(getattr(self.harmony_resolved, "max_orders_per_min", 10) or 10),
+                    base_market_watch_budget=int(getattr(self.harmony_resolved, "market_watch_max_calls_per_min", 60) or 60),
+                )
+            except Exception as exc:
+                self.ops.audit_event("mastermind_supervisor_error", {"error": str(exc)})
+            self.ops.set_metric("mastermind_pause_buy", 1.0 if bool(getattr(mastermind_runtime_state, "pause_buy", False)) else 0.0)
+            self.ops.set_metric("mastermind_size_scale", float(getattr(mastermind_runtime_state, "size_scale", 1.0) or 1.0))
+            self.ops.set_metric("mastermind_invariant_breach", 1.0 if bool(getattr(mastermind_runtime_state, "invariant_breach", False)) else 0.0)
+            max_orders_override = getattr(mastermind_runtime_state, "max_orders_per_min_override", None)
+            if max_orders_override is not None:
+                bounded = max(1, min(int(getattr(self.harmony_resolved, "max_orders_per_min", 10) or 10), int(max_orders_override)))
+                os.environ["AUTONOMOUS_MAX_ORDERS_PER_MIN"] = str(bounded)
+                self.ops.set_metric("mastermind_max_orders_per_min", float(bounded))
+            watch_override = getattr(mastermind_runtime_state, "market_watch_max_calls_per_min_override", None)
+            if watch_override is not None:
+                bounded_watch = max(1, min(int(getattr(self.harmony_resolved, "market_watch_max_calls_per_min", 60) or 60), int(watch_override)))
+                os.environ["AUTONOMOUS_MARKET_WATCH_MAX_CALLS_PER_MIN"] = str(bounded_watch)
+                self.ops.set_metric("mastermind_market_watch_budget", float(bounded_watch))
 
         def _constraint_snapshot_for(sym: str, reference_price: float) -> dict[str, Any]:
             # Reuse live service constraint helpers when available, otherwise default-safe zeros.
@@ -1951,6 +2057,7 @@ class RobotOrchestrator:
                     pass
 
         self.ops.set_metric("guards_fatal_only", 1.0 if fatal_only_mode else 0.0)
+        self.ops.set_metric("decision_brain_enforce", 1.0 if decision_brain_enforce else 0.0)
         self.ops.set_metric("self_tuner_size_scale", self_tuner_size_scale)
         self.ops.set_metric("self_tuner_min_order_notional_quote", min_order_notional_quote_live)
         self.ops.audit_event(
@@ -2808,7 +2915,158 @@ class RobotOrchestrator:
                             now_ts=now_ts,
                         )
 
+            scheduler_stats_now = submission_scheduler.stats(now_ts=now_ts)
+            modeled_cost_floor_bps = max(
+                120.0,
+                (2.0 * float(self.settings.execution.fee_bps)) + (2.0 * float(self.settings.execution.slippage_bps)),
+            )
+            current_profit_bps = 0.0
+            if avg_entry_live > 0.0 and bid > 0.0:
+                current_profit_bps = ((bid / max(avg_entry_live, 1e-9)) - 1.0) * 10000.0
+            try:
+                brain_decision = self.autonomous_decision_engine.run_decision_algorithm(
+                    DecisionContext(
+                        symbol=symbol,
+                        now_ts=now_ts,
+                        bid=bid,
+                        ask=ask,
+                        mid=mid,
+                        spread_bps=spread_bps,
+                        depth_notional=depth_notional,
+                        features=dict(features),
+                        market_watch={
+                            "trend_30s_bps": float(market_watch_state.trend_30s_bps),
+                            "trend_2m_bps": float(market_watch_state.trend_2m_bps),
+                            "trend_10m_bps": float(market_watch_state.trend_10m_bps),
+                            "realized_vol_2m": float(market_watch_state.realized_vol_2m),
+                            "realized_vol_10m": float(market_watch_state.realized_vol_10m),
+                            "regime_hint": float(0.0),
+                            "confidence": float(market_watch_state.confidence),
+                        },
+                        forecast_mu=float(fc.mu),
+                        forecast_sigma=float(fc.sigma),
+                        forecast_confidence=float(fc.confidence),
+                        position_notional_quote=float(abs(exposure_notional)),
+                        signed_exposure_notional_quote=float(signed_exposure_notional),
+                        avg_entry_price=float(avg_entry_live),
+                        position_age_s=float(position_age_s),
+                        current_profit_bps=float(current_profit_bps),
+                        drawdown_pct=float(drawdown_abs),
+                        quote_free=float(quote_free),
+                        max_exposure_notional=self._limit_float(self.settings.risk.max_exposure_notional, 0.0),
+                        order_cadence_s=float(getattr(self.harmony_resolved, "order_cadence_s", 5.0) or 5.0),
+                        last_submission_ts=float(scheduler_stats_now.last_submission_ts),
+                        fee_bps=float(self.settings.execution.fee_bps),
+                        slippage_bps=float(self.settings.execution.slippage_bps),
+                        latency_ms=float(getattr(selected_quote, "latency_ms", 0.0) or 0.0),
+                        guards_mode=str(guards_mode),
+                        modeled_cost_floor_bps=float(modeled_cost_floor_bps),
+                        sell_min_profit_bps=float(sell_profit_lock_min_bps),
+                        sell_target_profit_bps=float(sell_profit_lock_target_bps),
+                    )
+                )
+                brain_decision_snapshot = brain_decision.to_dict()
+                self.ops.set_metric("decision_brain_confidence", float(brain_decision.confidence))
+                self.ops.set_metric("decision_brain_uncertainty_bps", float(brain_decision.uncertainty_bps))
+                self.ops.set_metric("decision_brain_drift_score", float(brain_decision.drift_score))
+                self.ops.set_metric("decision_brain_position_scale", float(brain_decision.position_size_scale))
+                self.ops.audit_event(
+                    "decision_brain_tick",
+                    {
+                        "symbol": symbol,
+                        "action": str(brain_decision.action),
+                        "side": str(brain_decision.side),
+                        "skip_reason": str(brain_decision.skip_reason),
+                        "confidence": float(brain_decision.confidence),
+                        "uncertainty_bps": float(brain_decision.uncertainty_bps),
+                        "drift_score": float(brain_decision.drift_score),
+                        "regime": str(brain_decision.regime),
+                        "risk_flags": list(brain_decision.risk_flags),
+                    },
+                )
+            except Exception as exc:
+                brain_decision = None
+                brain_decision_snapshot = {"error": str(exc)}
+                self.ops.audit_event("decision_brain_error", {"symbol": symbol, "error": str(exc)})
+
+            if bool(getattr(mastermind_runtime_state, "invariant_breach", False)):
+                self.ops.audit_event(
+                    "fatal_kill_switch",
+                    {
+                        "reason": str(getattr(mastermind_runtime_state, "reason", "mastermind_invariant_breach")),
+                        "source": "mastermind_runtime",
+                    },
+                )
+                self._write_runtime_health(
+                    status="FATAL",
+                    reason=str(getattr(mastermind_runtime_state, "reason", "mastermind_invariant_breach")),
+                )
+                return {
+                    "status": "blocked",
+                    "mode": mode.value,
+                    "reason": str(getattr(mastermind_runtime_state, "reason", "mastermind_invariant_breach")),
+                    "steps": steps,
+                }
+
             intent = self.policy.make_intent(fc, features, self.settings.execution.fee_bps, self.settings.execution.slippage_bps)
+            if brain_decision is not None:
+                if decision_brain_enforce and intent is not None and str(intent.side).lower() == "buy":
+                    intent.target_notional = max(
+                        0.0,
+                        float(intent.target_notional) * max(0.0, min(2.0, float(brain_decision.position_size_scale))),
+                    )
+                if (
+                    decision_brain_enforce
+                    and intent is None
+                    and brain_decision.side == "sell"
+                    and brain_decision.action in {"reduce", "partial_close", "full_close"}
+                    and exposure_notional > 1e-9
+                ):
+                    sell_notional = max(
+                        float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0),
+                        min(float(abs(exposure_notional)), float(max(0.0, brain_decision.recommended_notional_quote))),
+                    )
+                    if sell_notional > 0.0:
+                        intent = OrderIntent(
+                            symbol=symbol,
+                            side="sell",
+                            target_notional=sell_notional,
+                            why={
+                                "decision_brain": {
+                                    "action": brain_decision.action,
+                                    "reason": brain_decision.skip_reason,
+                                    "regime": brain_decision.regime,
+                                    "confidence": brain_decision.confidence,
+                                    "uncertainty_bps": brain_decision.uncertainty_bps,
+                                }
+                            },
+                        )
+                if (
+                    decision_brain_enforce
+                    and
+                    intent is not None
+                    and str(intent.side).lower() == "buy"
+                    and str(brain_decision.action).lower() == "skip"
+                ):
+                    reason = str(brain_decision.skip_reason or "decision_brain_skip")
+                    if self.policy.last_no_intent_debug is None:
+                        self.policy.last_no_intent_debug = {}
+                    self.policy.last_no_intent_debug = {
+                        **dict(getattr(self.policy, "last_no_intent_debug", {}) or {}),
+                        "reason": reason,
+                        "decision_brain": brain_decision_snapshot,
+                    }
+                    self.ops.audit_event(
+                        "decision_brain_block",
+                        {
+                            "symbol": symbol,
+                            "side": "buy",
+                            "reason": reason,
+                            "risk_flags": list(brain_decision.risk_flags),
+                        },
+                    )
+                    intent = None
+
             forced_exit_reason = ""
             forced_exit_notional = 0.0
             if (not tp_only_mode) and exposure_notional > 1e-9 and position_open_ts is not None:
@@ -2914,7 +3172,11 @@ class RobotOrchestrator:
 
             blackout_active = bool(self.harmony_resolved.blackout_enabled) and self.risk_calendar.in_blackout(now_ts)
             liquidity_decision = self.liquidity_map.decide(ts=now_ts)
-            soft_pause_buy = bool(operator_pause_entries or getattr(stuck_decision, "entries_paused", False))
+            soft_pause_buy = bool(
+                operator_pause_entries
+                or getattr(stuck_decision, "entries_paused", False)
+                or bool(getattr(mastermind_runtime_state, "pause_buy", False))
+            )
             modifiers = build_modifiers_pipeline(
                 fatal_stop=False,
                 rate_limit_cooldown=bool(self.rate_limit_governor.storm_active(now_ts=now_ts)),
@@ -2974,6 +3236,8 @@ class RobotOrchestrator:
                 gated_by_decision.append("operator_pause_entries")
             if bool(stuck_decision.entries_paused):
                 gated_by_decision.append("stuck_entries_paused")
+            if bool(getattr(mastermind_runtime_state, "pause_buy", False)):
+                gated_by_decision.append("mastermind_pause_buy")
             if block_new_entries_until_health_ok:
                 gated_by_decision.append("failed_probe_block_new_entries")
             if now_ts < audit_pause_new_risk_until_ts:
@@ -3027,9 +3291,17 @@ class RobotOrchestrator:
                     "sellable_quote": float((live_state or {}).get("base_free", (live_state or {}).get("position_qty", 0.0)) or 0.0)
                     * float(bid),
                 },
+                decision_extra={
+                    "brain_action": str(brain_decision_snapshot.get("action", "")),
+                    "brain_reason": str(brain_decision_snapshot.get("skip_reason", "")),
+                    "brain_uncertainty_bps": float(brain_decision_snapshot.get("uncertainty_bps", 0.0) or 0.0),
+                    "brain_confidence": float(brain_decision_snapshot.get("confidence", 0.0) or 0.0),
+                    "brain_regime": str(brain_decision_snapshot.get("regime", "")),
+                },
             )
 
             if intent is None:
+                no_intent_events_total += 1.0
                 self.ops.inc_metric("orders_rejected_total")
                 orders_rejected += 1.0
                 no_intent_debug = dict(getattr(self.policy, "last_no_intent_debug", {}) or {})
@@ -3088,6 +3360,7 @@ class RobotOrchestrator:
                     adaptive_scale *= 0.75
             adaptive_scale *= treasury_decision.throttle_scale
             adaptive_scale *= modifier_size_scale
+            adaptive_scale *= max(0.05, float(getattr(mastermind_runtime_state, "size_scale", 1.0) or 1.0))
             adaptive_scale = max(adaptive_min_scale, min(adaptive_max_scale, adaptive_scale))
             delta_signed = (desired_signed - current_signed) * adaptive_scale
             desired_signed = current_signed + delta_signed
@@ -4064,6 +4337,8 @@ class RobotOrchestrator:
                     result = self.execution.execute_live(adjusted)
             status_norm = str(result.status).strip().lower()
             reason_norm = str(result.reason).strip().lower()
+            if "insufficient_balance" in reason_norm or "insufficient funds" in reason_norm:
+                insufficient_balance_events_total += 1.0
             if self.kraken_universe is not None and (
                 "restricted" in reason_norm or "unknown asset pair" in reason_norm or "not available" in reason_norm
             ):

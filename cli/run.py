@@ -37,6 +37,9 @@ def _read_mode(config_path: str) -> str:
 
 
 def _resolve_run_dir(config_path: str) -> str:
+    env_override = str(os.getenv("AUTONOMOUS_RUN_DIR", "") or "").strip()
+    if env_override:
+        return env_override
     try:
         cfg = _load_yaml_like(config_path)
         storage = cfg.get("storage", {}) if isinstance(cfg, dict) else {}

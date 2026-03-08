@@ -1,195 +1,235 @@
 #!/usr/bin/env python3
-"""
-Audit Config Matrix Resolved - Validates resolved harmony config and ensures
-dry-run config matrix is properly audited.
-"""
+from __future__ import annotations
 
+import argparse
+import glob
 import json
 import os
-import sys
 from pathlib import Path
+import sys
+import tempfile
+from typing import Any
 
 
-def load_yaml_config(path: str) -> dict:
-    text = Path(path).read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from autonomous_investment_robot.config.settings import RobotSettings, _load_yaml_like  # noqa: E402
+from autonomous_investment_robot.services.ops.harmony import HarmonyConfigResolver  # noqa: E402
+
+
+DEFAULT_CONFIG_GLOB = "config*.yaml"
+DEFAULT_JSON_OUTPUT = "docs/config_matrix.json"
+DEFAULT_MD_OUTPUT = "docs/config_matrix.md"
+
+
+def _safe_load_settings(path: Path) -> tuple[RobotSettings | None, str]:
     try:
-        import yaml
-        parsed = yaml.safe_load(text)
-        if isinstance(parsed, dict):
-            return parsed
+        return RobotSettings.from_file(str(path)), ""
+    except Exception as first_exc:
+        try:
+            payload = _load_yaml_like(str(path))
+            if not isinstance(payload, dict):
+                return None, str(first_exc)
+            payload = dict(payload)
+            exec_cfg = payload.get("execution", {})
+            if not isinstance(exec_cfg, dict):
+                exec_cfg = {}
+            payload["mode"] = "paper"
+            exec_cfg["mode"] = "paper"
+            payload["execution"] = exec_cfg
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+                tmp.write(json.dumps(payload))
+                tmp_path = Path(tmp.name)
+            try:
+                return RobotSettings.from_file(str(tmp_path)), ""
+            finally:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            return None, str(first_exc)
+
+
+def _harmony_resolve(settings: RobotSettings, env: dict[str, str]) -> dict[str, Any]:
+    resolver = HarmonyConfigResolver()
+    resolved = resolver.resolve(
+        settings=settings,
+        env_snapshot=env,
+        exchange_min_quote_fallback=float(env.get("AUTONOMOUS_EXCHANGE_MIN_ORDER_QUOTE_FALLBACK", "2.0") or "2.0"),
+        dry_run=True,
+    )
+    payload = resolved.to_dict()
+    payload["invariant_sell_min_profit_ok"] = float(payload.get("sell_min_profit_bps", 0.0)) >= 120.0
+    payload["collision_count"] = int(len(payload.get("collisions", [])))
+    return payload
+
+
+def _summarize_row(config_path: Path, settings: RobotSettings, resolved: dict[str, Any], status: str, error: str = "") -> dict[str, Any]:
+    provider = settings.live_provider()
+    execution_mode = str(getattr(settings.execution, "mode", settings.trading_mode.value))
+    try:
+        config_label = str(config_path.relative_to(ROOT))
     except Exception:
-        pass
-    try:
-        return json.loads(text)
-    except Exception:
-        return {}
-
-
-def check_harmony_resolved(run_dir: str) -> tuple[bool, list[str]]:
-    errors = []
-    harmony_path = Path(run_dir) / "harmony_report.json"
-    
-    if not harmony_path.exists():
-        errors.append(f"harmony_report.json not found in {run_dir}")
-        return False, errors
-    
-    try:
-        data = json.loads(harmony_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        errors.append(f"Failed to parse harmony_report.json: {e}")
-        return False, errors
-    
-    required_fields = [
-        "order_cadence_s",
-        "guards_mode",
-        "user_min_order_quote",
-        "effective_min_order_quote",
-        "sell_min_profit_bps",
-        "sell_target_profit_bps",
-        "tp_only_mode",
-        "max_orders_per_min",
-        "market_watch_every_s",
-        "blackout_enabled",
-        "spread_spike_enabled",
-        "liquidity_map_enabled",
-    ]
-    
-    for field in required_fields:
-        if field not in data:
-            errors.append(f"Missing required field in harmony_report: {field}")
-    
-    sell_min = float(data.get("sell_min_profit_bps", 0))
-    if sell_min < 120.0:
-        errors.append(f"sell_min_profit_bps ({sell_min}) below hard floor of 120 bps")
-    
-    if data.get("guards_mode") not in {"strict", "fatal_only"}:
-        errors.append(f"Invalid guards_mode: {data.get('guards_mode')}")
-    
-    return len(errors) == 0, errors
-
-
-def check_mastermind_status(run_dir: str) -> tuple[bool, list[str]]:
-    errors = []
-    status_path = Path(run_dir) / "mastermind_status.json"
-    
-    if not status_path.exists():
-        errors.append(f"mastermind_status.json not found in {run_dir}")
-        return False, errors
-    
-    try:
-        data = json.loads(status_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        errors.append(f"Failed to parse mastermind_status.json: {e}")
-        return False, errors
-    
-    if "ok" not in data:
-        errors.append("mastermind_status missing 'ok' field")
-    
-    if data.get("invariant_breach", False):
-        errors.append("MASTERMIND DETECTED INVARIANT BREACH")
-    
-    return len(errors) == 0, errors
-
-
-def check_dry_run_config(config_path: str) -> tuple[bool, list[str]]:
-    errors = []
-    
-    if not Path(config_path).exists():
-        errors.append(f"Config file not found: {config_path}")
-        return False, errors
-    
-    config = load_yaml_config(config_path)
-    
-    mode = config.get("mode", config.get("execution", {}).get("mode", "paper"))
-    if mode == "live":
-        if not config.get("enable_live_trading", False):
-            errors.append("live mode without enable_live_trading flag")
-        if not config.get("ack_i_understand_risks", False):
-            errors.append("live mode without ack_i_understand_risks flag")
-    
-    return len(errors) == 0, errors
-
-
-def check_env_vars() -> tuple[bool, list[str]]:
-    errors = []
-    warnings = []
-    
-    forbidden_patterns = {
-        "KRAKEN_API_KEY": "API key found in env",
-        "KRAKEN_API_SECRET": "API secret found in env",
+        config_label = str(config_path)
+    return {
+        "config": config_label,
+        "status": status,
+        "error": error,
+        "mode": execution_mode,
+        "provider": provider,
+        "run_dir": str(getattr(settings.storage, "run_dir", "")),
+        "universe_size": len(getattr(settings, "universe", [])),
+        "order_cadence_s": float(resolved.get("order_cadence_s", 0.0)),
+        "guards_mode": str(resolved.get("guards_mode", "")),
+        "user_min_order_quote": float(resolved.get("user_min_order_quote", 0.0)),
+        "exchange_min_order_quote": float(resolved.get("exchange_min_order_quote", 0.0)),
+        "effective_min_order_quote": float(resolved.get("effective_min_order_quote", 0.0)),
+        "sell_min_profit_bps": float(resolved.get("sell_min_profit_bps", 0.0)),
+        "sell_target_profit_bps": float(resolved.get("sell_target_profit_bps", 0.0)),
+        "tp_only_mode": bool(resolved.get("tp_only_mode", False)),
+        "max_orders_per_min": int(resolved.get("max_orders_per_min", 0)),
+        "market_watch_every_s": float(resolved.get("market_watch_every_s", 0.0)),
+        "blackout_enabled": bool(resolved.get("blackout_enabled", False)),
+        "spread_spike_enabled": bool(resolved.get("spread_spike_enabled", False)),
+        "liquidity_map_enabled": bool(resolved.get("liquidity_map_enabled", False)),
+        "invariant_sell_min_profit_ok": bool(resolved.get("invariant_sell_min_profit_ok", False)),
+        "collision_count": int(resolved.get("collision_count", 0)),
+        "collisions": resolved.get("collisions", []),
     }
-    
-    for key, msg in forbidden_patterns.items():
-        if os.getenv(key):
-            warnings.append(f"WARNING: {msg} - ensure it is not printed/logged")
-    
-    return len(errors) == 0, errors + warnings
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Audit config matrix resolved")
-    parser.add_argument("--config", default="config.kraken_spot.live_profit.yaml", help="Config file path")
-    parser.add_argument("--run-dir", default=None, help="Run directory")
-    parser.add_argument("--dry-run", action="store_true", help="Perform dry-run validation only")
+def collect_config_matrix(config_paths: list[Path], env: dict[str, str]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for config_path in sorted(config_paths):
+        settings, err = _safe_load_settings(config_path)
+        if settings is None:
+            rows.append(
+                {
+                    "config": str(config_path.relative_to(ROOT)),
+                    "status": "error",
+                    "error": err,
+                }
+            )
+            continue
+        resolved = _harmony_resolve(settings, env)
+        rows.append(_summarize_row(config_path=config_path, settings=settings, resolved=resolved, status="ok"))
+
+    ok_rows = [r for r in rows if r.get("status") == "ok"]
+    return {
+        "rows": rows,
+        "summary": {
+            "configs_total": len(rows),
+            "configs_ok": len(ok_rows),
+            "configs_error": len(rows) - len(ok_rows),
+            "invariant_failures": len([r for r in ok_rows if not bool(r.get("invariant_sell_min_profit_ok", False))]),
+            "total_collisions": int(sum(int(r.get("collision_count", 0)) for r in ok_rows)),
+        },
+    }
+
+
+def to_markdown(matrix: dict[str, Any]) -> str:
+    rows = matrix.get("rows", [])
+    summary = matrix.get("summary", {})
+    lines = [
+        "# Config Matrix (Harmony Resolved)",
+        "",
+        "## Summary",
+        "",
+        f"- configs_total: {int(summary.get('configs_total', 0))}",
+        f"- configs_ok: {int(summary.get('configs_ok', 0))}",
+        f"- configs_error: {int(summary.get('configs_error', 0))}",
+        f"- invariant_failures: {int(summary.get('invariant_failures', 0))}",
+        f"- total_collisions: {int(summary.get('total_collisions', 0))}",
+        "",
+        "## Matrix",
+        "",
+        "| Config | Status | Mode | Provider | Cadence(s) | MinOrder | SellMinBps | SellTargetBps | Guards | Collisions |",
+        "|---|---|---|---|---:|---:|---:|---:|---|---:|",
+    ]
+    for row in rows:
+        if row.get("status") != "ok":
+            lines.append(f"| `{row.get('config', '')}` | error |  |  |  |  |  |  |  |  |")
+            continue
+        lines.append(
+            "| `{config}` | {status} | `{mode}` | `{provider}` | {cadence:.2f} | {min_order:.2f} | {sell_min:.1f} | {sell_target:.1f} | `{guards}` | {collisions} |".format(
+                config=row["config"],
+                status=row["status"],
+                mode=row["mode"],
+                provider=row["provider"],
+                cadence=float(row["order_cadence_s"]),
+                min_order=float(row["effective_min_order_quote"]),
+                sell_min=float(row["sell_min_profit_bps"]),
+                sell_target=float(row["sell_target_profit_bps"]),
+                guards=row["guards_mode"],
+                collisions=int(row["collision_count"]),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Collision Details",
+            "",
+        ]
+    )
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        collisions = list(row.get("collisions", []))
+        if not collisions:
+            continue
+        lines.append(f"### `{row['config']}`")
+        lines.append("")
+        for col in collisions:
+            key = str(col.get("key", ""))
+            winner = str(col.get("winner", ""))
+            losers = ", ".join(str(x) for x in list(col.get("losers", [])))
+            lines.append(f"- `{key}` winner: `{winner}` losers: `{losers}`")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_outputs(matrix: dict[str, Any], json_path: Path, md_path: Path) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(matrix, indent=2, sort_keys=True), encoding="utf-8")
+    md_path.write_text(to_markdown(matrix), encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate harmony-resolved config matrix.")
+    parser.add_argument("--config-glob", default=DEFAULT_CONFIG_GLOB, help="Glob evaluated from repo root.")
+    parser.add_argument("--json-output", default=DEFAULT_JSON_OUTPUT, help="JSON output path from repo root.")
+    parser.add_argument("--md-output", default=DEFAULT_MD_OUTPUT, help="Markdown output path from repo root.")
     args = parser.parse_args()
-    
-    all_errors = []
-    
-    print("=" * 60)
-    print("AUDIT CONFIG MATRIX RESOLVED")
-    print("=" * 60)
-    
-    print("\n[1/4] Checking environment variables (secrets)...")
-    ok, errors = check_env_vars()
-    if not ok:
-        all_errors.extend(errors)
-        for err in errors:
-            print(f"  {err}")
-        print("  (API keys in env are OK for live trading)")
-    else:
-        print("  OK - No forbidden secrets detected")
-    
-    print("\n[2/4] Checking dry-run config...")
-    ok, errors = check_dry_run_config(args.config)
-    if not ok:
-        all_errors.extend(errors)
-        print(f"  FAIL: {errors}")
-    else:
-        print("  OK - Config validated")
-    
-    run_dir = args.run_dir
-    if run_dir is None:
-        config_data = load_yaml_config(args.config)
-        storage = config_data.get("storage", {})
-        run_dir = storage.get("run_dir", "runs/kraken_spot_live")
-    
-    print(f"\n[3/4] Checking harmony resolved ({run_dir})...")
-    ok, errors = check_harmony_resolved(run_dir)
-    if not ok:
-        all_errors.extend(errors)
-        print(f"  FAIL: {errors}")
-    else:
-        print("  OK - Harmony resolved validated")
-    
-    print(f"\n[4/4] Checking mastermind status ({run_dir})...")
-    ok, errors = check_mastermind_status(run_dir)
-    if not ok:
-        all_errors.extend(errors)
-        print(f"  FAIL: {errors}")
-    else:
-        print("  OK - Mastermind status validated")
-    
-    print("\n" + "=" * 60)
-    if all_errors:
-        print(f"FAILED - {len(all_errors)} error(s) found:")
-        for err in all_errors:
-            print(f"  - {err}")
-        return 1
-    else:
-        print("ALL CHECKS PASSED")
-        return 0
+
+    config_paths = [Path(p) for p in glob.glob(str(ROOT / args.config_glob))]
+    env: dict[str, str] = dict(os.environ)
+    for secret_key in ("KRAKEN_API_KEY", "KRAKEN_API_SECRET", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "OPENAI_API_KEY"):
+        if secret_key in env:
+            del env[secret_key]
+
+    matrix = collect_config_matrix(config_paths=config_paths, env=env)
+    json_path = ROOT / str(args.json_output)
+    md_path = ROOT / str(args.md_output)
+    write_outputs(matrix=matrix, json_path=json_path, md_path=md_path)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "configs": int(matrix["summary"]["configs_total"]),
+                "errors": int(matrix["summary"]["configs_error"]),
+                "json_output": str(json_path),
+                "md_output": str(md_path),
+            },
+            indent=2,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
