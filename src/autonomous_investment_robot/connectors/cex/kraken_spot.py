@@ -109,7 +109,15 @@ class KrakenSpotConnector:
         t = text.lower()
         if "permission denied" in t:
             return KrakenPermissionError(f"Kraken permission error: {text}")
-        if "eapi:invalid key" in t or "eapi:invalid signature" in t or "401" in t or "403" in t:
+        if (
+            "eapi:invalid key" in t
+            or "eapi:invalid signature" in t
+            or "401" in t
+            or "403" in t
+            or "incorrect padding" in t
+            or "invalid base64" in t
+            or "non-base64 digit found" in t
+        ):
             return KrakenAuthError(f"Kraken auth error: {text}")
         if "temporary lockout" in t:
             return KrakenTemporaryLockoutError(f"Kraken temporary lockout: {text}")
@@ -225,7 +233,14 @@ class KrakenSpotConnector:
             return "temporary_lockout", detail
         if "permission denied" in txt:
             return "invalid_permissions", detail
-        if "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
+        if (
+            "invalid key" in txt
+            or "invalid signature" in txt
+            or "authentication" in txt
+            or "incorrect padding" in txt
+            or "invalid base64" in txt
+            or "non-base64 digit found" in txt
+        ):
             return "invalid_credentials", detail
         if "invalid nonce" in txt:
             return "invalid_nonce", detail
