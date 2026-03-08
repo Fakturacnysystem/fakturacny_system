@@ -47,8 +47,12 @@ autonomous:
   liquidity_pressure_guard_threshold: -0.6
   adaptive_hold_base_s: 1800.0
   forecast_backend: baseline
+  forecast_backend_plugin: ""
   transformer_backend_enabled: false
   foundation_backend_enabled: false
+  self_optimization_window: 120
+  self_optimization_min_samples: 24
+  self_optimization_apply_every: 12
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0

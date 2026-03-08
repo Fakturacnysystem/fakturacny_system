@@ -334,6 +334,13 @@ class RobotOrchestrator:
                 )
                 or str(getattr(autonomous_cfg, "forecast_backend", "baseline"))
             ),
+            forecast_backend_plugin=str(
+                os.getenv(
+                    "AUTONOMOUS_FORECAST_BACKEND_PLUGIN",
+                    str(getattr(autonomous_cfg, "forecast_backend_plugin", "")),
+                )
+                or str(getattr(autonomous_cfg, "forecast_backend_plugin", ""))
+            ),
             enable_transformer_backend=self._bool_env(
                 "AUTONOMOUS_TRANSFORMER_BACKEND_ENABLED",
                 bool(getattr(autonomous_cfg, "transformer_backend_enabled", False)),
@@ -341,6 +348,42 @@ class RobotOrchestrator:
             enable_foundation_backend=self._bool_env(
                 "AUTONOMOUS_FOUNDATION_BACKEND_ENABLED",
                 bool(getattr(autonomous_cfg, "foundation_backend_enabled", False)),
+            ),
+            self_optimization_window=max(
+                20,
+                int(
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_SELF_OPTIMIZATION_WINDOW",
+                            str(getattr(autonomous_cfg, "self_optimization_window", 120)),
+                        )
+                        or str(getattr(autonomous_cfg, "self_optimization_window", 120))
+                    )
+                ),
+            ),
+            self_optimization_min_samples=max(
+                10,
+                int(
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_SELF_OPTIMIZATION_MIN_SAMPLES",
+                            str(getattr(autonomous_cfg, "self_optimization_min_samples", 24)),
+                        )
+                        or str(getattr(autonomous_cfg, "self_optimization_min_samples", 24))
+                    )
+                ),
+            ),
+            self_optimization_apply_every=max(
+                1,
+                int(
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_SELF_OPTIMIZATION_APPLY_EVERY",
+                            str(getattr(autonomous_cfg, "self_optimization_apply_every", 12)),
+                        )
+                        or str(getattr(autonomous_cfg, "self_optimization_apply_every", 12))
+                    )
+                ),
             ),
         )
         self.toxicity = ToxicityScorer(window=max(8, int(os.getenv("AUTONOMOUS_TOXICITY_WINDOW", "32") or "32")))
@@ -2319,10 +2362,14 @@ class RobotOrchestrator:
                 },
             )
 
+            portfolio_current_score = float(symbol_scores.get(symbol, 0.0))
+            portfolio_best_score = float(portfolio_current_score)
             if dynamic_portfolio and len(symbol_candidates) > 1 and (steps == 1 or steps % reselect_every_steps == 0):
                 best_symbol = symbol
                 best_score = symbol_scores.get(symbol, -10**9)
                 current_score = symbol_scores.get(symbol, -10**9)
+                portfolio_current_score = float(current_score)
+                portfolio_best_score = float(best_score)
                 optimizer_candidates: dict[str, dict[str, float | str]] = {}
                 affordable_symbols: set[str] = set()
                 ranked_universe = sorted(
@@ -2482,6 +2529,8 @@ class RobotOrchestrator:
                             "steps": steps,
                         },
                     )
+                portfolio_current_score = float(symbol_scores.get(symbol, current_score))
+                portfolio_best_score = float(best_score)
 
             selected_quote: VenueQuote | None = None
             try:
@@ -2702,6 +2751,22 @@ class RobotOrchestrator:
                 ret_1 *= 10.0
                 ret_3 *= 18.0
                 z_proxy *= 3.0
+            portfolio_concentration = max((float(w) for w in portfolio_weights.values()), default=1.0)
+            portfolio_corr_proxy = 0.0
+            try:
+                if portfolio_weights:
+                    main_symbol = max(portfolio_weights.items(), key=lambda kv: float(kv[1]))[0]
+                    if str(main_symbol) != str(symbol):
+                        corr_map = self._correlation_matrix(
+                            {
+                                str(symbol): return_histories.get(str(symbol), []),
+                                str(main_symbol): return_histories.get(str(main_symbol), []),
+                            }
+                        )
+                        portfolio_corr_proxy = float(corr_map.get(str(symbol), {}).get(str(main_symbol), 0.0) or 0.0)
+            except Exception:
+                portfolio_corr_proxy = 0.0
+            portfolio_rotation_signal = float(portfolio_best_score - portfolio_current_score)
             features = {
                 "ret_1": ret_1,
                 "ret_3": ret_3,
@@ -2718,6 +2783,11 @@ class RobotOrchestrator:
                 "flow_imbalance": flow_imbalance,
                 "mark_price": mid,
                 "spot_price_proxy": 0.0,
+                "portfolio_symbol_score": float(portfolio_current_score),
+                "portfolio_best_symbol_score": float(portfolio_best_score),
+                "portfolio_rotation_signal": portfolio_rotation_signal,
+                "portfolio_concentration": float(max(0.0, min(1.0, portfolio_concentration))),
+                "portfolio_corr_proxy": float(max(-1.0, min(1.0, portfolio_corr_proxy))),
             }
             if not feature_schema_registered:
                 self.research.register_feature_schema(self.features.feature_version, list(features.keys()))

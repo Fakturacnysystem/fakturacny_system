@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -2135,6 +2136,94 @@ class LiveKrakenSpotService:
         text = str(exc).lower()
         return ("restricted" in text) or ("asset pair not available" in text) or ("unknown asset pair" in text)
 
+    def _classify_preflight_reason(self, reason: str) -> str:
+        txt = str(reason or "").lower()
+        if not txt:
+            return "unknown"
+        if txt == "ok":
+            return "ok"
+        if "missing_credentials" in txt:
+            return "missing_credentials"
+        if "kraken_permission_denied" in txt or "invalid_permissions" in txt:
+            return "invalid_permissions"
+        if "kraken_auth_error" in txt or "invalid_credentials" in txt:
+            return "invalid_credentials"
+        if "temporary_lockout" in txt:
+            return "temporary_lockout"
+        if "invalid_nonce" in txt:
+            return "invalid_nonce"
+        if "network_unreachable" in txt or "network error" in txt:
+            return "network_unreachable"
+        if "rate_limit" in txt:
+            return "rate_limit"
+        if "permission_check_failed" in txt:
+            return "permission_check_failed"
+        if "provider_not_whitelisted" in txt:
+            return "provider_not_whitelisted"
+        return "unknown"
+
+    def _permission_reason_from_diag(self, diag: Mapping[str, Any]) -> tuple[bool, str]:
+        ok = bool(diag.get("ok", False))
+        scope = str(diag.get("scope", "unknown") or "unknown")
+        cls = str(diag.get("classification", "unknown_error") or "unknown_error")
+        reason = str(diag.get("reason", "") or "")
+        if ok:
+            if cls == "ok":
+                return True, "ok"
+            if cls.endswith("_override"):
+                return True, f"permissions_unverified_operator_override:{scope}:{cls}:{reason}"
+            return True, f"permissions_verified:{scope}:{cls}"
+        if cls == "missing_credentials":
+            return False, "missing_credentials"
+        if cls == "invalid_permissions":
+            return False, f"kraken_permission_denied:{scope}"
+        if cls == "invalid_credentials":
+            return False, f"kraken_auth_error:{scope}"
+        if cls == "temporary_lockout":
+            return False, f"kraken_temporary_lockout:{scope}"
+        if cls == "invalid_nonce":
+            return False, f"kraken_invalid_nonce:{scope}"
+        if cls == "network_unreachable":
+            return False, f"kraken_network_unreachable:{scope}"
+        if cls == "rate_limit":
+            return False, f"kraken_rate_limit:{scope}"
+        return False, f"permission_check_failed:{scope}:{reason}"
+
+    def _write_preflight_diagnostics(
+        self,
+        *,
+        ok: bool,
+        reason: str,
+        blocker_class: str,
+        permission_diag: Mapping[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "ts": time.time(),
+            "ok": bool(ok),
+            "reason": str(reason),
+            "blocker_class": str(blocker_class),
+            "provider": "kraken_spot",
+            "allow_unknown_permissions": bool(self.settings.execution.kraken_spot.allow_unknown_permissions),
+            "has_credentials": bool(self.connector.has_credentials),
+            "temporary_lockout_until_s": float(self._temporary_lockout_until_s),
+            "rate_limit_cooldown_until_s": float(self.rate_limit_cooldown_until_s),
+            "mode": str(self.settings.execution_mode_enum().value),
+            "run_id": str(self.run_id),
+        }
+        if permission_diag:
+            payload["permission_diag"] = {
+                "ok": bool(permission_diag.get("ok", False)),
+                "scope": str(permission_diag.get("scope", "")),
+                "classification": str(permission_diag.get("classification", "")),
+                "reason": str(permission_diag.get("reason", "")),
+            }
+        out = Path(self.settings.storage.run_dir) / "live_startup_diagnostics.json"
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        except Exception:
+            return
+
     def _activate_rate_limit_cooldown(self, now: float | None = None, *, multiplier: float = 1.0) -> None:
         ts = time.time() if now is None else float(now)
         factor = max(1.0, float(multiplier))
@@ -2293,14 +2382,62 @@ class LiveKrakenSpotService:
 
     def preflight(self) -> tuple[bool, str]:
         if self.settings.execution_mode_enum() == ExecutionMode.LIVE_READONLY:
+            self._write_preflight_diagnostics(ok=True, reason="readonly", blocker_class="readonly")
             return True, "readonly"
-        ok_perm, reason_perm = self.connector.verify_live_permissions()
+        permission_diag: dict[str, Any] | None = None
+        if hasattr(self.connector, "diagnose_private_api_access"):
+            try:
+                permission_diag_raw = self.connector.diagnose_private_api_access()  # type: ignore[attr-defined]
+                permission_diag = dict(permission_diag_raw) if isinstance(permission_diag_raw, Mapping) else {}
+                ok_perm, reason_perm = self._permission_reason_from_diag(permission_diag)
+            except Exception as exc:
+                permission_diag = {
+                    "ok": False,
+                    "scope": "diagnose",
+                    "classification": "permission_check_failed",
+                    "reason": str(exc),
+                }
+                ok_perm = False
+                reason_perm = f"permission_check_failed:diagnose:{exc}"
+        else:
+            ok_perm, reason_perm = self.connector.verify_live_permissions()
+            permission_diag = {
+                "ok": bool(ok_perm),
+                "scope": "legacy",
+                "classification": self._classify_preflight_reason(reason_perm),
+                "reason": str(reason_perm),
+            }
         if not ok_perm:
+            blocker_class = self._classify_preflight_reason(reason_perm)
+            self._write_preflight_diagnostics(
+                ok=False,
+                reason=reason_perm,
+                blocker_class=blocker_class,
+                permission_diag=permission_diag,
+            )
             return False, reason_perm
         if "kraken_spot" not in self.settings.provider_whitelist:
+            self._write_preflight_diagnostics(
+                ok=False,
+                reason="provider_not_whitelisted",
+                blocker_class="provider_not_whitelisted",
+                permission_diag=permission_diag,
+            )
             return False, "provider_not_whitelisted"
         if not self.connector.has_credentials:
+            self._write_preflight_diagnostics(
+                ok=False,
+                reason="missing_credentials",
+                blocker_class="missing_credentials",
+                permission_diag=permission_diag,
+            )
             return False, "missing_credentials"
+        self._write_preflight_diagnostics(
+            ok=True,
+            reason=reason_perm,
+            blocker_class=self._classify_preflight_reason(reason_perm),
+            permission_diag=permission_diag,
+        )
         return True, "ok"
 
     def execute_readonly(self, intent) -> LiveExecutionResult:

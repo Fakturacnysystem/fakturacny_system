@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass, field
+import importlib
 import logging
 import math
 from typing import Any, Mapping
@@ -224,20 +225,53 @@ def fuse_multimodal_features(
     """Fuse multimodal signals into one normalized feature set."""
 
     fused = dict(price_volume)
-    for key, value in (news or {}).items():
-        fused[f"news_{key}"] = _safe_float(value, 0.0)
-    for key, value in (macro or {}).items():
-        fused[f"macro_{key}"] = _safe_float(value, 0.0)
-    for key, value in (fundamentals or {}).items():
-        fused[f"fund_{key}"] = _safe_float(value, 0.0)
-    for key, value in (sentiment or {}).items():
-        fused[f"sent_{key}"] = _safe_float(value, 0.0)
-    fused["multimodal_score"] = (
-        0.55 * _safe_float(fused.get("ret_3"), 0.0)
-        + 0.25 * _safe_float(fused.get("flow_imbalance"), 0.0)
-        + 0.10 * _safe_float(fused.get("news_news_sentiment"), 0.0)
-        + 0.05 * _safe_float(fused.get("macro_macro_risk_on"), 0.0)
-        + 0.05 * _safe_float(fused.get("fund_fundamental_growth"), 0.0)
+    modal_payloads = {
+        "news": news or {},
+        "macro": macro or {},
+        "fund": fundamentals or {},
+        "sent": sentiment or {},
+    }
+    available_modalities = 1  # price/volume is always present
+    for prefix, payload in modal_payloads.items():
+        nonzero = 0
+        if payload:
+            available_modalities += 1
+        for key, value in payload.items():
+            val = _safe_float(value, 0.0)
+            fused[f"{prefix}_{key}"] = val
+            if abs(val) > 1e-9:
+                nonzero += 1
+        fused[f"{prefix}_feature_count"] = float(len(payload))
+        fused[f"{prefix}_nonzero_count"] = float(nonzero)
+        fused[f"{prefix}_available"] = 1.0 if payload else 0.0
+
+    price_score = _safe_float(fused.get("ret_3"), 0.0)
+    flow_score = _safe_float(fused.get("flow_imbalance"), 0.0)
+    news_score = _safe_float(fused.get("news_news_sentiment"), 0.0)
+    macro_score = _safe_float(fused.get("macro_macro_risk_on"), 0.0)
+    fundamental_score = _safe_float(fused.get("fund_fundamental_growth"), 0.0)
+    sentiment_score = _safe_float(fused.get("sent_sentiment_score"), 0.0)
+
+    weighted: list[tuple[float, float]] = [
+        (price_score, 0.45),
+        (flow_score, 0.25),
+    ]
+    if modal_payloads["news"]:
+        weighted.append((news_score, 0.10))
+    if modal_payloads["macro"]:
+        weighted.append((macro_score, 0.08))
+    if modal_payloads["fund"]:
+        weighted.append((fundamental_score, 0.07))
+    if modal_payloads["sent"]:
+        weighted.append((sentiment_score, 0.05))
+    w_sum = sum(v * w for v, w in weighted)
+    w_den = max(1e-9, sum(w for _v, w in weighted))
+    fused["multimodal_score"] = _clamp(w_sum / w_den, -2.0, 2.0)
+    fused["multimodal_coverage_ratio"] = _clamp(available_modalities / 5.0, 0.2, 1.0)
+    fused["multimodal_quality"] = _clamp(
+        0.6 * fused["multimodal_coverage_ratio"] + 0.4 * (1.0 - min(1.0, max(0.0, _safe_float(fused.get("spread_proxy"), 0.0)) / 0.01)),
+        0.0,
+        1.0,
     )
     return fused
 
@@ -1157,10 +1191,38 @@ class ProfitCompoundingAllocator:
         return max(0.0, base_budget * (1.0 + boost))
 
 
+class PortfolioDiversificationHook:
+    def scale(
+        self,
+        *,
+        cross_pair_score: float,
+        concentration: float,
+        correlation_proxy: float,
+    ) -> float:
+        conc = _clamp(concentration, 0.0, 1.0)
+        corr = _clamp(correlation_proxy, -1.0, 1.0)
+        cross = _clamp(cross_pair_score, -1.0, 1.0)
+        concentration_penalty = 1.0 - (0.35 * conc)
+        correlation_penalty = 1.0 - (0.20 * max(0.0, corr))
+        opportunity_boost = 1.0 + (0.20 * max(0.0, cross))
+        return _clamp(concentration_penalty * correlation_penalty * opportunity_boost, 0.35, 1.35)
+
+
+class DynamicCapitalRotationEngine:
+    def score(self, *, current_symbol_score: float, best_symbol_score: float, regime: str) -> float:
+        rel = _safe_float(best_symbol_score, 0.0) - _safe_float(current_symbol_score, 0.0)
+        regime_mult = 1.1 if regime in {"BULL_TREND", "TREND"} else 0.8 if regime in {"PANIC", "HIGH_VOL"} else 1.0
+        return _clamp(rel * regime_mult / 40.0, -1.0, 1.0)
+
+
 class ForecastBackendAdapter:
     """Adapter for transformer/foundation-ready forecast adjustments."""
 
     backend_name = "baseline"
+
+    def __init__(self, backend_name: str | None = None) -> None:
+        if backend_name:
+            self.backend_name = str(backend_name)
 
     def predict_adjustment(
         self,
@@ -1243,6 +1305,99 @@ class FoundationReadyForecastBackend(ForecastBackendAdapter):
                 "market_state_confidence": market_state_conf,
             },
         )
+
+
+class PluginForecastBackendAdapter(ForecastBackendAdapter):
+    """Thin wrapper around optional external backend plugin."""
+
+    def __init__(self, plugin: Any, backend_name: str) -> None:
+        super().__init__(backend_name=backend_name)
+        self.plugin = plugin
+
+    def predict_adjustment(
+        self,
+        *,
+        fused_features: Mapping[str, float],
+        regime: str,
+        nowcast: Mapping[str, float],
+    ) -> BackendForecastAdjustment:
+        fn = getattr(self.plugin, "predict_adjustment", None)
+        if not callable(fn):
+            raise AttributeError("forecast_backend_plugin_missing_predict_adjustment")
+        out = fn(fused_features=fused_features, regime=regime, nowcast=nowcast)
+        if isinstance(out, BackendForecastAdjustment):
+            return out
+        if not isinstance(out, Mapping):
+            raise TypeError("forecast_backend_plugin_invalid_output")
+        return BackendForecastAdjustment(
+            backend=str(out.get("backend", self.backend_name) or self.backend_name),
+            mean_adjust_bps=_safe_float(out.get("mean_adjust_bps"), 0.0),
+            std_scale=_clamp(_safe_float(out.get("std_scale"), 1.0), 0.5, 2.0),
+            confidence_scale=_clamp(_safe_float(out.get("confidence_scale"), 1.0), 0.5, 2.0),
+            diagnostics={
+                str(k): _safe_float(v, 0.0)
+                for k, v in dict(out.get("diagnostics", {})).items()
+                if isinstance(k, str)
+            },
+        )
+
+
+class ForecastBackendRegistry:
+    """Resolve built-in or plugin forecasting backends."""
+
+    def __init__(self) -> None:
+        self._builtins: dict[str, type[ForecastBackendAdapter]] = {
+            "baseline": ForecastBackendAdapter,
+            "transformer": TransformerReadyForecastBackend,
+            "transformer_ready": TransformerReadyForecastBackend,
+            "foundation": FoundationReadyForecastBackend,
+            "foundation_ready": FoundationReadyForecastBackend,
+        }
+
+    def _resolve_plugin(self, plugin_spec: str) -> ForecastBackendAdapter | None:
+        spec = str(plugin_spec or "").strip()
+        if not spec:
+            return None
+        mod_name, sep, attr_name = spec.partition(":")
+        if not mod_name or not sep or not attr_name:
+            LOGGER.warning("forecast_backend_plugin_invalid_spec", extra={"plugin_spec": spec})
+            return None
+        try:
+            mod = importlib.import_module(mod_name)
+            plugin_obj = getattr(mod, attr_name)
+            instance = plugin_obj() if isinstance(plugin_obj, type) else plugin_obj
+            return PluginForecastBackendAdapter(instance, backend_name=f"plugin:{mod_name}:{attr_name}")
+        except Exception as exc:
+            LOGGER.warning("forecast_backend_plugin_load_failed", extra={"plugin_spec": spec, "error": str(exc)})
+            return None
+
+    def resolve(
+        self,
+        *,
+        backend_name: str,
+        enable_transformer_backend: bool,
+        enable_foundation_backend: bool,
+        plugin_spec: str,
+    ) -> ForecastBackendAdapter:
+        plugin_adapter = self._resolve_plugin(plugin_spec)
+        if plugin_adapter is not None:
+            return plugin_adapter
+
+        requested = str(backend_name or "baseline").strip().lower()
+        if requested == "auto":
+            if enable_foundation_backend:
+                return FoundationReadyForecastBackend()
+            if enable_transformer_backend:
+                return TransformerReadyForecastBackend()
+            return ForecastBackendAdapter()
+        cls = self._builtins.get(requested)
+        if cls is not None:
+            return cls()
+        if enable_foundation_backend:
+            return FoundationReadyForecastBackend()
+        if enable_transformer_backend:
+            return TransformerReadyForecastBackend()
+        return ForecastBackendAdapter()
 
 
 def _apply_backend_adjustment_to_distribution(
@@ -1476,17 +1631,115 @@ class SelfOptimizationEngine:
         "allow_sell_below_entry",
     }
 
-    def propose_adjustments(self, *, reject_rate: float, no_intent_rate: float, fill_rate: float) -> dict[str, float]:
+    def __init__(self, *, window: int = 120, min_samples: int = 24, apply_every: int = 12) -> None:
+        self.history: deque[dict[str, float]] = deque(maxlen=max(20, int(window)))
+        self.min_samples = max(10, int(min_samples))
+        self.apply_every = max(1, int(apply_every))
+        self._steps = 0
+
+    def propose_adjustments(
+        self,
+        *,
+        reject_rate: float,
+        no_intent_rate: float,
+        fill_rate: float,
+        confidence_guard_rate: float = 0.0,
+        liquidity_guard_rate: float = 0.0,
+    ) -> dict[str, float]:
         adjustments: dict[str, float] = {}
         if reject_rate > 0.4:
             adjustments["confidence_threshold_delta"] = 0.03
             adjustments["uncertainty_threshold_delta_bps"] = -5.0
-        elif no_intent_rate > 0.7 and fill_rate < 0.25:
-            adjustments["confidence_threshold_delta"] = -0.02
-            adjustments["uncertainty_threshold_delta_bps"] = 5.0
+            adjustments["latency_risk_threshold_delta"] = -0.02
+        elif no_intent_rate > 0.7 and fill_rate < 0.25 and confidence_guard_rate > 0.35:
+            adjustments["confidence_threshold_delta"] = -0.015
+            adjustments["uncertainty_threshold_delta_bps"] = 4.0
+        if liquidity_guard_rate > 0.30:
+            # Liquidity threshold is negative. Lowering it slightly reduces false blocks.
+            adjustments["liquidity_threshold_delta"] = -0.03
         if fill_rate < 0.15:
-            adjustments["max_slippage_bps_delta"] = 0.5
+            adjustments["max_slippage_bps_delta"] = 0.35
         return {k: v for k, v in adjustments.items() if k not in self._FORBIDDEN_KEYS}
+
+    def _bounded_apply(self, *, engine: Any, adjustments: Mapping[str, float]) -> dict[str, float]:
+        applied: dict[str, float] = {}
+        if "confidence_threshold_delta" in adjustments:
+            prev = float(engine.confidence_threshold)
+            engine.confidence_threshold = _clamp(prev + _safe_float(adjustments["confidence_threshold_delta"], 0.0), 0.40, 0.85)
+            if abs(engine.confidence_threshold - prev) > 1e-9:
+                applied["confidence_threshold"] = float(engine.confidence_threshold)
+        if "uncertainty_threshold_delta_bps" in adjustments:
+            prev = float(engine.uncertainty_threshold_bps)
+            engine.uncertainty_threshold_bps = _clamp(prev + _safe_float(adjustments["uncertainty_threshold_delta_bps"], 0.0), 45.0, 180.0)
+            if abs(engine.uncertainty_threshold_bps - prev) > 1e-9:
+                applied["uncertainty_threshold_bps"] = float(engine.uncertainty_threshold_bps)
+        if "max_slippage_bps_delta" in adjustments:
+            prev = float(engine.max_slippage_bps)
+            engine.max_slippage_bps = _clamp(prev + _safe_float(adjustments["max_slippage_bps_delta"], 0.0), 2.0, 30.0)
+            if abs(engine.max_slippage_bps - prev) > 1e-9:
+                applied["max_slippage_bps"] = float(engine.max_slippage_bps)
+        if "latency_risk_threshold_delta" in adjustments:
+            prev = float(engine.latency_risk_threshold)
+            engine.latency_risk_threshold = _clamp(prev + _safe_float(adjustments["latency_risk_threshold_delta"], 0.0), 0.35, 0.90)
+            if abs(engine.latency_risk_threshold - prev) > 1e-9:
+                applied["latency_risk_threshold"] = float(engine.latency_risk_threshold)
+        if "liquidity_threshold_delta" in adjustments:
+            prev = float(engine.liquidity_pressure_guard_threshold)
+            engine.liquidity_pressure_guard_threshold = _clamp(prev + _safe_float(adjustments["liquidity_threshold_delta"], 0.0), -0.95, -0.20)
+            if abs(engine.liquidity_pressure_guard_threshold - prev) > 1e-9:
+                applied["liquidity_pressure_guard_threshold"] = float(engine.liquidity_pressure_guard_threshold)
+        return applied
+
+    def optimize(
+        self,
+        *,
+        engine: Any,
+        action: str,
+        skip_reason: str,
+        risk_flags: list[str],
+        confidence: float,
+    ) -> dict[str, Any]:
+        self._steps += 1
+        reason = str(skip_reason or "").lower()
+        risk_flag_set = {str(r).lower() for r in risk_flags}
+        row = {
+            "reject": 1.0 if ("execution_risk" in risk_flag_set or "latency_guard" in risk_flag_set) else 0.0,
+            "no_intent": 1.0 if reason == "no_intent" else 0.0,
+            "filled": 1.0 if action in {"open", "add", "reduce", "partial_close", "full_close"} and reason in {"", "allowed"} else 0.0,
+            "confidence_guard": 1.0 if "confidence_guard" in risk_flag_set else 0.0,
+            "liquidity_guard": 1.0 if "liquidity_filter" in risk_flag_set else 0.0,
+            "confidence": _safe_float(confidence, 0.0),
+        }
+        self.history.append(row)
+        n = len(self.history)
+        if n < self.min_samples or (self._steps % self.apply_every) != 0:
+            return {"applied": {}, "samples": n}
+
+        n_f = float(max(1, n))
+        reject_rate = sum(r["reject"] for r in self.history) / n_f
+        no_intent_rate = sum(r["no_intent"] for r in self.history) / n_f
+        fill_rate = sum(r["filled"] for r in self.history) / n_f
+        confidence_guard_rate = sum(r["confidence_guard"] for r in self.history) / n_f
+        liquidity_guard_rate = sum(r["liquidity_guard"] for r in self.history) / n_f
+
+        adjustments = self.propose_adjustments(
+            reject_rate=reject_rate,
+            no_intent_rate=no_intent_rate,
+            fill_rate=fill_rate,
+            confidence_guard_rate=confidence_guard_rate,
+            liquidity_guard_rate=liquidity_guard_rate,
+        )
+        applied = self._bounded_apply(engine=engine, adjustments=adjustments)
+        return {
+            "applied": applied,
+            "requested": adjustments,
+            "samples": n,
+            "reject_rate": reject_rate,
+            "no_intent_rate": no_intent_rate,
+            "fill_rate": fill_rate,
+            "confidence_guard_rate": confidence_guard_rate,
+            "liquidity_guard_rate": liquidity_guard_rate,
+        }
 
 
 class ProbabilisticMarketForecastingEngine(ProbabilisticForecastEngine):
@@ -1746,6 +1999,20 @@ def run_decision_algorithm(
     )
     size *= engine.adaptive_sizing.scale(confidence, uq.total_bps)
     size *= engine.liquidity_aware_sizing.scale(context.depth_notional, context.spread_bps)
+    cross_pair_score = _safe_float(alpha_signals.get("cross_pair_opportunity"), 0.0)
+    portfolio_div_scale = engine.portfolio_diversifier.scale(
+        cross_pair_score=cross_pair_score,
+        concentration=_safe_float(context.features.get("portfolio_concentration"), 1.0),
+        correlation_proxy=_safe_float(context.features.get("portfolio_corr_proxy"), 0.0),
+    )
+    rotation_score = engine.capital_rotation.score(
+        current_symbol_score=_safe_float(context.features.get("portfolio_symbol_score"), 0.0),
+        best_symbol_score=_safe_float(context.features.get("portfolio_best_symbol_score"), 0.0),
+        regime=regime,
+    )
+    rotation_scale = _clamp(1.0 + (0.15 * rotation_score), 0.6, 1.3)
+    size *= portfolio_div_scale
+    size *= rotation_scale
     alloc = engine.portfolio.allocate_portfolio_capital(
         position_size_quote=size,
         quote_free=context.quote_free,
@@ -1894,6 +2161,14 @@ def run_decision_algorithm(
     elif action == "hold":
         skip_reason = "hold"
 
+    self_optimization = engine.self_optimization.optimize(
+        engine=engine,
+        action=action,
+        skip_reason=skip_reason,
+        risk_flags=[str(r) for r in risk_validation.get("reasons", [])],
+        confidence=confidence,
+    )
+
     online_adaptation = engine.online_learning.adapt_model_online(
         drift_report=drift_report,
         online_learning_enabled=engine.online_learning_enabled,
@@ -1961,17 +2236,23 @@ def run_decision_algorithm(
             "liquidity_threshold": engine.liquidity_pressure_guard_threshold,
             "adaptive_hold_s": adaptive_hold_s,
             "smart_hold_extend": 1.0 if smart_hold_extend else 0.0,
+            "portfolio_diversification_scale": portfolio_div_scale,
+            "capital_rotation_score": rotation_score,
+            "capital_rotation_scale": rotation_scale,
             "forecast_backend": engine.forecast_backend_adapter.backend_name,
             "forecast_backend_mean_adjust_bps": backend_adjustment.mean_adjust_bps,
             "forecast_backend_std_scale": backend_adjustment.std_scale,
             "forecast_backend_confidence_scale": backend_adjustment.confidence_scale,
             "forecast_backend_diagnostics": backend_adjustment.diagnostics,
             "drift_top_features": drift_report.get("top_features", []),
-            "self_optimization_hint": engine.self_optimization.propose_adjustments(
-                reject_rate=0.0,
-                no_intent_rate=1.0 if action in {"skip", "hold"} else 0.0,
-                fill_rate=0.0,
-            ),
+            "self_optimization": self_optimization,
+            "adaptive_thresholds": {
+                "confidence_threshold": engine.confidence_threshold,
+                "uncertainty_threshold_bps": engine.uncertainty_threshold_bps,
+                "max_slippage_bps": engine.max_slippage_bps,
+                "latency_risk_threshold": engine.latency_risk_threshold,
+                "liquidity_pressure_guard_threshold": engine.liquidity_pressure_guard_threshold,
+            },
         },
     )
 
@@ -2005,8 +2286,12 @@ class AutonomousMarketPredictionAndDecisionEngine:
         liquidity_pressure_guard_threshold: float = -0.6,
         adaptive_hold_base_s: float = 1800.0,
         forecast_backend: str = "baseline",
+        forecast_backend_plugin: str = "",
         enable_transformer_backend: bool = False,
         enable_foundation_backend: bool = False,
+        self_optimization_window: int = 120,
+        self_optimization_min_samples: int = 24,
+        self_optimization_apply_every: int = 12,
     ) -> None:
         self.base_risk_budget_quote = max(0.0, _safe_float(base_risk_budget_quote, 25.0))
         self.confidence_threshold = _clamp(confidence_threshold, 0.0, 1.0)
@@ -2028,8 +2313,12 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.liquidity_pressure_guard_threshold = _clamp(liquidity_pressure_guard_threshold, -1.0, 0.0)
         self.adaptive_hold_base_s = max(30.0, _safe_float(adaptive_hold_base_s, 1800.0))
         self.forecast_backend_name = str(forecast_backend or "baseline").strip().lower()
+        self.forecast_backend_plugin = str(forecast_backend_plugin or "").strip()
         self.enable_transformer_backend = bool(enable_transformer_backend)
         self.enable_foundation_backend = bool(enable_foundation_backend)
+        self.self_optimization_window = max(20, int(self_optimization_window))
+        self.self_optimization_min_samples = max(10, int(self_optimization_min_samples))
+        self.self_optimization_apply_every = max(1, int(self_optimization_apply_every))
 
         self.signal = SignalEngine()
         self.forecasting = ProbabilisticMarketForecastingEngine()
@@ -2052,7 +2341,11 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.lob = LimitOrderBookModel()
         self.trade_management = TradeManagementEngine()
         self.profit_protection = ProfitProtectionEngine()
-        self.self_optimization = SelfOptimizationEngine()
+        self.self_optimization = SelfOptimizationEngine(
+            window=self.self_optimization_window,
+            min_samples=self.self_optimization_min_samples,
+            apply_every=self.self_optimization_apply_every,
+        )
         self.risk_inference = RiskCalibratedMarketInferenceEngine()
 
         self.smart_hold = SmartHoldExtension()
@@ -2063,26 +2356,18 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.adaptive_sizing = AdaptivePositionSizing()
         self.liquidity_aware_sizing = LiquidityAwareTradeSizing()
         self.profit_compound = ProfitCompoundingAllocator()
+        self.portfolio_diversifier = PortfolioDiversificationHook()
+        self.capital_rotation = DynamicCapitalRotationEngine()
         self.signal_decay = SignalDecayDetector()
         self.liquidity_heatmap = LiquidityHeatmap()
 
-        if self.forecast_backend_name in {"foundation", "foundation_ready"}:
-            self.forecast_backend_adapter: ForecastBackendAdapter = FoundationReadyForecastBackend()
-        elif self.forecast_backend_name in {"transformer", "transformer_ready"}:
-            self.forecast_backend_adapter = TransformerReadyForecastBackend()
-        elif self.forecast_backend_name == "auto":
-            if self.enable_foundation_backend:
-                self.forecast_backend_adapter = FoundationReadyForecastBackend()
-            elif self.enable_transformer_backend:
-                self.forecast_backend_adapter = TransformerReadyForecastBackend()
-            else:
-                self.forecast_backend_adapter = ForecastBackendAdapter()
-        elif self.enable_foundation_backend:
-            self.forecast_backend_adapter = FoundationReadyForecastBackend()
-        elif self.enable_transformer_backend:
-            self.forecast_backend_adapter = TransformerReadyForecastBackend()
-        else:
-            self.forecast_backend_adapter = ForecastBackendAdapter()
+        self.forecast_backend_registry = ForecastBackendRegistry()
+        self.forecast_backend_adapter: ForecastBackendAdapter = self.forecast_backend_registry.resolve(
+            backend_name=self.forecast_backend_name,
+            enable_transformer_backend=self.enable_transformer_backend,
+            enable_foundation_backend=self.enable_foundation_backend,
+            plugin_spec=self.forecast_backend_plugin,
+        )
 
         self.current_regime = ""
         self.last_regime_switch_ts = 0.0

@@ -24,7 +24,15 @@ class KrakenAuthError(KrakenConnectorError):
     pass
 
 
+class KrakenPermissionError(KrakenConnectorError):
+    pass
+
+
 class KrakenRateLimitError(KrakenConnectorError):
+    pass
+
+
+class KrakenTemporaryLockoutError(KrakenRateLimitError):
     pass
 
 
@@ -37,6 +45,10 @@ class KrakenInsufficientFundsError(KrakenOrderError):
 
 
 class KrakenInvalidNonceError(KrakenConnectorError):
+    pass
+
+
+class KrakenNetworkError(KrakenConnectorError):
     pass
 
 
@@ -95,12 +107,26 @@ class KrakenSpotConnector:
 
     def _classify_error(self, text: str) -> Exception:
         t = text.lower()
+        if "permission denied" in t:
+            return KrakenPermissionError(f"Kraken permission error: {text}")
         if "eapi:invalid key" in t or "eapi:invalid signature" in t or "401" in t or "403" in t:
             return KrakenAuthError(f"Kraken auth error: {text}")
+        if "temporary lockout" in t:
+            return KrakenTemporaryLockoutError(f"Kraken temporary lockout: {text}")
         if "invalid nonce" in t or "eapi:invalid nonce" in t:
             return KrakenInvalidNonceError(f"Kraken invalid nonce: {text}")
         if "rate limit" in t or "too many requests" in t or "429" in t:
             return KrakenRateLimitError(f"Kraken rate limit: {text}")
+        if (
+            "nodename nor servname provided" in t
+            or "name or service not known" in t
+            or "temporary failure in name resolution" in t
+            or "network is unreachable" in t
+            or "connection refused" in t
+            or "timed out" in t
+            or "connection reset" in t
+        ):
+            return KrakenNetworkError(f"Kraken network error: {text}")
         if "insufficient funds" in t:
             return KrakenInsufficientFundsError(f"Kraken insufficient funds: {text}")
         if "eorder:" in t:
@@ -162,8 +188,75 @@ class KrakenSpotConnector:
             return now_ms
 
     def verify_live_permissions(self) -> tuple[bool, str]:
-        if not self.has_credentials:
+        diag = self.diagnose_private_api_access()
+        ok = bool(diag.get("ok", False))
+        scope = str(diag.get("scope", "unknown") or "unknown")
+        cls = str(diag.get("classification", "unknown_error") or "unknown_error")
+        reason = str(diag.get("reason", "") or "")
+        if ok:
+            if cls == "ok":
+                return True, "ok"
+            if cls.endswith("_override"):
+                return True, f"permissions_unverified_operator_override:{scope}:{cls}:{reason}"
+            return True, f"permissions_verified:{scope}:{cls}"
+        if cls == "missing_credentials":
             return False, "missing_credentials"
+        if cls == "invalid_permissions":
+            return False, f"kraken_permission_denied:{scope}"
+        if cls == "invalid_credentials":
+            return False, f"kraken_auth_error:{scope}"
+        if cls == "temporary_lockout":
+            return False, f"kraken_temporary_lockout:{scope}"
+        if cls == "invalid_nonce":
+            return False, f"kraken_invalid_nonce:{scope}"
+        if cls == "network_unreachable":
+            return False, f"kraken_network_unreachable:{scope}"
+        if cls == "rate_limit":
+            return False, f"kraken_rate_limit:{scope}"
+        return False, f"permission_check_failed:{scope}:{reason}"
+
+    @staticmethod
+    def _classify_private_scope_error(exc: Exception | str) -> tuple[str, str]:
+        """Classify private-endpoint failures into deterministic startup blockers."""
+
+        detail = str(exc).strip().replace("\n", " ")
+        txt = detail.lower()
+        if "temporary lockout" in txt:
+            return "temporary_lockout", detail
+        if "permission denied" in txt:
+            return "invalid_permissions", detail
+        if "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
+            return "invalid_credentials", detail
+        if "invalid nonce" in txt:
+            return "invalid_nonce", detail
+        if "rate limit" in txt or "too many requests" in txt or "429" in txt:
+            return "rate_limit", detail
+        if (
+            "nodename nor servname provided" in txt
+            or "name or service not known" in txt
+            or "temporary failure in name resolution" in txt
+            or "network is unreachable" in txt
+            or "connection refused" in txt
+            or "timed out" in txt
+            or "connection reset" in txt
+        ):
+            return "network_unreachable", detail
+        return "unknown_error", detail
+
+    def diagnose_private_api_access(self) -> dict[str, Any]:
+        """
+        Diagnose required Kraken private scopes for live trading startup.
+        Returns machine-readable classification used by preflight and scripts.
+        """
+
+        if not self.has_credentials:
+            return {
+                "ok": False,
+                "scope": "credentials",
+                "classification": "missing_credentials",
+                "reason": "missing_credentials",
+                "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+            }
         # Validate required private scopes used by live execution.
         required_checks = [
             ("balance", self.balance),
@@ -173,15 +266,37 @@ class KrakenSpotConnector:
             try:
                 fn()
             except Exception as exc:
-                txt = str(exc).lower()
-                if "permission denied" in txt:
-                    return False, f"kraken_permission_denied:{scope}"
-                if "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
-                    return False, f"kraken_auth_error:{scope}"
+                classification, detail = self._classify_private_scope_error(exc)
+                if classification in {"invalid_permissions", "invalid_credentials", "invalid_nonce"}:
+                    return {
+                        "ok": False,
+                        "scope": scope,
+                        "classification": classification,
+                        "reason": detail,
+                        "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+                    }
                 if self.settings.allow_unknown_permissions:
-                    return True, f"permissions_unverified_operator_override:{scope}:{exc}"
-                return False, f"permission_check_failed:{scope}:{exc}"
-        return True, "ok"
+                    return {
+                        "ok": True,
+                        "scope": scope,
+                        "classification": f"{classification}_override",
+                        "reason": detail,
+                        "allow_unknown_permissions": True,
+                    }
+                return {
+                    "ok": False,
+                    "scope": scope,
+                    "classification": classification,
+                    "reason": detail,
+                    "allow_unknown_permissions": False,
+                }
+        return {
+            "ok": True,
+            "scope": "all",
+            "classification": "ok",
+            "reason": "ok",
+            "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+        }
 
     # Public
     def asset_pairs(self) -> dict[str, Any]:

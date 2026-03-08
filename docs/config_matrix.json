@@ -38,7 +38,7 @@
       "liquidity_map_enabled": true,
       "market_watch_every_s": 30.0,
       "max_orders_per_min": 10,
-      "mode": "live_testnet",
+      "mode": "paper",
       "order_cadence_s": 60.0,
       "provider": "kraken_spot",
       "run_dir": "runs/kraken_spot_live_canary",

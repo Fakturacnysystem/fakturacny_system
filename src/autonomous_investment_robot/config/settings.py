@@ -246,8 +246,12 @@ class AutonomousDecisionSettings:
     liquidity_pressure_guard_threshold: float = -0.6
     adaptive_hold_base_s: float = 1800.0
     forecast_backend: str = "baseline"
+    forecast_backend_plugin: str = ""
     transformer_backend_enabled: bool = False
     foundation_backend_enabled: bool = False
+    self_optimization_window: int = 120
+    self_optimization_min_samples: int = 24
+    self_optimization_apply_every: int = 12
 
 
 @dataclass

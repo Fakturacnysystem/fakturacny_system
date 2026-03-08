@@ -76,17 +76,24 @@ def build_modifiers_pipeline(
                 reason_tags=["spread_spike"],
             )
         )
-    m.merge(
-        DecisionModifiers(
-            edge_add_bps=max(0.0, float(liquidity_edge_add_bps)),
-            size_scale=max(0.05, min(1.0, float(liquidity_size_scale))),
-            max_child_orders_override=liquidity_child_orders,
-            reason_tags=["liquidity_map"],
-        )
+    liquidity_edge = max(0.0, float(liquidity_edge_add_bps))
+    liquidity_size = max(0.05, min(1.0, float(liquidity_size_scale)))
+    liquidity_is_restrictive = (
+        liquidity_edge > 0.0
+        or liquidity_size < 0.999
+        or liquidity_child_orders is not None
     )
+    if liquidity_is_restrictive:
+        m.merge(
+            DecisionModifiers(
+                edge_add_bps=liquidity_edge,
+                size_scale=liquidity_size,
+                max_child_orders_override=liquidity_child_orders,
+                reason_tags=["liquidity_map"],
+            )
+        )
     if ws_unhealthy:
         m.merge(DecisionModifiers(pause_buy=True, maker_only=True, taker_allowed=False, reason_tags=["ws_unhealthy"]))
     if soft_pause_buy:
         m.merge(DecisionModifiers(pause_buy=True, reason_tags=["soft_pause_buy"]))
     return m
-

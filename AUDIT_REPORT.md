@@ -149,3 +149,82 @@ After:
 
 1. Live Kraken private API auth/key scope remains environment-dependent and can still hard-block live starts (`EAPI:Invalid key` / temporary lockout waves) until key/scope correctness and cooldown recovery are stable.
 2. In this run, safe paper execution is validated; live full-throttle remains gated by exchange-side auth/lockout conditions, not by missing local architecture.
+
+## 2026-03-08 Live-Readiness Closure Pass
+
+### Live Auth/Lockout Diagnostics Hardening
+
+- `src/autonomous_investment_robot/connectors/cex/kraken_spot.py`
+  - added deterministic private API diagnostics classifier:
+    - `missing_credentials`
+    - `invalid_credentials`
+    - `invalid_permissions`
+    - `temporary_lockout`
+    - `invalid_nonce`
+    - `network_unreachable`
+    - `rate_limit`
+  - added `diagnose_private_api_access()` and routed `verify_live_permissions()` through classified outcomes.
+
+- `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py`
+  - preflight now consumes structured diagnostics when available.
+  - writes `runs/<run_dir>/live_startup_diagnostics.json` with blocker class + permission diagnostics + cooldown snapshots.
+
+- `scripts/run_kraken_spot_profit_full_throttle.sh`
+  - startup preflight probe now records JSON diagnostics in run dir (`live_preflight_script_diag.json`).
+  - fail-fast only on fatal auth blockers (`missing_credentials`, `invalid_credentials`, `invalid_permissions`, `invalid_nonce`).
+  - temporary lockout/rate-limit/network blockers are classified warn-only and handled by runtime cooldown guards.
+
+### Remaining Capability Gaps Closed Further
+
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+  - multimodal fusion upgraded with coverage/quality metrics and modality presence accounting.
+  - production-grade backend registry added:
+    - built-ins: baseline/transformer/foundation
+    - plugin path support: `module:ClassOrObject` via `AUTONOMOUS_FORECAST_BACKEND_PLUGIN`
+  - SelfOptimizationEngine extended from hint-only to bounded adaptive application:
+    - adjusts confidence/uncertainty/slippage/latency/liquidity thresholds within hard safe bounds
+    - never touches hard sell invariants
+  - added portfolio diversification + dynamic capital rotation scaling hooks into real allocation path.
+
+- `src/autonomous_investment_robot/core/orchestrator.py`
+  - wired new backend plugin + self-optimization config knobs into real engine constructor.
+  - feeds portfolio scoring/rotation/correlation features into decision context for runtime capital rotation/diversification usage.
+
+- `src/autonomous_investment_robot/services/ops/modifiers.py`
+  - liquidity-map reason tags are now emitted only when liquidity map is actually restrictive (removes neutral false blocker tags).
+
+### New/Updated Tests
+
+- `tests/test_kraken_spot_signing.py`
+  - temporary lockout classification
+  - temporary lockout override path
+  - invalid nonce classification
+
+- `tests/test_kraken_spot_live_service.py`
+  - preflight temporary-lockout classification + startup diagnostics file write
+
+- `tests/test_autonomous_decision_engine.py`
+  - plugin backend wiring test
+  - bounded self-optimization application test
+  - diversification/capital-rotation diagnostics test
+
+- `tests/test_modifiers_pipeline.py`
+  - neutral liquidity-map no longer emits liquidity blocker tag
+  - restrictive liquidity-map still emits and applies controls
+
+### Validation Results (This Pass)
+
+- `python3 -m py_compile` on changed/new Python files: pass
+- targeted tests: `73 passed`
+- full suite: `285 passed, 1 skipped`
+- project validation script: `./scripts/verify_harmony.sh` pass
+- config matrix audit: 13 configs, 0 errors
+- safe execution path: `./scripts/run_paper.sh` pass
+- latest runtime audit: `runs/latest_runtime_audit.json` (run dir `runs/kraken_spot_paper`)
+
+### Live Readiness Truth (Current Environment)
+
+- live start command (`./scripts/run_kraken_spot_profit_full_throttle.sh`) is currently blocked in this shell due missing Kraken credentials in environment.
+- connector diagnostics classification in this shell:
+  - `{"ok": false, "classification": "missing_credentials", "scope": "credentials"}`
+- result: internal code-side blockers addressed; remaining live blocker is external environment credential/auth state.

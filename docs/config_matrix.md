@@ -13,7 +13,7 @@
 | Config | Status | Mode | Provider | Cadence(s) | MinOrder | SellMinBps | SellTargetBps | Guards | Collisions |
 |---|---|---|---|---:|---:|---:|---:|---|---:|
 | `config.kraken_spot.live.yaml` | ok | `paper` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |
-| `config.kraken_spot.live_canary.yaml` | ok | `live_testnet` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |
+| `config.kraken_spot.live_canary.yaml` | ok | `paper` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |
 | `config.kraken_spot.live_growth.yaml` | ok | `paper` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |
 | `config.kraken_spot.live_pro_growth.yaml` | ok | `paper` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |
 | `config.kraken_spot.live_profit.yaml` | ok | `paper` | `kraken_spot` | 60.00 | 2.00 | 200.0 | 200.0 | `strict` | 0 |

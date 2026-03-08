@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -42,6 +43,7 @@ class _FakeKrakenSpotConnector:
         self._trades_history = {}
         self._trade_volume = {"fees": {"XBTUSD": {"fee": "0.26"}}}
         self.asset_pairs_calls = 0
+        self.private_diag = {"ok": True, "scope": "all", "classification": "ok", "reason": "ok"}
 
     @property
     def has_credentials(self):
@@ -49,6 +51,9 @@ class _FakeKrakenSpotConnector:
 
     def verify_live_permissions(self):
         return True, "ok"
+
+    def diagnose_private_api_access(self):
+        return dict(self.private_diag)
 
     def asset_pairs(self):
         self.asset_pairs_calls += 1
@@ -218,6 +223,29 @@ def test_execute_intent_submits_market_buy(monkeypatch):
     assert out.order is not None
     assert out.order["txid"] == "T1"
     assert fake.add_calls == 1
+
+
+def test_preflight_classifies_temporary_lockout_and_writes_diag(monkeypatch, tmp_path):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = _FakeKrakenSpotConnector()
+    fake.private_diag = {
+        "ok": False,
+        "scope": "balance",
+        "classification": "temporary_lockout",
+        "reason": "EGeneral:Temporary lockout",
+    }
+    settings = _settings(dry_run=False)
+    settings.storage.run_dir = str(tmp_path)
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    ok, reason = svc.preflight()
+    assert ok is False
+    assert reason.startswith("kraken_temporary_lockout:balance")
+    diag_path = tmp_path / "live_startup_diagnostics.json"
+    assert diag_path.exists()
+    diag = json.loads(diag_path.read_text(encoding="utf-8"))
+    assert diag["blocker_class"] == "temporary_lockout"
+    assert diag["permission_diag"]["classification"] == "temporary_lockout"
 
 
 def test_execute_intent_maker_timeout_blocks_if_edge_not_ok(monkeypatch):

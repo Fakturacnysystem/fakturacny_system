@@ -71,3 +71,57 @@ def test_verify_live_permissions_allow_unknown_on_transient_error():
     ok, reason = _Transient().verify_live_permissions()
     assert ok is True
     assert "permissions_unverified_operator_override" in reason
+
+
+def test_verify_live_permissions_classifies_temporary_lockout() -> None:
+    class _Lockout(KrakenSpotConnector):
+        def __init__(self):
+            super().__init__(KrakenSpotExecutionSettings(allow_unknown_permissions=False))
+            self._api_key = "k"
+            self._api_secret = "s"
+
+        def balance(self):
+            raise RuntimeError("EGeneral:Temporary lockout")
+
+        def open_orders(self):
+            return {}
+
+    ok, reason = _Lockout().verify_live_permissions()
+    assert ok is False
+    assert reason.startswith("kraken_temporary_lockout:balance")
+
+
+def test_verify_live_permissions_temporary_lockout_override() -> None:
+    class _LockoutOverride(KrakenSpotConnector):
+        def __init__(self):
+            super().__init__(KrakenSpotExecutionSettings(allow_unknown_permissions=True))
+            self._api_key = "k"
+            self._api_secret = "s"
+
+        def balance(self):
+            raise RuntimeError("EGeneral:Temporary lockout")
+
+        def open_orders(self):
+            return {}
+
+    ok, reason = _LockoutOverride().verify_live_permissions()
+    assert ok is True
+    assert "temporary_lockout_override" in reason
+
+
+def test_verify_live_permissions_classifies_invalid_nonce() -> None:
+    class _Nonce(KrakenSpotConnector):
+        def __init__(self):
+            super().__init__(KrakenSpotExecutionSettings(allow_unknown_permissions=False))
+            self._api_key = "k"
+            self._api_secret = "s"
+
+        def balance(self):
+            raise RuntimeError("EAPI:Invalid nonce")
+
+        def open_orders(self):
+            return {}
+
+    ok, reason = _Nonce().verify_live_permissions()
+    assert ok is False
+    assert reason.startswith("kraken_invalid_nonce:balance")

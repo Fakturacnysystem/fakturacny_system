@@ -99,6 +99,11 @@ export AUTONOMOUS_ONLINE_LEARNING_ENABLED="${AUTONOMOUS_ONLINE_LEARNING_ENABLED:
 export AUTONOMOUS_ENABLE_NEWS_FEATURES="${AUTONOMOUS_ENABLE_NEWS_FEATURES:-false}"
 export AUTONOMOUS_ENABLE_MACRO_FEATURES="${AUTONOMOUS_ENABLE_MACRO_FEATURES:-false}"
 export AUTONOMOUS_ENABLE_FUNDAMENTAL_FEATURES="${AUTONOMOUS_ENABLE_FUNDAMENTAL_FEATURES:-false}"
+export AUTONOMOUS_ENABLE_SENTIMENT_FEATURES="${AUTONOMOUS_ENABLE_SENTIMENT_FEATURES:-false}"
+export AUTONOMOUS_FORECAST_BACKEND_PLUGIN="${AUTONOMOUS_FORECAST_BACKEND_PLUGIN:-}"
+export AUTONOMOUS_SELF_OPTIMIZATION_WINDOW="${AUTONOMOUS_SELF_OPTIMIZATION_WINDOW:-120}"
+export AUTONOMOUS_SELF_OPTIMIZATION_MIN_SAMPLES="${AUTONOMOUS_SELF_OPTIMIZATION_MIN_SAMPLES:-24}"
+export AUTONOMOUS_SELF_OPTIMIZATION_APPLY_EVERY="${AUTONOMOUS_SELF_OPTIMIZATION_APPLY_EVERY:-12}"
 
 export PYTHONUNBUFFERED=1
 
@@ -147,31 +152,77 @@ fi
 
 PERM_CHECK_RESULT="$(
   PYTHONPATH=src "${PYTHON_BIN}" - <<'PY'
+import json
 from autonomous_investment_robot.config.settings import KrakenSpotExecutionSettings
 from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
 
 settings = KrakenSpotExecutionSettings(allow_unknown_permissions=True)
 connector = KrakenSpotConnector(settings)
-checks = [
-    ("balance", connector.balance),
-    ("open_orders", connector.open_orders),
-]
-for name, fn in checks:
+diag = {}
+if hasattr(connector, "diagnose_private_api_access"):
     try:
-        fn()
+        out = connector.diagnose_private_api_access()
+        diag = dict(out) if isinstance(out, dict) else {}
     except Exception as exc:
-        txt = str(exc).lower()
-        if "permission denied" in txt or "invalid key" in txt or "invalid signature" in txt or "authentication" in txt:
-            print(f"DENIED:{name}:{exc}")
-            raise SystemExit(2)
-print("OK")
+        diag = {
+            "ok": False,
+            "classification": "permission_check_failed",
+            "scope": "diagnose",
+            "reason": str(exc),
+        }
+else:
+    ok, reason = connector.verify_live_permissions()
+    diag = {
+        "ok": bool(ok),
+        "classification": "legacy",
+        "scope": "legacy",
+        "reason": str(reason),
+    }
+print(
+    json.dumps(
+        {
+            "ok": bool(diag.get("ok", False)),
+            "classification": str(diag.get("classification", "")),
+            "scope": str(diag.get("scope", "")),
+            "reason": str(diag.get("reason", "")),
+        },
+        sort_keys=True,
+    )
+)
 PY
 )" || true
 
-if [[ "${PERM_CHECK_RESULT}" == DENIED:* ]]; then
-  echo "[run_kraken_spot_profit_full_throttle] Kraken private API permissions missing (${PERM_CHECK_RESULT})." >&2
-  echo "[run_kraken_spot_profit_full_throttle] Config has allow_unknown_permissions=true, continuing in live mode anyway..." >&2
-fi
+mkdir -p "${RUN_DIR}"
+printf '%s\n' "${PERM_CHECK_RESULT}" > "${RUN_DIR}/live_preflight_script_diag.json"
+
+PERM_CLASS="$(
+  PERM_JSON="${PERM_CHECK_RESULT}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+raw = str(os.getenv("PERM_JSON", "") or "").strip()
+cls = "unknown_error"
+try:
+    payload = json.loads(raw) if raw else {}
+    cls = str(payload.get("classification", cls) or cls)
+except Exception:
+    cls = "parse_error"
+print(cls)
+PY
+)"
+
+case "${PERM_CLASS}" in
+  missing_credentials|invalid_credentials|invalid_permissions|invalid_nonce|kraken_auth_error|kraken_permission_denied)
+    echo "[run_kraken_spot_profit_full_throttle] Fatal private API preflight blocker: ${PERM_CLASS}." >&2
+    echo "[run_kraken_spot_profit_full_throttle] Fix credentials/permissions/nonce path before live start." >&2
+    exit 3
+    ;;
+  temporary_lockout|rate_limit|network_unreachable|temporary_lockout_override|rate_limit_override|network_unreachable_override)
+    echo "[run_kraken_spot_profit_full_throttle] Non-fatal private API preflight blocker: ${PERM_CLASS}; continuing with runtime cooldown handling." >&2
+    ;;
+  *)
+    ;;
+esac
 
 echo "[run_kraken_spot_profit_full_throttle] Starting live Kraken SPOT robot..."
 echo "[run_kraken_spot_profit_full_throttle] Config: ${LIVE_CONFIG}"

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from autonomous_investment_robot.services.autonomous_decision.engine import (
     AutonomousMarketPredictionAndDecisionEngine,
     DecisionContext,
@@ -148,3 +151,71 @@ def test_decision_engine_foundation_backend_uses_sentiment_features() -> None:
     fb_diag = out.diagnostics.get("forecast_backend_diagnostics", {})
     assert isinstance(fb_diag, dict)
     assert "sentiment_score" in fb_diag
+
+
+def test_decision_engine_plugin_backend_adapter() -> None:
+    module = types.ModuleType("test_backend_plugin_module")
+
+    class _PluginBackend:
+        def predict_adjustment(self, *, fused_features, regime, nowcast):  # noqa: ANN001
+            _ = fused_features
+            _ = regime
+            _ = nowcast
+            return {
+                "backend": "plugin_backend",
+                "mean_adjust_bps": 7.5,
+                "std_scale": 1.05,
+                "confidence_scale": 1.02,
+                "diagnostics": {"plugin_loaded": 1.0},
+            }
+
+    module.PluginBackend = _PluginBackend
+    sys.modules[module.__name__] = module
+    try:
+        engine = AutonomousMarketPredictionAndDecisionEngine(
+            confidence_threshold=0.45,
+            uncertainty_threshold_bps=120.0,
+            forecast_backend="baseline",
+            forecast_backend_plugin="test_backend_plugin_module:PluginBackend",
+        )
+        out = engine.run_decision_algorithm(_base_context())
+        assert str(out.forecast.get("backend", "")).startswith("plugin:")
+        assert float(out.diagnostics.get("forecast_backend_mean_adjust_bps", 0.0)) > 0.0
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_self_optimization_applies_bounded_threshold_updates() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.72,
+        uncertainty_threshold_bps=160.0,
+        self_optimization_min_samples=10,
+        self_optimization_apply_every=1,
+    )
+    applied_any = False
+    for _ in range(20):
+        out = engine.run_decision_algorithm(_base_context())
+        so = out.diagnostics.get("self_optimization", {})
+        if isinstance(so, dict) and so.get("applied"):
+            applied_any = True
+            break
+    assert applied_any is True
+    assert 0.40 <= engine.confidence_threshold <= 0.85
+    assert 45.0 <= engine.uncertainty_threshold_bps <= 180.0
+
+
+def test_portfolio_diversification_and_rotation_scales_present() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.45,
+        uncertainty_threshold_bps=120.0,
+    )
+    ctx = _base_context()
+    ctx.features["portfolio_symbol_score"] = 8.0
+    ctx.features["portfolio_best_symbol_score"] = 28.0
+    ctx.features["portfolio_concentration"] = 0.9
+    ctx.features["portfolio_corr_proxy"] = 0.7
+    out = engine.run_decision_algorithm(ctx)
+    assert "portfolio_diversification_scale" in out.diagnostics
+    assert "capital_rotation_scale" in out.diagnostics
+    assert float(out.diagnostics["portfolio_diversification_scale"]) > 0.0
+    assert float(out.diagnostics["capital_rotation_scale"]) > 0.0
