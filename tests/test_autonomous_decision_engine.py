@@ -98,3 +98,53 @@ def test_decision_engine_blocks_in_panic_high_uncertainty() -> None:
     out = engine.run_decision_algorithm(ctx)
     assert out.action in {"skip", "hold"}
     assert ("regime_filter" in out.risk_flags) or ("uncertainty_guard" in out.risk_flags)
+
+
+def test_decision_engine_transformer_backend_emits_diagnostics() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.45,
+        uncertainty_threshold_bps=120.0,
+        enable_transformer_backend=True,
+        forecast_backend="auto",
+    )
+    out = engine.run_decision_algorithm(_base_context())
+    assert out.forecast.get("backend") == "transformer_ready"
+    assert out.diagnostics.get("forecast_backend") == "transformer_ready"
+    assert float(out.diagnostics.get("forecast_backend_std_scale", 1.0)) > 0.0
+
+
+def test_decision_engine_signal_decay_guard_can_block_trade() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.35,
+        uncertainty_threshold_bps=180.0,
+        signal_decay_guard_threshold=0.45,
+    )
+    first = _base_context()
+    _ = engine.run_decision_algorithm(first)
+
+    second = _base_context()
+    second.features["ret_1"] = -0.02
+    second.features["ret_3"] = -0.04
+    second.features["flow_imbalance"] = -0.8
+    second.market_watch["trend_2m_bps"] = -120.0
+    out = engine.run_decision_algorithm(second)
+    assert float(out.diagnostics.get("signal_decay_score", 0.0)) >= 0.0
+    assert ("signal_decay" in out.risk_flags) or (out.action in {"skip", "hold"})
+
+
+def test_decision_engine_foundation_backend_uses_sentiment_features() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.45,
+        uncertainty_threshold_bps=120.0,
+        enable_sentiment=True,
+        enable_foundation_backend=True,
+        forecast_backend="auto",
+    )
+    ctx = _base_context()
+    ctx.sentiment_features = {"score": 0.8, "momentum": 0.6, "dispersion": 0.2}
+    ctx.features["macro_risk_on"] = 0.3
+    out = engine.run_decision_algorithm(ctx)
+    assert out.forecast.get("backend") == "foundation_ready"
+    fb_diag = out.diagnostics.get("forecast_backend_diagnostics", {})
+    assert isinstance(fb_diag, dict)
+    assert "sentiment_score" in fb_diag

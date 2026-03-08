@@ -90,3 +90,62 @@ After:
 - `SYSTEM_STATE=BLOCKED`
 - Execution topic absent and no submitted/blocked/rejected trade events were emitted.
 
+## 2026-03-08 Upgrade Pass
+
+### Architecture and Runtime Wiring Updates
+
+1. Enhanced central decision brain integration:
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+  - added multimodal payload ingestion for news/macro/fundamental/sentiment (`DecisionContext` payload maps + prefixed extraction)
+  - added forecast backend adapters for transformer-ready and foundation-ready forecasting hooks
+  - integrated backend forecast adjustments into return/volatility distributions in live decision path
+  - integrated signal decay detection into confidence/risk gating
+  - integrated liquidity heatmap state, latency-arbitrage protection, execution quality guard
+  - integrated dynamic TP expansion + smart hold extension + adaptive hold timing
+
+2. Orchestrator wiring:
+- `src/autonomous_investment_robot/core/orchestrator.py`
+  - passed new autonomous config knobs into `AutonomousMarketPredictionAndDecisionEngine`
+  - passed multimodal prefixed feature payloads into `DecisionContext` for real runtime use
+
+3. Config surface expansion:
+- `src/autonomous_investment_robot/config/settings.py`
+  - extended `AutonomousDecisionSettings` with sentiment toggle, signal decay threshold, execution quality threshold, liquidity pressure threshold, adaptive hold base, forecast backend selectors
+- `config.kraken_spot.live_profit.yaml`
+  - added corresponding `autonomous` keys with safe defaults
+
+4. Lockout and gating hardening:
+- `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py`
+  - temporary lockout-specific cooldown path and private API sync throttling
+- `src/autonomous_investment_robot/services/execution/rate_limit_governor.py`
+  - temporary lockout counted as rate-limit pressure
+- `src/autonomous_investment_robot/core/orchestrator.py`
+  - normalized rate-limit classification for temporary lockouts
+  - neutral liquidity-map sessions no longer appear as blocking gate tags
+
+### Tests and Validation Added
+
+- `tests/test_autonomous_decision_engine.py`
+  - transformer backend diagnostics wiring
+  - signal decay guard behavior
+  - foundation backend + sentiment feature path
+- `tests/test_kraken_spot_live_service.py`
+  - temporary lockout execution cooldown behavior
+  - sync-fill fallback during lockout
+- `tests/test_rate_limit_governor.py`
+  - temporary lockout classified as rate-limit storm input
+
+### Validation Evidence
+
+- `python3 -m py_compile` on changed Python modules: pass
+- targeted decision engine tests: pass
+- full suite: `276 passed, 1 skipped`
+- config matrix: `docs/config_matrix.json` + `docs/config_matrix.md` regenerated (13 configs, 0 errors)
+- safe run path: `./scripts/run_paper.sh` pass
+- post-run audit artifact:
+  - `runs/kraken_spot_paper/runtime_audit_after_upgrade.json`
+
+### Current External Blockers
+
+1. Live Kraken private API auth/key scope remains environment-dependent and can still hard-block live starts (`EAPI:Invalid key` / temporary lockout waves) until key/scope correctness and cooldown recovery are stable.
+2. In this run, safe paper execution is validated; live full-throttle remains gated by exchange-side auth/lockout conditions, not by missing local architecture.

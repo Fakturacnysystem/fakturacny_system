@@ -41,6 +41,14 @@ autonomous:
   enable_news_features: false
   enable_macro_features: false
   enable_fundamental_features: false
+  enable_sentiment_features: false
+  signal_decay_guard_threshold: 0.6
+  execution_quality_guard_threshold: 2.5
+  liquidity_pressure_guard_threshold: -0.6
+  adaptive_hold_base_s: 1800.0
+  forecast_backend: baseline
+  transformer_backend_enabled: false
+  foundation_backend_enabled: false
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0

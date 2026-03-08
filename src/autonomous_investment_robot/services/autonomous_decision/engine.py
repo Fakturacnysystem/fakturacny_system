@@ -105,6 +105,10 @@ class DecisionContext:
     fee_bps: float = 0.0
     slippage_bps: float = 0.0
     latency_ms: float = 0.0
+    news_features: dict[str, float] = field(default_factory=dict)
+    macro_features: dict[str, float] = field(default_factory=dict)
+    fundamental_features: dict[str, float] = field(default_factory=dict)
+    sentiment_features: dict[str, float] = field(default_factory=dict)
     guards_mode: str = "strict"
     modeled_cost_floor_bps: float = 120.0
     sell_min_profit_bps: float = 120.0
@@ -138,6 +142,17 @@ class DecisionOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BackendForecastAdjustment:
+    """Forecast backend adjustment applied to base probabilistic forecasts."""
+
+    backend: str
+    mean_adjust_bps: float
+    std_scale: float
+    confidence_scale: float
+    diagnostics: dict[str, float] = field(default_factory=dict)
 
 
 def ingest_price_volume_features(features: Mapping[str, float]) -> dict[str, float]:
@@ -187,6 +202,17 @@ def ingest_fundamental_features(fundamental_payload: Mapping[str, float] | None 
     }
 
 
+def ingest_sentiment_features(sentiment_payload: Mapping[str, float] | None = None) -> dict[str, float]:
+    """Extract optional sentiment features."""
+
+    payload = sentiment_payload or {}
+    return {
+        "sentiment_score": _clamp(_safe_float(payload.get("score"), 0.0), -1.0, 1.0),
+        "sentiment_momentum": _clamp(_safe_float(payload.get("momentum"), 0.0), -1.0, 1.0),
+        "sentiment_dispersion": max(0.0, _safe_float(payload.get("dispersion"), 0.0)),
+    }
+
+
 def fuse_multimodal_features(
     *,
     price_volume: Mapping[str, float],
@@ -214,6 +240,22 @@ def fuse_multimodal_features(
         + 0.05 * _safe_float(fused.get("fund_fundamental_growth"), 0.0)
     )
     return fused
+
+
+def _extract_prefixed_features(features: Mapping[str, float], prefix: str) -> dict[str, float]:
+    """Extract and de-prefix feature keys from a shared feature map."""
+
+    out: dict[str, float] = {}
+    pre = str(prefix)
+    for key, value in features.items():
+        k = str(key)
+        if not k.startswith(pre):
+            continue
+        stripped = k[len(pre) :]
+        if not stripped:
+            continue
+        out[stripped] = _safe_float(value, 0.0)
+    return out
 
 
 def analyze_order_flow_imbalance(
@@ -720,6 +762,7 @@ def validate_risk_constraints(
     confidence_threshold: float,
     uncertainty_threshold_bps: float,
     latency_threshold: float,
+    liquidity_threshold: float = -0.6,
 ) -> dict[str, Any]:
     """Evaluate aggregated risk constraints and return explicit guard reasons."""
 
@@ -752,7 +795,7 @@ def validate_risk_constraints(
         reasons.append("drift_guard")
     if regime in {"PANIC", "HIGH_VOL"}:
         reasons.append("regime_filter")
-    if liquidity_pressure < -0.6:
+    if liquidity_pressure < _safe_float(liquidity_threshold, -0.6):
         reasons.append("liquidity_filter")
     if latency_risk > latency_threshold:
         reasons.append("latency_guard")
@@ -1114,6 +1157,119 @@ class ProfitCompoundingAllocator:
         return max(0.0, base_budget * (1.0 + boost))
 
 
+class ForecastBackendAdapter:
+    """Adapter for transformer/foundation-ready forecast adjustments."""
+
+    backend_name = "baseline"
+
+    def predict_adjustment(
+        self,
+        *,
+        fused_features: Mapping[str, float],
+        regime: str,
+        nowcast: Mapping[str, float],
+    ) -> BackendForecastAdjustment:
+        _ = fused_features
+        _ = regime
+        _ = nowcast
+        return BackendForecastAdjustment(
+            backend=self.backend_name,
+            mean_adjust_bps=0.0,
+            std_scale=1.0,
+            confidence_scale=1.0,
+            diagnostics={"enabled": 0.0},
+        )
+
+
+class TransformerReadyForecastBackend(ForecastBackendAdapter):
+    backend_name = "transformer_ready"
+
+    def predict_adjustment(
+        self,
+        *,
+        fused_features: Mapping[str, float],
+        regime: str,
+        nowcast: Mapping[str, float],
+    ) -> BackendForecastAdjustment:
+        trend_bps = _safe_float(fused_features.get("ret_3"), 0.0) * 10000.0
+        flow = _safe_float(fused_features.get("flow_imbalance"), 0.0)
+        urgency = _safe_float(nowcast.get("execution_urgency"), 0.0)
+        regime_boost = 1.0 if regime in {"BULL_TREND", "TREND"} else 0.75 if regime in {"BEAR_TREND", "PANIC"} else 0.9
+        mean_adjust = _clamp((0.15 * trend_bps * regime_boost) + (12.0 * flow), -25.0, 25.0)
+        std_scale = _clamp(1.0 + (0.2 * abs(flow)) + (0.15 * urgency), 0.85, 1.45)
+        confidence_scale = _clamp(1.0 + (0.08 * max(0.0, trend_bps) / 80.0) - (0.10 * urgency), 0.75, 1.20)
+        return BackendForecastAdjustment(
+            backend=self.backend_name,
+            mean_adjust_bps=mean_adjust,
+            std_scale=std_scale,
+            confidence_scale=confidence_scale,
+            diagnostics={
+                "enabled": 1.0,
+                "trend_bps": trend_bps,
+                "flow": flow,
+                "urgency": urgency,
+            },
+        )
+
+
+class FoundationReadyForecastBackend(ForecastBackendAdapter):
+    backend_name = "foundation_ready"
+
+    def predict_adjustment(
+        self,
+        *,
+        fused_features: Mapping[str, float],
+        regime: str,
+        nowcast: Mapping[str, float],
+    ) -> BackendForecastAdjustment:
+        multimodal = _safe_float(fused_features.get("multimodal_score"), 0.0)
+        sentiment = _safe_float(fused_features.get("sent_sentiment_score"), 0.0)
+        macro = _safe_float(fused_features.get("macro_macro_risk_on"), 0.0)
+        market_state_conf = _safe_float(nowcast.get("market_state_confidence"), 0.0)
+        regime_sign = -1.0 if regime in {"BEAR_TREND", "PANIC"} else 1.0
+        mean_adjust = _clamp((18.0 * multimodal) + (8.0 * sentiment) + (10.0 * macro * regime_sign), -30.0, 30.0)
+        std_scale = _clamp(1.0 + (0.15 * (1.0 - market_state_conf)) + (0.1 * abs(multimodal)), 0.8, 1.5)
+        confidence_scale = _clamp(1.0 + (0.20 * market_state_conf) - (0.05 * abs(sentiment - macro)), 0.70, 1.25)
+        return BackendForecastAdjustment(
+            backend=self.backend_name,
+            mean_adjust_bps=mean_adjust,
+            std_scale=std_scale,
+            confidence_scale=confidence_scale,
+            diagnostics={
+                "enabled": 1.0,
+                "multimodal_score": multimodal,
+                "sentiment_score": sentiment,
+                "macro_score": macro,
+                "market_state_confidence": market_state_conf,
+            },
+        )
+
+
+def _apply_backend_adjustment_to_distribution(
+    distribution: DistributionForecast,
+    adjustment: BackendForecastAdjustment,
+) -> DistributionForecast:
+    """Apply backend adjustment while preserving quantile structure."""
+
+    if (
+        abs(adjustment.mean_adjust_bps) <= 1e-9
+        and abs(adjustment.std_scale - 1.0) <= 1e-9
+    ):
+        return distribution
+    mean_bps = distribution.mean_bps + adjustment.mean_adjust_bps
+    std_bps = max(1.0, distribution.std_bps * _clamp(adjustment.std_scale, 0.5, 2.0))
+    quantiles: dict[str, float] = {}
+    for key in distribution.quantiles_bps.keys():
+        try:
+            q = float(key)
+        except Exception:
+            quantiles[key] = mean_bps
+            continue
+        z = _NORMAL_Z.get(q, 0.0)
+        quantiles[key] = mean_bps + (z * std_bps)
+    return DistributionForecast(mean_bps=mean_bps, std_bps=std_bps, quantiles_bps=quantiles)
+
+
 class SignalEngine:
     def generate_trade_signal(self, **kwargs: Any) -> TradeSignal:
         return generate_trade_signal(**kwargs)
@@ -1274,6 +1430,9 @@ class MultimodalForecastEngine:
     def ingest_fundamental_features(self, **kwargs: Any) -> dict[str, float]:
         return ingest_fundamental_features(**kwargs)
 
+    def ingest_sentiment_features(self, **kwargs: Any) -> dict[str, float]:
+        return ingest_sentiment_features(**kwargs)
+
     def fuse_multimodal_features(self, **kwargs: Any) -> dict[str, float]:
         return fuse_multimodal_features(**kwargs)
 
@@ -1409,15 +1568,20 @@ def run_decision_algorithm(
     """
 
     price_volume = engine.multimodal.ingest_price_volume_features(features=context.features)
-    news = engine.multimodal.ingest_news_features(news_payload={})
-    macro = engine.multimodal.ingest_macro_features(macro_payload={})
-    fundamentals = engine.multimodal.ingest_fundamental_features(fundamental_payload={})
+    news_payload = context.news_features or _extract_prefixed_features(context.features, "news_")
+    macro_payload = context.macro_features or _extract_prefixed_features(context.features, "macro_")
+    fundamental_payload = context.fundamental_features or _extract_prefixed_features(context.features, "fund_")
+    sentiment_payload = context.sentiment_features or _extract_prefixed_features(context.features, "sent_")
+    news = engine.multimodal.ingest_news_features(news_payload=news_payload)
+    macro = engine.multimodal.ingest_macro_features(macro_payload=macro_payload)
+    fundamentals = engine.multimodal.ingest_fundamental_features(fundamental_payload=fundamental_payload)
+    sentiment = engine.multimodal.ingest_sentiment_features(sentiment_payload=sentiment_payload)
     fused = engine.multimodal.fuse_multimodal_features(
         price_volume=price_volume,
         news=news if engine.enable_news else {},
         macro=macro if engine.enable_macro else {},
         fundamentals=fundamentals if engine.enable_fundamentals else {},
-        sentiment={},
+        sentiment=sentiment if engine.enable_sentiment else {},
     )
     fused["timestamp"] = float(context.now_ts)
 
@@ -1458,6 +1622,8 @@ def run_decision_algorithm(
         fused_features=fused,
         liquidity_pressure=liquidity_pressure,
     )
+    liquidity_state = engine.liquidity_heatmap.classify(context.depth_notional, context.spread_bps)
+    market_state["liquidity_state"] = liquidity_state
     latency_risk = engine.execution.estimate_execution_latency_risk(
         latency_ms=context.latency_ms,
         spread_bps=context.spread_bps,
@@ -1475,6 +1641,22 @@ def run_decision_algorithm(
     vol_dist = engine.forecasting.forecast_volatility_distribution(
         fused_features=fused,
         regime=regime,
+    )
+    backend_adjustment = engine.forecast_backend_adapter.predict_adjustment(
+        fused_features=fused,
+        regime=regime,
+        nowcast=nowcast,
+    )
+    ret_dist = _apply_backend_adjustment_to_distribution(ret_dist, backend_adjustment)
+    vol_dist = _apply_backend_adjustment_to_distribution(
+        vol_dist,
+        BackendForecastAdjustment(
+            backend=backend_adjustment.backend,
+            mean_adjust_bps=0.0,
+            std_scale=max(0.8, min(1.5, backend_adjustment.std_scale)),
+            confidence_scale=backend_adjustment.confidence_scale,
+            diagnostics=backend_adjustment.diagnostics,
+        ),
     )
     drawdown_risk = engine.forecasting.forecast_drawdown_risk(
         return_distribution=ret_dist,
@@ -1509,14 +1691,26 @@ def run_decision_algorithm(
         alpha_engine=engine.alpha,
     )
     engine.prev_vol_bps = vol_dist.mean_bps
+    prev_alpha = _safe_float(engine.model_state.get("last_alpha_ensemble"), _safe_float(alpha_signals.get("ensemble"), 0.0))
+    decay_score = engine.signal_decay.score(_safe_float(alpha_signals.get("ensemble"), 0.0), prev_alpha)
+    engine.model_state["last_alpha_ensemble"] = _safe_float(alpha_signals.get("ensemble"), 0.0)
+    alpha_signals["signal_decay"] = float(decay_score)
+    if decay_score > engine.signal_decay_guard_threshold:
+        alpha_signals["ensemble"] = float(_safe_float(alpha_signals.get("ensemble"), 0.0) - min(0.5, decay_score * 0.4))
+    adjusted_forecast_confidence = _clamp(
+        context.forecast_confidence * _clamp(backend_adjustment.confidence_scale, 0.65, 1.25),
+        0.0,
+        1.0,
+    )
     confidence = score_signal_confidence(
         alpha_signal_bps=_safe_float(alpha_signals.get("ensemble"), 0.0) * 25.0,
         uncertainty=uq,
         conformal_interval=conformal,
         regime=regime,
         market_state_confidence=_safe_float(nowcast.get("market_state_confidence"), 0.0),
-        forecast_confidence=context.forecast_confidence,
+        forecast_confidence=adjusted_forecast_confidence,
     )
+    confidence = _clamp(confidence * (1.0 - min(0.25, max(0.0, decay_score) * 0.2)), 0.0, 1.0)
     signal = engine.signal.generate_trade_signal(
         alpha_signals=alpha_signals,
         return_distribution=ret_dist,
@@ -1577,11 +1771,32 @@ def run_decision_algorithm(
         confidence_threshold=_safe_float(regime_params.get("confidence_threshold"), engine.confidence_threshold),
         uncertainty_threshold_bps=_safe_float(regime_params.get("uncertainty_threshold_bps"), engine.uncertainty_threshold_bps),
         latency_threshold=engine.latency_risk_threshold,
+        liquidity_threshold=engine.liquidity_pressure_guard_threshold,
     )
+    latency_allowed = engine.latency_protection.allow(latency_risk, engine.latency_risk_threshold)
+    if not latency_allowed:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "latency_guard" not in reasons:
+            reasons.append("latency_guard")
+        risk_validation["reasons"] = reasons
+    if execution_monitor_score > engine.execution_quality_guard_threshold:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "execution_risk" not in reasons:
+            reasons.append("execution_risk")
+        risk_validation["reasons"] = reasons
+    if decay_score > engine.signal_decay_guard_threshold:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "signal_decay" not in reasons:
+            reasons.append("signal_decay")
+        risk_validation["reasons"] = reasons
     if not slippage_ok:
         risk_validation["allowed"] = False
         reasons = list(risk_validation.get("reasons", []))
-        reasons.append("execution_risk")
+        if "execution_risk" not in reasons:
+            reasons.append("execution_risk")
         risk_validation["reasons"] = reasons
 
     has_position = context.position_notional_quote > 1e-9
@@ -1595,6 +1810,22 @@ def run_decision_algorithm(
         has_open_position=has_position,
         current_profit_bps=context.current_profit_bps,
     )
+    effective_target_bps = engine.dynamic_tp.expand(
+        max(120.0, context.sell_target_profit_bps),
+        confidence,
+        regime,
+    )
+    adaptive_hold_s = engine.adaptive_hold_base_s * (
+        1.35
+        if regime in {"BULL_TREND", "TREND"}
+        else 0.75
+        if regime in {"PANIC", "HIGH_VOL"}
+        else 1.0
+    ) * (1.0 + (0.5 * max(0.0, confidence - 0.5)))
+    smart_hold_extend = engine.smart_hold.should_extend(
+        confidence,
+        _safe_float(market_state.get("trend_bps"), 0.0),
+    )
     managed_action, profit_protection = engine.trade_management.manage_open_position(
         exit_action=exit_action,
         current_profit_bps=context.current_profit_bps,
@@ -1604,9 +1835,27 @@ def run_decision_algorithm(
         avg_entry_price=context.avg_entry_price,
         modeled_cost_bps=max(cost["modeled_floor_bps"], context.modeled_cost_floor_bps),
         min_net_profit_bps=max(120.0, context.sell_min_profit_bps),
-        target_net_profit_bps=max(120.0, context.sell_target_profit_bps),
+        target_net_profit_bps=max(120.0, effective_target_bps),
         hold_time_s=context.position_age_s,
     )
+    if (
+        has_position
+        and managed_action in {"full_close", "partial_close", "reduce"}
+        and smart_hold_extend
+        and context.position_age_s < adaptive_hold_s
+        and context.current_profit_bps >= max(120.0, 0.6 * effective_target_bps)
+    ):
+        managed_action = "hold"
+        hold_diag = {
+            "reason": "smart_hold_extension",
+            "adaptive_hold_s": adaptive_hold_s,
+            "effective_target_net_bps": effective_target_bps,
+            "hold_time_s": context.position_age_s,
+        }
+        if isinstance(profit_protection, dict):
+            profit_protection = {**profit_protection, **hold_diag}
+        else:
+            profit_protection = hold_diag
     engine.model_state["peak_profit_bps"] = max(
         _safe_float(engine.model_state.get("peak_profit_bps"), 0.0),
         context.current_profit_bps,
@@ -1650,6 +1899,7 @@ def run_decision_algorithm(
         online_learning_enabled=engine.online_learning_enabled,
         base_learning_rate=engine.base_learning_rate,
     )
+    engine.model_state["last_pred_return_bps"] = float(ret_dist.mean_bps)
     if bool(online_adaptation.get("adapt", False)):
         engine.model_state = engine.online_learning.update_model_incrementally(
             model_state=engine.model_state,
@@ -1678,6 +1928,7 @@ def run_decision_algorithm(
             "return_std_bps": ret_dist.std_bps,
             "vol_mean_bps": vol_dist.mean_bps,
             "drawdown_risk_pct": drawdown_risk,
+            "backend": engine.forecast_backend_adapter.backend_name,
             "risk_adjusted_return_bps": engine.risk_inference.infer(
                 return_distribution=ret_dist,
                 uncertainty=uq,
@@ -1691,6 +1942,7 @@ def run_decision_algorithm(
         },
         execution_risk={
             "latency_risk": latency_risk,
+            "latency_allowed": 1.0 if latency_allowed else 0.0,
             "execution_quality_ratio": execution_monitor_score,
             "liquidity_pressure": liquidity_pressure,
             "total_modeled_cost_bps": cost["total_bps"],
@@ -1703,6 +1955,17 @@ def run_decision_algorithm(
             "exit_action": exit_action,
             "managed_action": managed_action,
             "slippage_ok": slippage_ok,
+            "signal_decay_score": decay_score,
+            "signal_decay_guard_threshold": engine.signal_decay_guard_threshold,
+            "execution_quality_guard_threshold": engine.execution_quality_guard_threshold,
+            "liquidity_threshold": engine.liquidity_pressure_guard_threshold,
+            "adaptive_hold_s": adaptive_hold_s,
+            "smart_hold_extend": 1.0 if smart_hold_extend else 0.0,
+            "forecast_backend": engine.forecast_backend_adapter.backend_name,
+            "forecast_backend_mean_adjust_bps": backend_adjustment.mean_adjust_bps,
+            "forecast_backend_std_scale": backend_adjustment.std_scale,
+            "forecast_backend_confidence_scale": backend_adjustment.confidence_scale,
+            "forecast_backend_diagnostics": backend_adjustment.diagnostics,
             "drift_top_features": drift_report.get("top_features", []),
             "self_optimization_hint": engine.self_optimization.propose_adjustments(
                 reject_rate=0.0,
@@ -1736,6 +1999,14 @@ class AutonomousMarketPredictionAndDecisionEngine:
         enable_news: bool = False,
         enable_macro: bool = False,
         enable_fundamentals: bool = False,
+        enable_sentiment: bool = False,
+        signal_decay_guard_threshold: float = 0.6,
+        execution_quality_guard_threshold: float = 2.5,
+        liquidity_pressure_guard_threshold: float = -0.6,
+        adaptive_hold_base_s: float = 1800.0,
+        forecast_backend: str = "baseline",
+        enable_transformer_backend: bool = False,
+        enable_foundation_backend: bool = False,
     ) -> None:
         self.base_risk_budget_quote = max(0.0, _safe_float(base_risk_budget_quote, 25.0))
         self.confidence_threshold = _clamp(confidence_threshold, 0.0, 1.0)
@@ -1751,6 +2022,14 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.enable_news = bool(enable_news)
         self.enable_macro = bool(enable_macro)
         self.enable_fundamentals = bool(enable_fundamentals)
+        self.enable_sentiment = bool(enable_sentiment)
+        self.signal_decay_guard_threshold = _clamp(signal_decay_guard_threshold, 0.1, 1.0)
+        self.execution_quality_guard_threshold = _clamp(execution_quality_guard_threshold, 0.5, 5.0)
+        self.liquidity_pressure_guard_threshold = _clamp(liquidity_pressure_guard_threshold, -1.0, 0.0)
+        self.adaptive_hold_base_s = max(30.0, _safe_float(adaptive_hold_base_s, 1800.0))
+        self.forecast_backend_name = str(forecast_backend or "baseline").strip().lower()
+        self.enable_transformer_backend = bool(enable_transformer_backend)
+        self.enable_foundation_backend = bool(enable_foundation_backend)
 
         self.signal = SignalEngine()
         self.forecasting = ProbabilisticMarketForecastingEngine()
@@ -1784,6 +2063,26 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.adaptive_sizing = AdaptivePositionSizing()
         self.liquidity_aware_sizing = LiquidityAwareTradeSizing()
         self.profit_compound = ProfitCompoundingAllocator()
+        self.signal_decay = SignalDecayDetector()
+        self.liquidity_heatmap = LiquidityHeatmap()
+
+        if self.forecast_backend_name in {"foundation", "foundation_ready"}:
+            self.forecast_backend_adapter: ForecastBackendAdapter = FoundationReadyForecastBackend()
+        elif self.forecast_backend_name in {"transformer", "transformer_ready"}:
+            self.forecast_backend_adapter = TransformerReadyForecastBackend()
+        elif self.forecast_backend_name == "auto":
+            if self.enable_foundation_backend:
+                self.forecast_backend_adapter = FoundationReadyForecastBackend()
+            elif self.enable_transformer_backend:
+                self.forecast_backend_adapter = TransformerReadyForecastBackend()
+            else:
+                self.forecast_backend_adapter = ForecastBackendAdapter()
+        elif self.enable_foundation_backend:
+            self.forecast_backend_adapter = FoundationReadyForecastBackend()
+        elif self.enable_transformer_backend:
+            self.forecast_backend_adapter = TransformerReadyForecastBackend()
+        else:
+            self.forecast_backend_adapter = ForecastBackendAdapter()
 
         self.current_regime = ""
         self.last_regime_switch_ts = 0.0

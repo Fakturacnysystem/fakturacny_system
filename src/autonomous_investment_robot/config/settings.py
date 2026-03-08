@@ -240,6 +240,14 @@ class AutonomousDecisionSettings:
     enable_news_features: bool = False
     enable_macro_features: bool = False
     enable_fundamental_features: bool = False
+    enable_sentiment_features: bool = False
+    signal_decay_guard_threshold: float = 0.6
+    execution_quality_guard_threshold: float = 2.5
+    liquidity_pressure_guard_threshold: float = -0.6
+    adaptive_hold_base_s: float = 1800.0
+    forecast_backend: str = "baseline"
+    transformer_backend_enabled: bool = False
+    foundation_backend_enabled: bool = False
 
 
 @dataclass

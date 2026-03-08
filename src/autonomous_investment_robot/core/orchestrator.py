@@ -277,6 +277,71 @@ class RobotOrchestrator:
             enable_news=self._bool_env("AUTONOMOUS_ENABLE_NEWS_FEATURES", bool(getattr(autonomous_cfg, "enable_news_features", False))),
             enable_macro=self._bool_env("AUTONOMOUS_ENABLE_MACRO_FEATURES", bool(getattr(autonomous_cfg, "enable_macro_features", False))),
             enable_fundamentals=self._bool_env("AUTONOMOUS_ENABLE_FUNDAMENTAL_FEATURES", bool(getattr(autonomous_cfg, "enable_fundamental_features", False))),
+            enable_sentiment=self._bool_env("AUTONOMOUS_ENABLE_SENTIMENT_FEATURES", bool(getattr(autonomous_cfg, "enable_sentiment_features", False))),
+            signal_decay_guard_threshold=max(
+                0.1,
+                min(
+                    1.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_SIGNAL_DECAY_GUARD_THRESHOLD",
+                            str(getattr(autonomous_cfg, "signal_decay_guard_threshold", 0.6)),
+                        )
+                        or str(getattr(autonomous_cfg, "signal_decay_guard_threshold", 0.6))
+                    ),
+                ),
+            ),
+            execution_quality_guard_threshold=max(
+                0.5,
+                min(
+                    5.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_EXECUTION_QUALITY_GUARD_THRESHOLD",
+                            str(getattr(autonomous_cfg, "execution_quality_guard_threshold", 2.5)),
+                        )
+                        or str(getattr(autonomous_cfg, "execution_quality_guard_threshold", 2.5))
+                    ),
+                ),
+            ),
+            liquidity_pressure_guard_threshold=max(
+                -1.0,
+                min(
+                    0.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_LIQUIDITY_PRESSURE_GUARD_THRESHOLD",
+                            str(getattr(autonomous_cfg, "liquidity_pressure_guard_threshold", -0.6)),
+                        )
+                        or str(getattr(autonomous_cfg, "liquidity_pressure_guard_threshold", -0.6))
+                    ),
+                ),
+            ),
+            adaptive_hold_base_s=max(
+                30.0,
+                float(
+                    os.getenv(
+                        "AUTONOMOUS_ADAPTIVE_HOLD_BASE_S",
+                        str(getattr(autonomous_cfg, "adaptive_hold_base_s", 1800.0)),
+                    )
+                    or str(getattr(autonomous_cfg, "adaptive_hold_base_s", 1800.0))
+                ),
+            ),
+            forecast_backend=str(
+                os.getenv(
+                    "AUTONOMOUS_FORECAST_BACKEND",
+                    str(getattr(autonomous_cfg, "forecast_backend", "baseline")),
+                )
+                or str(getattr(autonomous_cfg, "forecast_backend", "baseline"))
+            ),
+            enable_transformer_backend=self._bool_env(
+                "AUTONOMOUS_TRANSFORMER_BACKEND_ENABLED",
+                bool(getattr(autonomous_cfg, "transformer_backend_enabled", False)),
+            ),
+            enable_foundation_backend=self._bool_env(
+                "AUTONOMOUS_FOUNDATION_BACKEND_ENABLED",
+                bool(getattr(autonomous_cfg, "foundation_backend_enabled", False)),
+            ),
         )
         self.toxicity = ToxicityScorer(window=max(8, int(os.getenv("AUTONOMOUS_TOXICITY_WINDOW", "32") or "32")))
         self.treasury = TreasuryService(
@@ -2957,6 +3022,26 @@ class RobotOrchestrator:
                         spread_bps=spread_bps,
                         depth_notional=depth_notional,
                         features=dict(features),
+                        news_features={
+                            str(k)[5:]: float(v)
+                            for k, v in dict(features).items()
+                            if str(k).startswith("news_")
+                        },
+                        macro_features={
+                            str(k)[6:]: float(v)
+                            for k, v in dict(features).items()
+                            if str(k).startswith("macro_")
+                        },
+                        fundamental_features={
+                            str(k)[5:]: float(v)
+                            for k, v in dict(features).items()
+                            if str(k).startswith("fund_")
+                        },
+                        sentiment_features={
+                            str(k)[5:]: float(v)
+                            for k, v in dict(features).items()
+                            if str(k).startswith("sent_")
+                        },
                         market_watch={
                             "trend_30s_bps": float(market_watch_state.trend_30s_bps),
                             "trend_2m_bps": float(market_watch_state.trend_2m_bps),
