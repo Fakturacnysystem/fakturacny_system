@@ -27,6 +27,19 @@ class OrderIntent:
     why: dict
 
 
+def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        raw = float(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        raw = float(default)
+    return max(float(lo), min(float(hi), raw))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or ("1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 class PolicyService:
     def __init__(self, settings: PolicySettings, allocator_settings: AllocatorSettings, tco_settings: TCOSettings) -> None:
         self.settings = settings
@@ -175,6 +188,15 @@ class PolicyService:
             }
             return None
         weights = self.allocator.allocate([s.name for s in signals])
+        policy_tuning_enabled = _env_bool("AUTONOMOUS_POLICY_TUNING_ENABLE", False)
+        if policy_tuning_enabled:
+            policy_edge_scale = _env_float_clamped("AUTONOMOUS_POLICY_EDGE_SCALE", 1.0, 0.5, 5.0)
+            policy_fc_mu_weight = _env_float_clamped("AUTONOMOUS_POLICY_FC_MU_WEIGHT", 0.1, 0.0, 2.0)
+            policy_edge_horizon_scale = _env_float_clamped("AUTONOMOUS_POLICY_EDGE_HORIZON_SCALE", 1.0, 0.5, 3.0)
+        else:
+            policy_edge_scale = 1.0
+            policy_fc_mu_weight = 0.1
+            policy_edge_horizon_scale = 1.0
 
         combined = 0.0
         why_parts = []
@@ -193,10 +215,11 @@ class PolicyService:
                 maker=True,
             )
             edge_info = edge_from_bps(
-                strategy_edge_bps=s.expected_edge_bps,
+                strategy_edge_bps=s.expected_edge_bps * policy_edge_scale,
                 confidence=s.confidence,
                 fc_mu=fc.mu,
-                fc_mu_weight=0.1,
+                fc_mu_weight=policy_fc_mu_weight,
+                horizon_scale=policy_edge_horizon_scale,
             )
             edge = edge_info.estimate
             debug_row = {
@@ -331,23 +354,32 @@ class PolicyService:
                 "side": side,
             }
             return None
+        why_payload: dict[str, object] = {
+            "confidence": fc.confidence,
+            "regime": fc.regime,
+            "liquidity_regime": fc.liquidity_regime,
+            "weights": weights,
+            "weights_net_after_costs": {k: v for k, v in sorted({c["strategy"]: c["weight"] for c in why_parts}.items())},
+            "max_order_notional_quote_cap": max_order_cap,
+            "veto_counts": dict(self.last_veto_counts),
+            "meta_gates": list(self.last_meta_gates),
+            "strategy_disable_cooldowns": {k: v for k, v in sorted(self.strategy_disable_cooldowns.items()) if v > 0},
+            "strategy_regime_cooldowns": {f"{k[0]}@{k[1]}": v for k, v in sorted(self.strategy_regime_cooldowns.items()) if v > 0},
+            "components": why_parts,
+        }
+        if policy_tuning_enabled:
+            why_payload["policy_tuning"] = {
+                "enabled": True,
+                "edge_scale": float(policy_edge_scale),
+                "fc_mu_weight": float(policy_fc_mu_weight),
+                "edge_horizon_scale": float(policy_edge_horizon_scale),
+            }
+
         return OrderIntent(
             symbol=fc.symbol,
             side=side,
             target_notional=target,
-            why={
-                "confidence": fc.confidence,
-                "regime": fc.regime,
-                "liquidity_regime": fc.liquidity_regime,
-                "weights": weights,
-                "weights_net_after_costs": {k: v for k, v in sorted({c["strategy"]: c["weight"] for c in why_parts}.items())},
-                "max_order_notional_quote_cap": max_order_cap,
-                "veto_counts": dict(self.last_veto_counts),
-                "meta_gates": list(self.last_meta_gates),
-                "strategy_disable_cooldowns": {k: v for k, v in sorted(self.strategy_disable_cooldowns.items()) if v > 0},
-                "strategy_regime_cooldowns": {f"{k[0]}@{k[1]}": v for k, v in sorted(self.strategy_regime_cooldowns.items()) if v > 0},
-                "components": why_parts,
-            },
+            why=why_payload,
         )
 
     def update_allocator(self, strategy_pnl_bps: dict[str, float]) -> None:

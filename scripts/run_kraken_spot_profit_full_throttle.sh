@@ -110,6 +110,20 @@ for f in "${RUN_DIR}/env_overrides.sh" "${RUN_DIR}/operator_overrides.sh"; do
   fi
 done
 
+# Full-throttle sanity hardening:
+# 1) prevent legacy micro-notional caps from silently disabling intent generation
+# 2) avoid health-audit restart loops under temporary private-API lockouts
+_ff_user_min="${AUTONOMOUS_USER_MIN_ORDER_QUOTE:-2.0}"
+_ff_quote_floor="${AUTONOMOUS_QUOTE_NOTIONAL_FLOOR:-${_ff_user_min}}"
+_ff_max_notional="${AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE:-0}"
+_ff_floor_enforced="$(awk -v a="${_ff_user_min}" -v b="${_ff_quote_floor}" 'BEGIN { x=(a+0); y=(b+0); if (y>x) x=y; if (x<2.0) x=2.0; printf "%.8f", x }')"
+_ff_max_enforced="$(awk -v m="${_ff_max_notional}" -v floor="${_ff_floor_enforced}" 'BEGIN { x=(m+0); f=(floor+0); if (x < f) x=25.0; if (x < 25.0) x=25.0; printf "%.8f", x }')"
+export AUTONOMOUS_QUOTE_NOTIONAL_FLOOR="${_ff_floor_enforced}"
+export AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE="${_ff_floor_enforced}"
+export AUTONOMOUS_PROBE_NOTIONAL_QUOTE="${AUTONOMOUS_PROBE_NOTIONAL_QUOTE:-${_ff_floor_enforced}}"
+export AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE="${_ff_max_enforced}"
+export AUTONOMOUS_HEALTH_AUDIT110_ENABLED="${AUTONOMOUS_HEALTH_AUDIT110_ENABLED:-false}"
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
   PYTHON_BIN=".venv/bin/python"
