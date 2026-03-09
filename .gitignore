@@ -10,3 +10,8 @@ build/
 
 # macOS
 .DS_Store
+.aider*
+
+# deployment local secrets
+deploy/*.env
+!deploy/*.env.example

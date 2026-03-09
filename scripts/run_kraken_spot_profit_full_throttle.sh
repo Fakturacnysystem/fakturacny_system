@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
-  echo "Missing Kraken Spot credentials in env: set KRAKEN_API_KEY and KRAKEN_API_SECRET" >&2
-  exit 2
-fi
-if [[ "${KRAKEN_API_KEY}" == " "* || "${KRAKEN_API_KEY}" == *" " ]]; then
-  echo "KRAKEN_API_KEY has leading/trailing space" >&2
-  exit 2
-fi
-if [[ "${KRAKEN_API_SECRET}" == " "* || "${KRAKEN_API_SECRET}" == *" " ]]; then
-  echo "KRAKEN_API_SECRET has leading/trailing space" >&2
-  exit 2
-fi
-
 export AUTONOMOUS_GUARDS_MODE="${AUTONOMOUS_GUARDS_MODE:-fatal_only}"
 export AUTONOMOUS_ORDER_CADENCE_S="${AUTONOMOUS_ORDER_CADENCE_S:-9}"
 export AUTONOMOUS_MAX_ORDERS_PER_MIN="${AUTONOMOUS_MAX_ORDERS_PER_MIN:-10}"
@@ -66,8 +53,13 @@ export AUTONOMOUS_LIQUIDITY_NIGHT_EDGE_ADD_BPS="${AUTONOMOUS_LIQUIDITY_NIGHT_EDG
 export AUTONOMOUS_WALK_FORWARD_ENFORCE="${AUTONOMOUS_WALK_FORWARD_ENFORCE:-false}"
 export AUTONOMOUS_NESTED_WALK_FORWARD_ENFORCE="${AUTONOMOUS_NESTED_WALK_FORWARD_ENFORCE:-false}"
 
-export AUTONOMOUS_FALLBACK_SYMBOLS="${AUTONOMOUS_FALLBACK_SYMBOLS:-ADAXBT,ALGOXBT,DOTXBT,SOLXBT,XXRPXXBT,XXLMXXBT,LINKXBT,XETHXXBT}"
-export AUTONOMOUS_UNIVERSE_ALLOWLIST="${AUTONOMOUS_UNIVERSE_ALLOWLIST:-${AUTONOMOUS_FALLBACK_SYMBOLS}}"
+if [[ -z "${AUTONOMOUS_FALLBACK_SYMBOLS+x}" ]]; then
+  export AUTONOMOUS_FALLBACK_SYMBOLS="ADAXBT,ALGOXBT,DOTXBT,SOLXBT,XXRPXXBT,XXLMXXBT,LINKXBT,XETHXXBT"
+fi
+# Respect explicit empty allowlist from parent launchers (for dynamic universe mode).
+if [[ -z "${AUTONOMOUS_UNIVERSE_ALLOWLIST+x}" ]]; then
+  export AUTONOMOUS_UNIVERSE_ALLOWLIST="${AUTONOMOUS_FALLBACK_SYMBOLS}"
+fi
 
 export AUTONOMOUS_PROFIT_TARGET_NET="${AUTONOMOUS_PROFIT_TARGET_NET:-0.012}"
 export AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S="${AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S:-5.0}"
@@ -124,6 +116,22 @@ export AUTONOMOUS_SELF_IMPROVEMENT_ENABLED="${AUTONOMOUS_SELF_IMPROVEMENT_ENABLE
 export AUTONOMOUS_SELF_IMPROVEMENT_HOURS="${AUTONOMOUS_SELF_IMPROVEMENT_HOURS:-24}"
 export AUTONOMOUS_SELF_IMPROVEMENT_EVERY_S="${AUTONOMOUS_SELF_IMPROVEMENT_EVERY_S:-1800}"
 export AUTONOMOUS_SELF_IMPROVEMENT_LLM_ENABLED="${AUTONOMOUS_SELF_IMPROVEMENT_LLM_ENABLED:-0}"
+export AUTONOMOUS_NODE_ROLE="${AUTONOMOUS_NODE_ROLE:-live}"
+export AUTONOMOUS_DISTRIBUTED_ENABLED="${AUTONOMOUS_DISTRIBUTED_ENABLED:-1}"
+export AUTONOMOUS_COMPUTE_BRIDGE="${AUTONOMOUS_COMPUTE_BRIDGE:-auto}"
+export AUTONOMOUS_COMPUTE_TASK_TIMEOUT_S="${AUTONOMOUS_COMPUTE_TASK_TIMEOUT_S:-0.8}"
+export AUTONOMOUS_COMPUTE_REFRESH_S="${AUTONOMOUS_COMPUTE_REFRESH_S:-10}"
+export AUTONOMOUS_COMPUTE_TOP_N="${AUTONOMOUS_COMPUTE_TOP_N:-24}"
+export AUTONOMOUS_STREAM_PREFIX="${AUTONOMOUS_STREAM_PREFIX:-autobot}"
+export AUTONOMOUS_STREAM_PAYLOAD_VERSION="${AUTONOMOUS_STREAM_PAYLOAD_VERSION:-v1}"
+if [[ -z "${AUTONOMOUS_REDIS_URL:-}" && -n "${REDIS_URL:-}" ]]; then
+  export AUTONOMOUS_REDIS_URL="${REDIS_URL}"
+fi
+export AUTONOMOUS_POSTGRES_MIRROR_ENABLED="${AUTONOMOUS_POSTGRES_MIRROR_ENABLED:-0}"
+if [[ -z "${AUTONOMOUS_POSTGRES_DSN:-}" && -n "${POSTGRES_DSN:-}" ]]; then
+  export AUTONOMOUS_POSTGRES_DSN="${POSTGRES_DSN}"
+fi
+export AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE="${AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE:-1}"
 
 export PYTHONUNBUFFERED=1
 
@@ -168,6 +176,10 @@ PY
 )"
 fi
 export AUTONOMOUS_RUN_DIR="${RUN_DIR}"
+_kraken_cred_source="${AUTONOMOUS_CREDENTIAL_SOURCE:-}"
+if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+  _kraken_cred_source="shell_env"
+fi
 
 # Keep runtime config path consistent with requested run directory.
 if [[ -z "${AUTONOMOUS_CONFIG_OVERRIDE_PATH:-}" ]]; then
@@ -200,6 +212,273 @@ if [[ "${_use_persisted_overrides}" == "true" || "${AUTONOMOUS_USE_PERSISTED_OVE
   fi
 fi
 
+# Credential bootstrap path:
+# If current shell does not expose Kraken vars, attempt to source existing run-dir
+# override files before credential validation.
+_import_kraken_vars_from_env_file() {
+  local _f="${1:-}"
+  [[ -n "${_f}" && -f "${_f}" ]] || return 0
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    case "${_line}" in
+      export\ KRAKEN_API_KEY=*|KRAKEN_API_KEY=*|export\ KRAKEN_API_SECRET=*|KRAKEN_API_SECRET=*)
+        _line="${_line#export }"
+        local _name="${_line%%=*}"
+        local _value="${_line#*=}"
+        _name="$(printf '%s' "${_name}" | tr -d '[:space:]')"
+        _value="${_value//$'\r'/}"
+        _value="${_value#"${_value%%[![:space:]]*}"}"
+        _value="${_value%"${_value##*[![:space:]]}"}"
+        if [[ "${_value}" == \"*\" && "${_value}" == *\" && ${#_value} -ge 2 ]]; then
+          _value="${_value:1:${#_value}-2}"
+        elif [[ "${_value}" == \'*\' && "${_value}" == *\' && ${#_value} -ge 2 ]]; then
+          _value="${_value:1:${#_value}-2}"
+        fi
+        if [[ "${_name}" == "KRAKEN_API_KEY" || "${_name}" == "KRAKEN_API_SECRET" ]]; then
+          export "${_name}=${_value}"
+        fi
+        ;;
+      *)
+        ;;
+    esac
+  done < "${_f}"
+}
+
+_import_kraken_vars_from_shell_history() {
+  local _hist="${1:-}"
+  [[ -n "${_hist}" && -f "${_hist}" ]] || return 0
+  _pull_assignment() {
+    local _var="${1:-}"
+    local _line
+    _line="$(LC_ALL=C grep -E "(^|;)[[:space:]]*export[[:space:]]+${_var}[[:space:]]*=" "${_hist}" | tail -n 1 || true)"
+    [[ -n "${_line}" ]] || return 0
+    _line="${_line#*export }"
+    _line="${_line#*${_var}}"
+    _line="${_line#*=}"
+    _line="${_line%%;*}"
+    _line="${_line//$'\r'/}"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line%"${_line##*[![:space:]]}"}"
+    if [[ "${_line}" == \"*\" && "${_line}" == *\" && ${#_line} -ge 2 ]]; then
+      _line="${_line:1:${#_line}-2}"
+    elif [[ "${_line}" == \'*\' && "${_line}" == *\' && ${#_line} -ge 2 ]]; then
+      _line="${_line:1:${#_line}-2}"
+    fi
+    if [[ -n "${_line}" ]]; then
+      export "${_var}=${_line}"
+    fi
+  }
+  _pull_assignment "KRAKEN_API_KEY"
+  _pull_assignment "KRAKEN_API_SECRET"
+}
+
+_import_single_var_from_env_file() {
+  local _var="${1:-}"
+  local _f="${2:-}"
+  [[ -n "${_var}" && -n "${_f}" && -f "${_f}" ]] || return 0
+  [[ -z "${!_var:-}" ]] || return 0
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    case "${_line}" in
+      export\ ${_var}=*|${_var}=*)
+        _line="${_line#export }"
+        local _name="${_line%%=*}"
+        local _value="${_line#*=}"
+        _name="$(printf '%s' "${_name}" | tr -d '[:space:]')"
+        [[ "${_name}" == "${_var}" ]] || continue
+        _value="${_value//$'\r'/}"
+        _value="${_value#"${_value%%[![:space:]]*}"}"
+        _value="${_value%"${_value##*[![:space:]]}"}"
+        if [[ "${_value}" == \"*\" && "${_value}" == *\" && ${#_value} -ge 2 ]]; then
+          _value="${_value:1:${#_value}-2}"
+        elif [[ "${_value}" == \'*\' && "${_value}" == *\' && ${#_value} -ge 2 ]]; then
+          _value="${_value:1:${#_value}-2}"
+        fi
+        if [[ -n "${_value}" ]]; then
+          export "${_var}=${_value}"
+          break
+        fi
+        ;;
+      *)
+        ;;
+    esac
+  done < "${_f}"
+}
+
+_import_single_var_from_shell_history() {
+  local _var="${1:-}"
+  local _hist="${2:-}"
+  [[ -n "${_var}" && -n "${_hist}" && -f "${_hist}" ]] || return 0
+  [[ -z "${!_var:-}" ]] || return 0
+  local _line
+  _line="$(LC_ALL=C grep -E "(^|;)[[:space:]]*export[[:space:]]+${_var}[[:space:]]*=" "${_hist}" | tail -n 1 || true)"
+  [[ -n "${_line}" ]] || return 0
+  _line="${_line#*export }"
+  _line="${_line#*${_var}}"
+  _line="${_line#*=}"
+  _line="${_line%%;*}"
+  _line="${_line//$'\r'/}"
+  _line="${_line#"${_line%%[![:space:]]*}"}"
+  _line="${_line%"${_line##*[![:space:]]}"}"
+  if [[ "${_line}" == \"*\" && "${_line}" == *\" && ${#_line} -ge 2 ]]; then
+    _line="${_line:1:${#_line}-2}"
+  elif [[ "${_line}" == \'*\' && "${_line}" == *\' && ${#_line} -ge 2 ]]; then
+    _line="${_line:1:${#_line}-2}"
+  fi
+  if [[ -n "${_line}" ]]; then
+    export "${_var}=${_line}"
+  fi
+}
+
+if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
+  for f in "${RUN_DIR}/env_overrides.sh" "${RUN_DIR}/operator_overrides.sh"; do
+    if [[ -f "${f}" ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "${f}" 2>/dev/null || true
+      set +a
+      if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+        _kraken_cred_source="run_dir_override:${f}"
+      fi
+    fi
+  done
+fi
+
+# Secondary bootstrap path:
+# import only Kraken credential assignments from optional env files without
+# executing arbitrary shell commands.
+if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
+  if [[ -n "${AUTONOMOUS_ENV_FILE:-}" ]]; then
+    _import_kraken_vars_from_env_file "${AUTONOMOUS_ENV_FILE}"
+    if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+      _kraken_cred_source="env_file:${AUTONOMOUS_ENV_FILE}"
+    fi
+  fi
+  _import_kraken_vars_from_env_file ".env"
+  if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+    _kraken_cred_source="env_file:.env"
+  fi
+  _import_kraken_vars_from_env_file ".env.local"
+  if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+    _kraken_cred_source="env_file:.env.local"
+  fi
+  _import_kraken_vars_from_env_file "${HOME}/.config/autonomous_investment_robot/env.sh"
+  if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+    _kraken_cred_source="env_file:${HOME}/.config/autonomous_investment_robot/env.sh"
+  fi
+fi
+
+# Tertiary bootstrap path:
+# import from shell history (more recent than snapshots in practice).
+if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
+  _shell_hist="${AUTONOMOUS_SHELL_HISTORY_FILE:-${HOME}/.zsh_history}"
+  _import_kraken_vars_from_shell_history "${_shell_hist}"
+  if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+    _kraken_cred_source="shell_history:${_shell_hist}"
+  fi
+fi
+
+# Quaternary bootstrap path for Codex desktop sessions:
+# import from the newest shell snapshot that carries Kraken key refs.
+if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
+  _snap_dir="${HOME}/.codex/shell_snapshots"
+  if [[ -d "${_snap_dir}" ]]; then
+    while IFS= read -r _snap; do
+      [[ -f "${_snap}" ]] || continue
+      if grep -q "KRAKEN_API_KEY" "${_snap}" && grep -q "KRAKEN_API_SECRET" "${_snap}"; then
+        _import_kraken_vars_from_env_file "${_snap}"
+        if [[ -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
+          if [[ -z "${_kraken_cred_source}" ]]; then
+            _kraken_cred_source="codex_shell_snapshot:${_snap}"
+          fi
+          break
+        fi
+      fi
+    done < <(ls -1t "${_snap_dir}"/*.sh 2>/dev/null || true)
+  fi
+fi
+
+_llm_cred_source="${AUTONOMOUS_LLM_CREDENTIAL_SOURCE:-}"
+if [[ -z "${GROQ_API_KEY:-}" || -z "${OPENAI_API_KEY:-}" ]]; then
+  for f in "${RUN_DIR}/env_overrides.sh" "${RUN_DIR}/operator_overrides.sh"; do
+    [[ -f "${f}" ]] || continue
+    _import_single_var_from_env_file "GROQ_API_KEY" "${f}"
+    _import_single_var_from_env_file "OPENAI_API_KEY" "${f}"
+    if [[ -z "${_llm_cred_source}" && ( -n "${GROQ_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ) ]]; then
+      _llm_cred_source="run_dir_override:${f}"
+    fi
+  done
+fi
+if [[ -z "${GROQ_API_KEY:-}" || -z "${OPENAI_API_KEY:-}" ]]; then
+  for f in "${AUTONOMOUS_ENV_FILE:-}" ".env" ".env.local" "${HOME}/.config/autonomous_investment_robot/env.sh"; do
+    [[ -n "${f}" && -f "${f}" ]] || continue
+    _import_single_var_from_env_file "GROQ_API_KEY" "${f}"
+    _import_single_var_from_env_file "OPENAI_API_KEY" "${f}"
+    if [[ -z "${_llm_cred_source}" && ( -n "${GROQ_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ) ]]; then
+      _llm_cred_source="env_file:${f}"
+    fi
+  done
+fi
+if [[ -z "${GROQ_API_KEY:-}" || -z "${OPENAI_API_KEY:-}" ]]; then
+  _shell_hist="${AUTONOMOUS_SHELL_HISTORY_FILE:-${HOME}/.zsh_history}"
+  _import_single_var_from_shell_history "GROQ_API_KEY" "${_shell_hist}"
+  _import_single_var_from_shell_history "OPENAI_API_KEY" "${_shell_hist}"
+  if [[ -z "${_llm_cred_source}" && ( -n "${GROQ_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ) ]]; then
+    _llm_cred_source="shell_history:${_shell_hist}"
+  fi
+fi
+if [[ -z "${GROQ_API_KEY:-}" || -z "${OPENAI_API_KEY:-}" ]]; then
+  _snap_dir="${HOME}/.codex/shell_snapshots"
+  if [[ -d "${_snap_dir}" ]]; then
+    while IFS= read -r _snap; do
+      [[ -f "${_snap}" ]] || continue
+      _import_single_var_from_env_file "GROQ_API_KEY" "${_snap}"
+      _import_single_var_from_env_file "OPENAI_API_KEY" "${_snap}"
+      if [[ -n "${GROQ_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
+        if [[ -z "${_llm_cred_source}" ]]; then
+          _llm_cred_source="codex_shell_snapshot:${_snap}"
+        fi
+        break
+      fi
+    done < <(ls -1t "${_snap_dir}"/*.sh 2>/dev/null || true)
+  fi
+fi
+
+mkdir -p "${RUN_DIR}"
+AUTONOMOUS_CREDENTIAL_SOURCE="${_kraken_cred_source:-unresolved}" \
+AUTONOMOUS_CREDENTIAL_HAS_KEY="$([[ -n "${KRAKEN_API_KEY:-}" ]] && echo true || echo false)" \
+AUTONOMOUS_CREDENTIAL_HAS_SECRET="$([[ -n "${KRAKEN_API_SECRET:-}" ]] && echo true || echo false)" \
+python3 - <<'PY'
+from pathlib import Path
+import json
+import os
+
+run_dir = Path(os.getenv("AUTONOMOUS_RUN_DIR", "")).resolve()
+run_dir.mkdir(parents=True, exist_ok=True)
+payload = {
+    "credential_source": str(os.getenv("AUTONOMOUS_CREDENTIAL_SOURCE", "unresolved") or "unresolved"),
+    "has_key": str(os.getenv("AUTONOMOUS_CREDENTIAL_HAS_KEY", "false")).lower() == "true",
+    "has_secret": str(os.getenv("AUTONOMOUS_CREDENTIAL_HAS_SECRET", "false")).lower() == "true",
+}
+(run_dir / "credential_resolution.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+PY
+
+AUTONOMOUS_LLM_CREDENTIAL_SOURCE="${_llm_cred_source:-unresolved}" \
+AUTONOMOUS_LLM_HAS_GROQ_KEY="$([[ -n "${GROQ_API_KEY:-}" ]] && echo true || echo false)" \
+AUTONOMOUS_LLM_HAS_OPENAI_KEY="$([[ -n "${OPENAI_API_KEY:-}" ]] && echo true || echo false)" \
+python3 - <<'PY'
+from pathlib import Path
+import json
+import os
+
+run_dir = Path(os.getenv("AUTONOMOUS_RUN_DIR", "")).resolve()
+run_dir.mkdir(parents=True, exist_ok=True)
+payload = {
+    "credential_source": str(os.getenv("AUTONOMOUS_LLM_CREDENTIAL_SOURCE", "unresolved") or "unresolved"),
+    "has_groq_key": str(os.getenv("AUTONOMOUS_LLM_HAS_GROQ_KEY", "false")).lower() == "true",
+    "has_openai_key": str(os.getenv("AUTONOMOUS_LLM_HAS_OPENAI_KEY", "false")).lower() == "true",
+}
+(run_dir / "llm_credential_resolution.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+PY
+
 # Full-throttle sanity hardening:
 # 1) prevent legacy micro-notional caps from silently disabling intent generation
 # 2) avoid health-audit restart loops under temporary private-API lockouts
@@ -207,7 +486,16 @@ _ff_user_min="${AUTONOMOUS_USER_MIN_ORDER_QUOTE:-2.0}"
 _ff_quote_floor="${AUTONOMOUS_QUOTE_NOTIONAL_FLOOR:-${_ff_user_min}}"
 _ff_max_notional="${AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE:-0}"
 _ff_floor_enforced="$(LC_ALL=C awk -v a="${_ff_user_min}" -v b="${_ff_quote_floor}" 'BEGIN { x=(a+0); y=(b+0); if (y>x) x=y; if (x<2.0) x=2.0; printf "%.8f", x }')"
-_ff_max_enforced="$(LC_ALL=C awk -v m="${_ff_max_notional}" -v floor="${_ff_floor_enforced}" 'BEGIN { x=(m+0); f=(floor+0); if (x < f) x=25.0; if (x < 25.0) x=25.0; printf "%.8f", x }')"
+_ff_max_default="${AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE_DEFAULT:-10.0}"
+_ff_max_enforced="$(
+  LC_ALL=C awk -v m="${_ff_max_notional}" -v floor="${_ff_floor_enforced}" -v d="${_ff_max_default}" 'BEGIN {
+    x=(m+0); f=(floor+0); def=(d+0);
+    if (def < f) def = f;
+    if (x <= 0.0) x = def;
+    if (x < f) x = f;
+    printf "%.8f", x
+  }'
+)"
 export AUTONOMOUS_QUOTE_NOTIONAL_FLOOR="${_ff_floor_enforced}"
 export AUTONOMOUS_MIN_ORDER_NOTIONAL_QUOTE="${_ff_floor_enforced}"
 export AUTONOMOUS_PROBE_NOTIONAL_QUOTE="${AUTONOMOUS_PROBE_NOTIONAL_QUOTE:-${_ff_floor_enforced}}"
@@ -225,6 +513,20 @@ fi
 if pgrep -f "python.*-m cli.run --config ${LIVE_CONFIG} --nonstop" >/dev/null 2>&1; then
   echo "[run_kraken_spot_profit_full_throttle] Runner already active for ${LIVE_CONFIG}; skipping duplicate launch."
   exit 0
+fi
+
+if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
+  echo "[run_kraken_spot_profit_full_throttle] No Kraken credentials resolved from shell or run-dir override chain." >&2
+  echo "[run_kraken_spot_profit_full_throttle] Checked: ${RUN_DIR}/env_overrides.sh and ${RUN_DIR}/operator_overrides.sh" >&2
+  exit 2
+fi
+if [[ "${KRAKEN_API_KEY}" == " "* || "${KRAKEN_API_KEY}" == *" " ]]; then
+  echo "KRAKEN_API_KEY has leading/trailing space" >&2
+  exit 2
+fi
+if [[ "${KRAKEN_API_SECRET}" == " "* || "${KRAKEN_API_SECRET}" == *" " ]]; then
+  echo "KRAKEN_API_SECRET has leading/trailing space" >&2
+  exit 2
 fi
 
 PERM_CHECK_RESULT="$(

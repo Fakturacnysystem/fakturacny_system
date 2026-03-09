@@ -37,6 +37,13 @@ from autonomous_investment_robot.services.fees.fee_profile import FeeProfileServ
 from autonomous_investment_robot.services.feature_store.service import FeatureStoreService, FeatureVector
 from autonomous_investment_robot.services.governance.service import GovernanceService
 from autonomous_investment_robot.services.incident.service import IncidentPolicy, Notifier
+from autonomous_investment_robot.services.distributed import (
+    ComputeBridge,
+    ComputeRankResponse,
+    DistributedServiceMap,
+    PostgresMirrorSink,
+    build_compute_bridge_from_env,
+)
 from autonomous_investment_robot.services.marketdata.ws_integrity import WSDataIntegrityGuard
 from autonomous_investment_robot.services.mlops.service import MLOpsService
 from autonomous_investment_robot.services.market_microstructure import ToxicityScorer
@@ -122,6 +129,51 @@ AGGRESSIVE_HF_PROFILE_DEFAULTS: dict[str, str] = {
     "AUTONOMOUS_CAPITAL_STUCK_ENTRY_SCALE": "0.20",
     "AUTONOMOUS_CAPITAL_REDIRECT_TOPK": "30",
 }
+
+
+def _compute_risk_notional_caps(
+    *,
+    equity_quote: float,
+    current_exposure_quote: float,
+    risk_per_trade_ratio: float,
+    max_portfolio_heat_ratio: float,
+    max_symbol_exposure_ratio: float,
+    risk_stop_pct: float,
+) -> dict[str, float]:
+    """Translate risk-at-stop ratios into notional caps for runtime sizing.
+
+    `risk_per_trade_ratio`, `max_portfolio_heat_ratio`, and
+    `max_symbol_exposure_ratio` are interpreted as *equity-at-risk* fractions.
+    They are converted to notional caps via `risk_stop_pct`.
+    """
+    eq = max(0.0, float(equity_quote))
+    exp = max(0.0, float(current_exposure_quote))
+    r_trade = max(0.0, min(1.0, float(risk_per_trade_ratio)))
+    r_heat = max(r_trade, min(1.0, float(max_portfolio_heat_ratio)))
+    r_symbol = max(r_trade, min(r_heat, float(max_symbol_exposure_ratio)))
+    stop_pct = max(1e-6, min(0.5, float(risk_stop_pct)))
+
+    risk_budget_quote = eq * r_trade
+    portfolio_heat_budget_quote = eq * r_heat
+    symbol_heat_budget_quote = eq * r_symbol
+
+    risk_trade_notional_cap = risk_budget_quote / stop_pct
+    portfolio_heat_notional_cap = portfolio_heat_budget_quote / stop_pct
+    symbol_heat_notional_cap = symbol_heat_budget_quote / stop_pct
+
+    return {
+        "equity_quote": eq,
+        "current_exposure_quote": exp,
+        "risk_budget_quote": max(0.0, risk_budget_quote),
+        "portfolio_heat_budget_quote": max(0.0, portfolio_heat_budget_quote),
+        "symbol_heat_budget_quote": max(0.0, symbol_heat_budget_quote),
+        "risk_trade_notional_cap": max(0.0, risk_trade_notional_cap),
+        "portfolio_heat_notional_cap": max(0.0, portfolio_heat_notional_cap),
+        "symbol_heat_notional_cap": max(0.0, symbol_heat_notional_cap),
+        "portfolio_heat_remaining_notional_cap": max(0.0, portfolio_heat_notional_cap - exp),
+        "symbol_heat_remaining_notional_cap": max(0.0, symbol_heat_notional_cap - exp),
+        "risk_stop_pct": stop_pct,
+    }
 
 
 class RobotOrchestrator:
@@ -621,6 +673,7 @@ class RobotOrchestrator:
         self.rate_budget = RateBudget()
         self.kraken_universe: KrakenUniverseService | None = None
         self._symbol_market_class: dict[str, str] = {}
+        self._symbol_quote_ccy: dict[str, str] = {}
         self._market_class_filter_stats: dict[str, object] = {}
         self._last_fee_profile_updated_ts = 0.0
         for venue, status in self.exchange_status.items():
@@ -637,6 +690,102 @@ class RobotOrchestrator:
                 )
             except Exception:
                 pass
+        dist_cfg = getattr(self.settings, "distributed", SimpleNamespace())
+        self.distributed_enabled = self._bool_env(
+            "AUTONOMOUS_DISTRIBUTED_ENABLED",
+            bool(getattr(dist_cfg, "enabled", False)),
+        )
+        self.node_role = str(
+            os.getenv("AUTONOMOUS_NODE_ROLE", str(getattr(dist_cfg, "node_role", "live") or "live"))
+            or "live"
+        ).strip().lower()
+        if self.node_role not in {"live", "compute", "hybrid"}:
+            self.node_role = "live"
+        os.environ.setdefault("AUTONOMOUS_STREAM_PREFIX", str(getattr(dist_cfg, "stream_prefix", "autobot") or "autobot"))
+        os.environ.setdefault(
+            "AUTONOMOUS_STREAM_PAYLOAD_VERSION",
+            str(getattr(dist_cfg, "stream_payload_version", "v1") or "v1"),
+        )
+        if str(getattr(dist_cfg, "redis_url", "") or "").strip():
+            os.environ.setdefault("AUTONOMOUS_REDIS_URL", str(getattr(dist_cfg, "redis_url")))
+        if str(getattr(dist_cfg, "postgres_dsn", "") or "").strip():
+            os.environ.setdefault("AUTONOMOUS_POSTGRES_DSN", str(getattr(dist_cfg, "postgres_dsn")))
+        os.environ.setdefault(
+            "AUTONOMOUS_POSTGRES_MIRROR_ENABLED",
+            "1" if bool(getattr(dist_cfg, "postgres_mirror_enabled", False)) else "0",
+        )
+        self.compute_bridge: ComputeBridge = build_compute_bridge_from_env()
+        self.compute_timeout_s = max(
+            0.1,
+            float(
+                os.getenv(
+                    "AUTONOMOUS_COMPUTE_TASK_TIMEOUT_S",
+                    str(getattr(dist_cfg, "compute_timeout_s", 0.8)),
+                )
+                or str(getattr(dist_cfg, "compute_timeout_s", 0.8))
+            ),
+        )
+        self.compute_refresh_s = max(
+            1.0,
+            float(
+                os.getenv(
+                    "AUTONOMOUS_COMPUTE_REFRESH_S",
+                    str(getattr(dist_cfg, "compute_refresh_s", 10.0)),
+                )
+                or str(getattr(dist_cfg, "compute_refresh_s", 10.0))
+            ),
+        )
+        self.compute_top_n = max(
+            1,
+            int(
+                float(
+                    os.getenv(
+                        "AUTONOMOUS_COMPUTE_TOP_N",
+                        str(getattr(dist_cfg, "compute_top_n", 24)),
+                    )
+                    or str(getattr(dist_cfg, "compute_top_n", 24))
+                )
+            ),
+        )
+        self.allow_local_compute_fallback = self._bool_env(
+            "AUTONOMOUS_COMPUTE_ALLOW_LOCAL_FALLBACK",
+            bool(getattr(dist_cfg, "allow_local_fallback", True)),
+        )
+        self.enforce_remote_compute = self._bool_env(
+            "AUTONOMOUS_COMPUTE_ENFORCE_REMOTE",
+            bool(getattr(dist_cfg, "enforce_remote_compute", False)),
+        )
+        self.postgres_mirror = PostgresMirrorSink.from_env(run_id=self.settings.storage.run_dir)
+        if (
+            self.node_role == "live"
+            and self._bool_env(
+                "AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE",
+                bool(getattr(dist_cfg, "disable_advisory_on_live", True)),
+            )
+            and self.distributed_enabled
+        ):
+            self.self_improvement_enabled = False
+        distributed_diag = {
+            "enabled": bool(self.distributed_enabled),
+            "node_role": self.node_role,
+            "compute_bridge": self.compute_bridge.health(),
+            "compute_timeout_s": float(self.compute_timeout_s),
+            "compute_refresh_s": float(self.compute_refresh_s),
+            "compute_top_n": int(self.compute_top_n),
+            "allow_local_fallback": bool(self.allow_local_compute_fallback),
+            "enforce_remote_compute": bool(self.enforce_remote_compute),
+            "postgres_mirror": self.postgres_mirror.health().to_dict(),
+            "self_improvement_enabled": bool(self.self_improvement_enabled),
+            "service_boundaries": DistributedServiceMap.default().to_dict(),
+        }
+        self.ops.audit_event("distributed_runtime_boot", distributed_diag)
+        try:
+            diag_path = os.path.join(self.settings.storage.run_dir, "distributed_runtime_diagnostics.json")
+            os.makedirs(self.settings.storage.run_dir, exist_ok=True)
+            with open(diag_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(distributed_diag, indent=2, sort_keys=True))
+        except Exception:
+            pass
         self.latest_oos_gate_pass = True
 
     def _missing_limits(self) -> bool:
@@ -757,11 +906,16 @@ class RobotOrchestrator:
         return mode
 
     def _universe_allowlist(self) -> set[str] | None:
-        raw = str(os.getenv("AUTONOMOUS_UNIVERSE_ALLOWLIST", "") or "").strip()
-        if not raw:
-            # If explicit allowlist is missing, use fallback symbols as a safe implicit
-            # allowlist so dynamic discovery cannot fan out into account-ineligible pairs.
+        # Preserve explicit operator intent:
+        # - unset allowlist -> fallback symbols can be used as an implicit allowlist
+        # - explicit empty allowlist -> no allowlist (do not fallback)
+        explicit = os.getenv("AUTONOMOUS_UNIVERSE_ALLOWLIST")
+        if explicit is None:
             raw = str(os.getenv("AUTONOMOUS_FALLBACK_SYMBOLS", "") or "").strip()
+        else:
+            raw = str(explicit or "").strip()
+            if raw == "":
+                return None
         if not raw:
             return None
         out: set[str] = set()
@@ -770,6 +924,27 @@ class RobotOrchestrator:
             if sym:
                 out.add(sym)
         return out if out else None
+
+    def _universe_quote_allowlist(self) -> set[str] | None:
+        raw = str(os.getenv("AUTONOMOUS_UNIVERSE_QUOTE_ALLOWLIST", "USD,EUR,USDT") or "USD,EUR,USDT").strip()
+        if not raw:
+            return None
+        out: set[str] = set()
+        for row in raw.split(","):
+            tok = self._normalize_asset(row)
+            if tok:
+                out.add(tok)
+        return out if out else None
+
+    def _quote_for_symbol(self, symbol: str) -> str:
+        sym = self._normalize_symbol(symbol)
+        q = self._normalize_asset(self._symbol_quote_ccy.get(sym, ""))
+        if q:
+            return q
+        for suffix in ("USDT", "USDC", "USD", "EUR", "GBP", "CHF", "CAD", "AUD", "XBT", "BTC", "ETH"):
+            if sym.endswith(suffix):
+                return self._normalize_asset(suffix)
+        return ""
 
     def _operator_universe_override(self) -> list[str]:
         raw = str(os.getenv("AUTONOMOUS_OPERATOR_UNIVERSE_OVERRIDE", "") or "").strip()
@@ -881,14 +1056,21 @@ class RobotOrchestrator:
         allowed: list[str] = []
         blocked_reasons: dict[str, int] = {}
         class_counts: dict[str, int] = {}
+        quote_allowlist = self._universe_quote_allowlist()
         for sym in [self._normalize_symbol(s) for s in symbols if str(s).strip()]:
             market_class = self._market_class_for_symbol(sym)
             class_counts[market_class] = class_counts.get(market_class, 0) + 1
             ok, reason = self._market_class_allowed(sym, market_class)
-            if ok:
-                allowed.append(sym)
-            else:
+            if not ok:
                 blocked_reasons[reason] = blocked_reasons.get(reason, 0) + 1
+                continue
+            if market_class == "crypto_spot" and quote_allowlist:
+                quote = self._quote_for_symbol(sym)
+                if quote and quote not in quote_allowlist:
+                    q_reason = f"quote_not_allowed:{quote}"
+                    blocked_reasons[q_reason] = blocked_reasons.get(q_reason, 0) + 1
+                    continue
+            allowed.append(sym)
         out = list(dict.fromkeys(allowed))
         return out, {
             "input_count": len(symbols),
@@ -896,6 +1078,7 @@ class RobotOrchestrator:
             "class_counts": class_counts,
             "blocked_reasons": blocked_reasons,
             "mixed_universe_mode": self._coverage_flag("AUTONOMOUS_MIXED_UNIVERSE_MODE", False),
+            "quote_allowlist": sorted(quote_allowlist) if quote_allowlist else [],
         }
 
     def _write_runtime_health(self, *, status: str, reason: str = "", extra: dict[str, object] | None = None) -> None:
@@ -926,16 +1109,27 @@ class RobotOrchestrator:
         symbol: str = "",
         payload: dict[str, object] | None = None,
     ) -> None:
+        payload_out = dict(payload or {})
         try:
             self.sqlite.record_module_event(
                 module=module,
                 action=action,
                 reason=reason,
                 symbol=symbol,
-                payload=dict(payload or {}),
+                payload=payload_out,
             )
         except Exception:
             pass
+        self._mirror_runtime_event(
+            category="module_event",
+            payload={
+                "module": str(module),
+                "action": str(action),
+                "reason": str(reason),
+                "symbol": str(symbol),
+                "payload": payload_out,
+            },
+        )
 
     def _record_violation(
         self,
@@ -946,16 +1140,86 @@ class RobotOrchestrator:
         symbol: str = "",
         payload: dict[str, object] | None = None,
     ) -> None:
+        payload_out = dict(payload or {})
         try:
             self.sqlite.record_violation(
                 module=module,
                 rule=rule,
                 reason=reason,
                 symbol=symbol,
-                payload=dict(payload or {}),
+                payload=payload_out,
             )
         except Exception:
             pass
+        self._mirror_runtime_event(
+            category="violation",
+            payload={
+                "module": str(module),
+                "rule": str(rule),
+                "reason": str(reason),
+                "symbol": str(symbol),
+                "payload": payload_out,
+            },
+        )
+
+    def _mirror_runtime_event(
+        self,
+        *,
+        category: str,
+        payload: dict[str, object],
+    ) -> None:
+        """Best-effort mirror of runtime snapshots to Postgres."""
+        try:
+            if category == "decision":
+                _ = self.postgres_mirror.record_decision(payload)
+            elif category == "execution":
+                _ = self.postgres_mirror.record_execution(payload)
+            elif category == "signal":
+                _ = self.postgres_mirror.record_signal(payload)
+            else:
+                _ = self.postgres_mirror.record_audit(category, payload)
+        except Exception:
+            return
+
+    def _distributed_rankings(
+        self,
+        *,
+        symbols: list[str],
+        top_n: int,
+    ) -> ComputeRankResponse:
+        market_class_by_symbol = {str(sym): self._market_class_for_symbol(str(sym)) for sym in symbols}
+        response = self.compute_bridge.request_rankings(
+            run_id=self.settings.storage.run_dir,
+            symbols=list(symbols),
+            market_class_by_symbol=market_class_by_symbol,
+            top_n=max(1, int(top_n)),
+            timeout_s=float(self.compute_timeout_s),
+        )
+        if response.ok:
+            return response
+        if self.enforce_remote_compute and not self.allow_local_compute_fallback:
+            return response
+        # If remote compute fails and fallback is allowed, use local bridge with stricter effective gating.
+        fallback = LocalComputeBridge().request_rankings(
+            run_id=self.settings.storage.run_dir,
+            symbols=list(symbols),
+            market_class_by_symbol=market_class_by_symbol,
+            top_n=max(1, int(top_n)),
+            timeout_s=min(0.5, float(self.compute_timeout_s)),
+        )
+        return ComputeRankResponse(
+            ok=fallback.ok,
+            source="local_fallback",
+            rankings=fallback.rankings,
+            error=response.error,
+            stale=True,
+            diagnostics={
+                "fallback_used": True,
+                "remote_error": response.error,
+                "remote_source": response.source,
+                **dict(response.diagnostics),
+            },
+        )
 
     def _challenger_forecast(self, fv: FeatureVector, champion: Forecast) -> Forecast:
         edge = 0.25 * float(fv.values.get("ret_1", 0.0)) + 0.55 * float(fv.values.get("ret_3", 0.0)) + 0.20 * float(fv.values.get("flow_imbalance", 0.0))
@@ -1114,6 +1378,51 @@ class RobotOrchestrator:
         portfolio_quote_reserve_ratio = min(
             0.999,
             max(0.50, float(portfolio_quote_reserve_raw or "0.985")),
+        )
+        risk_per_trade_ratio = max(
+            0.0001,
+            min(0.05, float(os.getenv("AUTONOMOUS_RISK_PER_TRADE", "0.01") or "0.01")),
+        )
+        max_portfolio_heat_ratio = max(
+            risk_per_trade_ratio,
+            min(0.25, float(os.getenv("AUTONOMOUS_MAX_PORTFOLIO_HEAT_RATIO", str(risk_per_trade_ratio * 5.0)) or str(risk_per_trade_ratio * 5.0))),
+        )
+        max_symbol_exposure_ratio = max(
+            risk_per_trade_ratio,
+            min(
+                max_portfolio_heat_ratio,
+                float(
+                    os.getenv(
+                        "AUTONOMOUS_MAX_SYMBOL_EXPOSURE_RATIO",
+                        str(max(risk_per_trade_ratio * 2.5, max_portfolio_heat_ratio * 0.6)),
+                    )
+                    or str(max(risk_per_trade_ratio * 2.5, max_portfolio_heat_ratio * 0.6))
+                ),
+            ),
+        )
+        risk_stop_pct = max(
+            0.001,
+            min(0.20, float(os.getenv("AUTONOMOUS_RISK_STOP_PCT", "0.0025") or "0.0025")),
+        )
+        storm_enabled = self._bool_env("AUTONOMOUS_STORM_ENABLED", True)
+        storm_top_n = max(1, int(os.getenv("AUTONOMOUS_STORM_TOP_N", str(symbol_topk)) or str(symbol_topk)))
+        storm_regime_mult_trend = max(0.25, min(2.5, float(os.getenv("AUTONOMOUS_STORM_REGIME_MULT_TREND", "1.18") or "1.18")))
+        storm_regime_mult_range = max(0.25, min(2.5, float(os.getenv("AUTONOMOUS_STORM_REGIME_MULT_RANGE", "0.92") or "0.92")))
+        storm_regime_mult_chop = max(0.25, min(2.5, float(os.getenv("AUTONOMOUS_STORM_REGIME_MULT_CHOP", "0.82") or "0.82")))
+        storm_regime_mult_panic = max(0.10, min(2.5, float(os.getenv("AUTONOMOUS_STORM_REGIME_MULT_PANIC", "0.45") or "0.45")))
+        storm_liq_mult_good = max(0.25, min(2.5, float(os.getenv("AUTONOMOUS_STORM_LIQUIDITY_MULT_GOOD", "1.05") or "1.05")))
+        storm_liq_mult_thin = max(0.10, min(2.5, float(os.getenv("AUTONOMOUS_STORM_LIQUIDITY_MULT_THIN", "0.60") or "0.60")))
+        storm_exec_quality_floor = max(
+            0.20,
+            min(1.0, float(os.getenv("AUTONOMOUS_STORM_EXEC_QUALITY_FLOOR", "0.35") or "0.35")),
+        )
+        storm_exec_reject_target = max(
+            0.01,
+            min(0.95, float(os.getenv("AUTONOMOUS_STORM_EXEC_REJECT_TARGET", "0.25") or "0.25")),
+        )
+        storm_exec_fill_target = max(
+            0.01,
+            min(1.0, float(os.getenv("AUTONOMOUS_STORM_EXEC_FILL_TARGET", "0.35") or "0.35")),
         )
         challenger_enabled = self._bool_env("AUTONOMOUS_CHALLENGER_ENABLED", True)
         challenger_warmup_steps = max(5, int(os.getenv("AUTONOMOUS_CHALLENGER_WARMUP_STEPS", "25") or "25"))
@@ -1364,6 +1673,15 @@ class RobotOrchestrator:
             "rate_limit_cooldown",
             "cooldown",
             "cadence_cooldown",
+            "entries_blocked_until_health_ok",
+            "exits_only_mode",
+            "no_trade_zone",
+            "expected_fill_probability_low",
+            "fee_aware_no_edge",
+            "stale_market_data_buy_block",
+            "symbol_quarantine",
+            "session_closed",
+            "invalid_book",
             "dust_accumulator_hold",
             "dust_accumulate",
             "inventory_below_min_order",
@@ -1410,6 +1728,21 @@ class RobotOrchestrator:
             "cadence_cooldown",
             "rate_limit_cooldown",
         }
+        self.ops.set_metric("storm_active", 1.0 if storm_enabled else 0.0)
+        self.ops.set_metric("risk_per_trade_ratio", float(risk_per_trade_ratio))
+        self.ops.set_metric("max_portfolio_heat_ratio", float(max_portfolio_heat_ratio))
+        self.ops.set_metric("max_symbol_exposure_ratio", float(max_symbol_exposure_ratio))
+        self.ops.audit_event(
+            "storm_model_active",
+            {
+                "enabled": bool(storm_enabled),
+                "top_n": int(storm_top_n),
+                "risk_per_trade_ratio": float(risk_per_trade_ratio),
+                "max_portfolio_heat_ratio": float(max_portfolio_heat_ratio),
+                "max_symbol_exposure_ratio": float(max_symbol_exposure_ratio),
+                "risk_stop_pct": float(risk_stop_pct),
+            },
+        )
 
         def _is_rate_limited_reason(reason: object) -> bool:
             txt = str(reason or "").strip().lower()
@@ -1431,6 +1764,17 @@ class RobotOrchestrator:
         block_new_entries_until_health_ok = False
         block_new_entries_until_ts = 0.0
         freeze_buy_until_by_symbol: dict[str, float] = {}
+        insufficient_balance_cooldown_until_by_symbol: dict[str, float] = {}
+        insufficient_balance_cooldown_s = max(
+            10.0,
+            float(
+                os.getenv(
+                    "AUTONOMOUS_INSUFFICIENT_BALANCE_COOLDOWN_S",
+                    str(max(45.0, float(order_submission_interval_s) * 2.0)),
+                )
+                or str(max(45.0, float(order_submission_interval_s) * 2.0))
+            ),
+        )
         extra_probe_submission_ts: deque[float] = deque(maxlen=512)
         extra_probe_backoff_until_ts = 0.0
         governor_base_extra_submissions = max(0, extra_submissions_max_per_min)
@@ -1675,6 +2019,9 @@ class RobotOrchestrator:
         symbol_scores: dict[str, float] = {s: 0.0 for s in symbol_candidates}
         portfolio_weights: dict[str, float] = {s: 0.0 for s in symbol_candidates}
         portfolio_weights[symbol] = 1.0
+        distributed_symbol_scores: dict[str, float] = {}
+        last_distributed_rank_ts = 0.0
+        last_distributed_rank_source = "local"
         latest_feed_quotes: list[VenueQuote] = []
         latest_feed_quality: dict[str, object] = {}
         stuck_decision_reason = ""
@@ -1790,6 +2137,66 @@ class RobotOrchestrator:
             self.settings.universe = list(symbol_candidates)
             self.ops.set_metric("active_universe_count", float(len(symbol_candidates)))
 
+        def _refresh_distributed_rankings(now_ts_local: float, *, force: bool = False) -> None:
+            nonlocal distributed_symbol_scores, last_distributed_rank_ts, last_distributed_rank_source
+            if not self.distributed_enabled:
+                return
+            if not symbol_candidates:
+                return
+            if not force and (now_ts_local - last_distributed_rank_ts) < self.compute_refresh_s:
+                return
+            request_top_n = max(
+                1,
+                min(
+                    int(self.compute_top_n),
+                    int(max(1, len(symbol_candidates))),
+                ),
+            )
+            response = self._distributed_rankings(symbols=list(symbol_candidates), top_n=request_top_n)
+            last_distributed_rank_ts = float(now_ts_local)
+            last_distributed_rank_source = str(response.source)
+            self.ops.set_metric("distributed_compute_ok", 1.0 if response.ok else 0.0)
+            self.ops.set_metric("distributed_compute_timeout_s", float(self.compute_timeout_s))
+            self.ops.set_metric("distributed_compute_symbol_count", float(len(response.rankings)))
+            self.ops.set_metric("distributed_compute_fallback", 1.0 if str(response.source) == "local_fallback" else 0.0)
+            if response.ok and response.rankings:
+                distributed_symbol_scores = {
+                    str(sym): float(rank.score)
+                    for sym, rank in response.rankings.items()
+                }
+                for sym, score in distributed_symbol_scores.items():
+                    symbol_scores[sym] = float(score)
+                conf_values = [float(r.confidence) for r in response.rankings.values()]
+                unc_values = [float(r.uncertainty_bps) for r in response.rankings.values()]
+                if conf_values:
+                    self.ops.set_metric("distributed_compute_confidence_mean", sum(conf_values) / len(conf_values))
+                if unc_values:
+                    self.ops.set_metric("distributed_compute_uncertainty_bps_mean", sum(unc_values) / len(unc_values))
+            self.ops.audit_event(
+                "distributed_compute_rankings",
+                {
+                    "ok": bool(response.ok),
+                    "source": str(response.source),
+                    "error": str(response.error),
+                    "symbol_count": len(response.rankings),
+                    "stale": bool(response.stale),
+                    "top_n": int(request_top_n),
+                    "diagnostics": dict(response.diagnostics),
+                },
+            )
+            self._mirror_runtime_event(
+                category="signal",
+                payload={
+                    "kind": "distributed_rankings",
+                    "ok": bool(response.ok),
+                    "source": str(response.source),
+                    "symbol_count": len(response.rankings),
+                    "error": str(response.error),
+                    "stale": bool(response.stale),
+                    "top_n": int(request_top_n),
+                },
+            )
+
         def _available_quote_for_pair(sym: str) -> tuple[str, float]:
             if hasattr(live, "_available_quote_balance"):
                 try:
@@ -1845,7 +2252,13 @@ class RobotOrchestrator:
                 for candidate_symbol in symbol_candidates:
                     candidate = str(candidate_symbol)
                     quarantined = _is_pair_quarantined_for_entry(candidate)
+                    ib_until = float(
+                        insufficient_balance_cooldown_until_by_symbol.get(str(candidate).upper(), 0.0) or 0.0
+                    )
+                    ib_cooldown_active = now_probe < ib_until
                     if pass_idx == 0 and quarantined:
+                        continue
+                    if pass_idx == 0 and ib_cooldown_active:
                         continue
                     _q, free_q = _available_quote_for_pair(candidate)
                     free_q_f = max(0.0, float(free_q))
@@ -1868,6 +2281,8 @@ class RobotOrchestrator:
                         score -= 1.5
                     if quarantined:
                         score -= 5.0
+                    if ib_cooldown_active:
+                        score -= 3.0
                     if score > best_probe_score:
                         best_probe_score = score
                         probe_symbol = candidate
@@ -1923,6 +2338,7 @@ class RobotOrchestrator:
                 ],
             }
             probe = OrderIntent(symbol=probe_symbol, side="buy", target_notional=probe_notional, why=probe_why)
+            probe_budget_reserved = False
             if not self.rate_budget.allow_private(now_ts=time.time()):
                 self.ops.audit_event(
                     "rate_budget_exhausted",
@@ -1934,6 +2350,7 @@ class RobotOrchestrator:
                     order={"symbol": probe_symbol, "side": "buy", "request_sent": False},
                 )
             else:
+                probe_budget_reserved = True
                 probe_result = self.execution.execute_live(probe)
             self.ops.audit_event(
                 "scheduler_probe",
@@ -1954,6 +2371,8 @@ class RobotOrchestrator:
             )
             probe_order = probe_result.order if isinstance(probe_result.order, dict) else {}
             request_sent = bool(probe_order.get("request_sent", False))
+            if probe_budget_reserved and not request_sent:
+                self.rate_budget.refund_private(now_ts=time.time())
             submitted = request_sent or probe_result.status in {"submitted", "filled_maker", "filled_taker_fallback", "submitted_limit_floor", "submitted_ladder"}
             # Pace scheduler attempts even when probe is blocked (rate-limit/budget/no-trade),
             # otherwise should_submit() stays true and creates retry spam loops.
@@ -2145,6 +2564,7 @@ class RobotOrchestrator:
                     sell_breach_detected=sell_breach_detected,
                     base_max_orders_per_min=int(getattr(self.harmony_resolved, "max_orders_per_min", 10) or 10),
                     base_market_watch_budget=int(getattr(self.harmony_resolved, "market_watch_max_calls_per_min", 60) or 60),
+                    guards_mode=str(guards_mode),
                 )
             except Exception as exc:
                 self.ops.audit_event("mastermind_supervisor_error", {"error": str(exc)})
@@ -2253,6 +2673,7 @@ class RobotOrchestrator:
             if isinstance(decision_extra, dict) and decision_extra:
                 evidence["decision"].update({k: v for k, v in decision_extra.items() if k not in {"action", "reason"}})
             self.ops.audit_event("decision_tick", evidence)
+            self._mirror_runtime_event(category="decision", payload=evidence)
             bucket = int(now_ts_local // max(1.0, decision_tick_s))
             tick_scope = symbol if decision_per_symbol else "global"
             event_id = f"decision-{tick_scope}-{bucket}"
@@ -2409,6 +2830,8 @@ class RobotOrchestrator:
             now_minute = int(now_ts // 60)
             _sync_runtime_adapters(now_ts)
             _refresh_auto_universe(now_ts)
+            if steps == 1 or steps % max(1, symbol_score_refresh_steps) == 0:
+                _refresh_distributed_rankings(now_ts, force=(steps == 1))
             self._write_runtime_health(
                 status="running",
                 extra={
@@ -2530,6 +2953,8 @@ class RobotOrchestrator:
                 total_capital_quote=max(base_budget, base_budget + abs(exposure_notional)),
             )
             runtime_symbol_topk = int(capital_unlock.recommended_topk if capital_unlock.redirect_mode else symbol_topk)
+            if storm_enabled:
+                runtime_symbol_topk = max(1, min(runtime_symbol_topk, storm_top_n))
             capital_unlock_reason = str(capital_unlock.reason)
             capital_unlock_entry_scale = float(capital_unlock.symbol_entry_scale.get(str(symbol).upper(), 1.0))
             self.ops.set_metric("capital_unlock_redirect_mode", 1.0 if capital_unlock.redirect_mode else 0.0)
@@ -2561,7 +2986,7 @@ class RobotOrchestrator:
                 affordable_symbols: set[str] = set()
                 ranked_universe = sorted(
                     symbol_candidates,
-                    key=lambda s: float(symbol_scores.get(s, 0.0)),
+                    key=lambda s: float(distributed_symbol_scores.get(s, symbol_scores.get(s, 0.0))),
                     reverse=True,
                 )
                 top_universe = ranked_universe[: max(1, min(runtime_symbol_topk, len(ranked_universe)))]
@@ -2716,6 +3141,30 @@ class RobotOrchestrator:
                             "steps": steps,
                         },
                     )
+                elif (
+                    symbol not in affordable_symbols
+                    and affordable_symbols
+                    and abs(exposure_notional) <= switch_only_when_flat_notional
+                ):
+                    best_affordable = max(
+                        affordable_symbols,
+                        key=lambda s: float(symbol_scores.get(s, float("-inf"))),
+                    )
+                    if best_affordable != symbol:
+                        prev_symbol = symbol
+                        symbol = best_affordable
+                        last_mid = None
+                        self.ops.audit_event(
+                            "portfolio_switch",
+                            {
+                                "from_symbol": prev_symbol,
+                                "to_symbol": symbol,
+                                "from_score": current_score,
+                                "to_score": float(symbol_scores.get(best_affordable, current_score)),
+                                "steps": steps,
+                                "reason": "forced_affordable_symbol",
+                            },
+                        )
                 portfolio_current_score = float(symbol_scores.get(symbol, current_score))
                 portfolio_best_score = float(best_score)
 
@@ -3216,6 +3665,7 @@ class RobotOrchestrator:
                             "execution_route": {"order_type": "maker"},
                         },
                     )
+                    hedge_budget_reserved = False
                     if not self.rate_budget.allow_private(now_ts=now_ts):
                         self.ops.audit_event(
                             "rate_budget_exhausted",
@@ -3227,7 +3677,11 @@ class RobotOrchestrator:
                             order={"symbol": hedge_action.symbol, "side": hedge_action.side, "request_sent": False},
                         )
                     else:
+                        hedge_budget_reserved = True
                         hedge_result = self.execution.execute_live(hedge_intent)
+                    hedge_req_sent = bool((hedge_result.order or {}).get("request_sent", False)) if isinstance(hedge_result.order, dict) else False
+                    if hedge_budget_reserved and not hedge_req_sent:
+                        self.rate_budget.refund_private(now_ts=now_ts)
                     self.ops.audit_event(
                         "hedge_action",
                         {
@@ -3451,7 +3905,7 @@ class RobotOrchestrator:
 
             forced_exit_reason = ""
             forced_exit_notional = 0.0
-            if (not tp_only_mode) and exposure_notional > 1e-9 and position_open_ts is not None:
+            if exposure_notional > 1e-9 and position_open_ts is not None:
                 hold_seconds = now_ts - position_open_ts
                 avg_entry_price = float((live_state or {}).get("avg_entry_price", 0.0) or 0.0)
                 take_profit_trigger_price = 0.0
@@ -3459,20 +3913,20 @@ class RobotOrchestrator:
                     take_profit_trigger_price = avg_entry_price * (1.0 + (exit_take_profit_pct / 100.0))
                     if bid >= take_profit_trigger_price:
                         forced_exit_reason = "take_profit_target"
-                if not forced_exit_reason and hold_seconds >= exit_time_stop_s:
-                    if exit_profit_only:
-                        if last_net_pnl_quote >= exit_min_profit_quote:
+                if not forced_exit_reason and (not tp_only_mode):
+                    if hold_seconds >= exit_time_stop_s:
+                        if exit_profit_only:
+                            if last_net_pnl_quote >= exit_min_profit_quote:
+                                forced_exit_reason = "time_stop"
+                        elif last_net_pnl_quote <= 0.0:
                             forced_exit_reason = "time_stop"
-                    elif last_net_pnl_quote <= 0.0:
-                        forced_exit_reason = "time_stop"
-                elif (
-                    not forced_exit_reason
-                    and position_peak_net_pnl_quote > 0.0
-                    and (position_peak_net_pnl_quote - last_net_pnl_quote) >= exit_trailing_drawdown_quote
-                ):
-                    forced_exit_reason = "trailing_take_profit"
-                elif not forced_exit_reason and rv >= exit_vol_stop_threshold and last_net_pnl_quote < 0.0 and not exit_profit_only:
-                    forced_exit_reason = "vol_stop"
+                    elif (
+                        position_peak_net_pnl_quote > 0.0
+                        and (position_peak_net_pnl_quote - last_net_pnl_quote) >= exit_trailing_drawdown_quote
+                    ):
+                        forced_exit_reason = "trailing_take_profit"
+                    elif rv >= exit_vol_stop_threshold and last_net_pnl_quote < 0.0 and not exit_profit_only:
+                        forced_exit_reason = "vol_stop"
                 if forced_exit_reason:
                     forced_fraction = exit_partial_fraction
                     if forced_exit_reason == "take_profit_target" and exit_take_profit_full_close:
@@ -3756,6 +4210,14 @@ class RobotOrchestrator:
             if self.settings.live_provider() == "kraken_spot":
                 # Kraken spot mode runs unlevered inventory and should not open synthetic shorts.
                 desired_signed = max(0.0, desired_signed)
+            if (
+                forced_exit_notional > 0.0
+                and intent is not None
+                and str(intent.side).lower() == "sell"
+                and current_signed > 0.0
+            ):
+                # Forced exits must reduce the live long inventory by the requested notional.
+                desired_signed = max(0.0, current_signed - max(0.0, float(forced_exit_notional)))
             delta_signed = desired_signed - current_signed
             min_rebalance_notional = max(
                 rebalance_deadzone_floor,
@@ -3874,6 +4336,46 @@ class RobotOrchestrator:
                 time.sleep(poll_s)
                 continue
             rebalance_notional = abs(delta_signed) * (self_tuner_size_scale if self_tuner_enabled else 1.0)
+            storm_context: dict[str, float | str] = {}
+            if storm_enabled and rebalance_side == "buy":
+                regime_norm = str(fc.regime or "").strip().upper()
+                liquidity_norm = str(fc.liquidity_regime or "").strip().upper()
+                if regime_norm == "TREND":
+                    regime_mult = storm_regime_mult_trend
+                elif regime_norm in {"RANGE", "MEAN_REVERSION", "COMPRESSION", "BREAKOUT"}:
+                    regime_mult = storm_regime_mult_range
+                elif regime_norm in {"CHOP", "SIDEWAYS"}:
+                    regime_mult = storm_regime_mult_chop
+                elif regime_norm in {"PANIC", "HIGH_VOL"}:
+                    regime_mult = storm_regime_mult_panic
+                else:
+                    regime_mult = 1.0
+                liquidity_mult = storm_liq_mult_thin if liquidity_norm in {"THIN", "LOW_LIQUIDITY"} else storm_liq_mult_good
+                reject_rate_now = max(0.0, min(1.0, float(self.ops.metrics.get("reject_rate", 0.0) or 0.0)))
+                fill_rate_now = max(0.0, min(1.0, float(self.ops.metrics.get("fill_rate", 0.0) or 0.0)))
+                reject_quality_mult = max(
+                    storm_exec_quality_floor,
+                    min(1.0, storm_exec_reject_target / max(reject_rate_now, storm_exec_reject_target)),
+                )
+                fill_quality_mult = max(
+                    storm_exec_quality_floor,
+                    min(1.0, fill_rate_now / max(storm_exec_fill_target, 1e-9)),
+                )
+                execution_quality_mult = max(
+                    storm_exec_quality_floor,
+                    min(1.0, min(reject_quality_mult, fill_quality_mult)),
+                )
+                storm_size_scale = max(0.10, min(2.0, regime_mult * liquidity_mult * execution_quality_mult))
+                rebalance_notional *= storm_size_scale
+                storm_context = {
+                    "size_scale": float(storm_size_scale),
+                    "regime_mult": float(regime_mult),
+                    "liquidity_mult": float(liquidity_mult),
+                    "execution_quality_mult": float(execution_quality_mult),
+                    "reject_rate": float(reject_rate_now),
+                    "fill_rate": float(fill_rate_now),
+                }
+                self.ops.set_metric("storm_size_scale", float(storm_size_scale))
             if rebalance_side == "buy" and capital_unlock_entry_scale < 1.0:
                 rebalance_notional *= max(0.0, min(1.0, capital_unlock_entry_scale))
                 self.ops.audit_event(
@@ -3899,6 +4401,62 @@ class RobotOrchestrator:
                             "reason": "toxicity_freeze",
                             "toxicity_score": toxicity_score_value,
                             "cooldown_remaining_s": max(0.0, toxicity_freeze_until_ts - now_ts),
+                        },
+                    )
+                    _update_live_kpis()
+                    self.ops.export_prometheus()
+                    self.ops.export_dashboard_snapshot()
+                    if max_steps and steps >= max_steps:
+                            return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    time.sleep(poll_s)
+                    continue
+            risk_caps: dict[str, float] = {}
+            if rebalance_side == "buy":
+                risk_equity_quote = max(
+                    quote_notional_floor,
+                    float(quote_free) + max(0.0, float(current_signed)),
+                    float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0),
+                )
+                risk_caps = _compute_risk_notional_caps(
+                    equity_quote=float(risk_equity_quote),
+                    current_exposure_quote=max(0.0, float(current_signed)),
+                    risk_per_trade_ratio=float(risk_per_trade_ratio),
+                    max_portfolio_heat_ratio=float(max_portfolio_heat_ratio),
+                    max_symbol_exposure_ratio=float(max_symbol_exposure_ratio),
+                    risk_stop_pct=float(risk_stop_pct),
+                )
+                risk_trade_cap = float(risk_caps.get("risk_trade_notional_cap", 0.0) or 0.0)
+                portfolio_heat_cap_remaining = float(
+                    risk_caps.get("portfolio_heat_remaining_notional_cap", 0.0) or 0.0
+                )
+                symbol_heat_cap_remaining = float(risk_caps.get("symbol_heat_remaining_notional_cap", 0.0) or 0.0)
+                cap_candidates = [risk_trade_cap, portfolio_heat_cap_remaining, symbol_heat_cap_remaining]
+                positive_caps = [c for c in cap_candidates if c > 0.0]
+                if positive_caps:
+                    rebalance_notional = min(rebalance_notional, *positive_caps)
+                self.ops.set_metric("risk_trade_notional_cap_quote", float(risk_trade_cap))
+                self.ops.set_metric("risk_portfolio_heat_remaining_cap_quote", float(portfolio_heat_cap_remaining))
+                self.ops.set_metric("risk_symbol_heat_remaining_cap_quote", float(symbol_heat_cap_remaining))
+                if rebalance_notional <= 1e-9:
+                    self.ops.audit_event(
+                        "heartbeat",
+                        {
+                            "symbol": symbol,
+                            "mid": mid,
+                            "spread_bps": spread_bps,
+                            "equity": equity,
+                            "reason": "risk_budget_exhausted",
+                            "risk_caps": risk_caps,
+                        },
+                    )
+                    self.ops.audit_event(
+                        "live_exec",
+                        {
+                            "status": "skipped",
+                            "reason": "risk_budget_exhausted",
+                            "symbol": symbol,
+                            "side": rebalance_side,
+                            "notional": rebalance_notional,
                         },
                     )
                     _update_live_kpis()
@@ -4001,6 +4559,10 @@ class RobotOrchestrator:
                 "size_scale": self_tuner_size_scale,
                 "min_order_notional_quote": min_order_notional_quote_live,
             }
+            if storm_context:
+                rebalance_why["storm"] = dict(storm_context)
+            if risk_caps:
+                rebalance_why["risk_budget"] = dict(risk_caps)
             if pending_dust_to_clear > 0.0:
                 rebalance_why["dust_accumulator"] = {
                     "merged_quote": pending_dust_to_clear,
@@ -4314,6 +4876,30 @@ class RobotOrchestrator:
                             "freeze_remaining_s": max(0.0, freeze_until - now_ts),
                         },
                     )
+                    _update_live_kpis()
+                    self.ops.export_prometheus()
+                    self.ops.export_dashboard_snapshot()
+                    if max_steps and steps >= max_steps:
+                        return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    time.sleep(poll_s)
+                    continue
+                insufficient_until = float(
+                    insufficient_balance_cooldown_until_by_symbol.get(str(adjusted.symbol).upper(), 0.0) or 0.0
+                )
+                if now_ts < insufficient_until:
+                    self.ops.audit_event(
+                        "live_exec",
+                        {
+                            "status": "skipped",
+                            "reason": "insufficient_balance_cooldown",
+                            "symbol": adjusted.symbol,
+                            "side": adjusted.side,
+                            "notional": adjusted.target_notional,
+                            "cooldown_remaining_s": max(0.0, insufficient_until - now_ts),
+                        },
+                    )
+                    if submission_scheduler.should_submit(now_ts=now_ts):
+                        _submit_safe_probe_from_audit("insufficient_balance_cooldown_keepalive_submission")
                     _update_live_kpis()
                     self.ops.export_prometheus()
                     self.ops.export_dashboard_snapshot()
@@ -4678,6 +5264,7 @@ class RobotOrchestrator:
                 idempotency_key=f"{adjusted.symbol}:{adjusted.side}:{round(adjusted.target_notional, 6)}:{steps // 2}",
             )
             hybrid_live_allowed = symbol_live_in_hybrid(adjusted.symbol, self.hybrid_live_symbols)
+            private_budget_reserved = False
             if self.hybrid_mode_enabled and not hybrid_live_allowed:
                 result = SimpleNamespace(
                     status="paper_hybrid",
@@ -4721,11 +5308,18 @@ class RobotOrchestrator:
                         order={"symbol": adjusted.symbol, "side": adjusted.side, "request_sent": False},
                     )
                 else:
+                    private_budget_reserved = True
                     result = self.execution.execute_live(adjusted)
             status_norm = str(result.status).strip().lower()
             reason_norm = str(result.reason).strip().lower()
             if "insufficient_balance" in reason_norm or "insufficient funds" in reason_norm:
                 insufficient_balance_events_total += 1.0
+                if str(adjusted.side).lower() == "buy":
+                    sym_insuf = str(adjusted.symbol).upper()
+                    insufficient_balance_cooldown_until_by_symbol[sym_insuf] = max(
+                        float(insufficient_balance_cooldown_until_by_symbol.get(sym_insuf, 0.0) or 0.0),
+                        now_ts + insufficient_balance_cooldown_s,
+                    )
             if self.kraken_universe is not None and (
                 "restricted" in reason_norm or "unknown asset pair" in reason_norm or "not available" in reason_norm
             ):
@@ -4744,12 +5338,16 @@ class RobotOrchestrator:
                     endpoint="execution",
                     now_ts=now_ts,
                 )
+            req_sent = bool((result.order or {}).get("request_sent", False)) if isinstance(result.order, dict) else False
+            if private_budget_reserved and not req_sent:
+                self.rate_budget.refund_private(now_ts=now_ts)
             count_as_attempt = not (status_norm in {"blocked", "skipped"} and reason_norm in non_attempt_block_reasons)
-            # Rate-limit cooldown/budget blocks without an outbound request are
-            # scheduler/guard outcomes, not real exchange execution attempts.
-            # Keep retry accounting clean and avoid inflating reject-rate metrics.
+            # Blocked/skipped outcomes without outbound submit are guard/scheduler
+            # outcomes, not exchange execution attempts.
+            if status_norm in {"blocked", "skipped"} and (not req_sent):
+                count_as_attempt = False
+            # Keep explicit protection for rate-limit/budget guard results.
             if reason_norm in {"rate_limit_cooldown", "rate_budget_exhausted"}:
-                req_sent = bool((result.order or {}).get("request_sent", False)) if isinstance(result.order, dict) else False
                 count_as_attempt = bool(req_sent)
             if count_as_attempt:
                 executions_attempted_total += 1.0
@@ -4757,7 +5355,28 @@ class RobotOrchestrator:
                 last_order_attempt_ts_by_symbol[sym_key] = now_ts
             if reason_norm == "inventory_below_min_order":
                 self.ops.inc_metric("inventory_below_min_order_total")
-            self.ops.audit_event("live_exec", {"status": result.status, "reason": result.reason, "symbol": adjusted.symbol, "side": adjusted.side, "notional": adjusted.target_notional})
+            live_exec_payload: dict[str, object] = {
+                "status": result.status,
+                "reason": result.reason,
+                "symbol": adjusted.symbol,
+                "side": adjusted.side,
+                "notional": adjusted.target_notional,
+            }
+            if isinstance(result.order, dict):
+                for key in (
+                    "pair",
+                    "request_sent",
+                    "quote_ccy",
+                    "available_quote",
+                    "min_required_quote",
+                    "required_exit_price",
+                    "eligible_qty",
+                    "exchange_constraints",
+                ):
+                    if key in result.order:
+                        live_exec_payload[key] = result.order.get(key)
+            self.ops.audit_event("live_exec", live_exec_payload)
+            self._mirror_runtime_event(category="execution", payload=live_exec_payload)
             if status_norm in {"submitted_limit_floor", "submitted"} and str(adjusted.side).lower() == "sell":
                 self._record_module_event(
                     module="exit_order_manager",
@@ -5055,12 +5674,24 @@ class RobotOrchestrator:
         if allowlist:
             filtered = [s for s in self.settings.universe if str(s).upper() in allowlist]
             if not filtered:
+                # Dynamic discovery can still produce valid symbols even if the static
+                # config universe has no overlap with operator allowlist.
+                # Treat this as warn-only when dynamic universe is enabled.
+                dynamic_universe_enabled = self._bool_env(
+                    "AUTONOMOUS_DYNAMIC_UNIVERSE",
+                    bool(getattr(getattr(self.settings, "market_coverage", None), "discover_all_symbols", True)),
+                )
                 self.ops.audit_event(
                     "universe_allowlist_reject",
-                    {"reason": "allowlist_empty_after_filter", "allowlist_size": len(allowlist)},
+                    {
+                        "reason": "allowlist_empty_after_filter",
+                        "allowlist_size": len(allowlist),
+                        "dynamic_universe_enabled": bool(dynamic_universe_enabled),
+                    },
                 )
-                self._write_runtime_health(status="blocked", reason="allowlist_empty_after_filter")
-                return {"status": "blocked", "reason": "allowlist_empty_after_filter"}
+                if not dynamic_universe_enabled:
+                    self._write_runtime_health(status="blocked", reason="allowlist_empty_after_filter")
+                    return {"status": "blocked", "reason": "allowlist_empty_after_filter"}
             if len(filtered) != len(self.settings.universe):
                 self.ops.audit_event(
                     "universe_allowlist_applied",
@@ -5070,7 +5701,8 @@ class RobotOrchestrator:
                         "allowlist_size": len(allowlist),
                     },
                 )
-            self.settings.universe = filtered
+            if filtered:
+                self.settings.universe = filtered
         op_override = self._operator_universe_override()
         if op_override:
             if allowlist:
@@ -5230,6 +5862,7 @@ class RobotOrchestrator:
                     self.ops.set_metric("discovery_optional_symbols", float(len(discovery.optional_symbols)))
                     discovery_instruments = [x.__dict__ for x in discovery.instruments]
                     self._symbol_market_class = {}
+                    self._symbol_quote_ccy = {}
                     for row in discovery_instruments:
                         if not isinstance(row, dict):
                             continue
@@ -5237,6 +5870,10 @@ class RobotOrchestrator:
                         if not sym:
                             continue
                         self._symbol_market_class[sym] = str(row.get("market_class", "") or "crypto_spot").lower()
+                        quote_raw = str(row.get("quote", "") or "")
+                        quote_norm = self._normalize_asset(quote_raw)
+                        if quote_norm:
+                            self._symbol_quote_ccy[sym] = quote_norm
                     xstocks_detected = int(
                         len(
                             [

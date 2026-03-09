@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TextIO
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +111,18 @@ def _run_once(config_path: str) -> int:
     return 2 if str(out.get("status", "")).lower() == "blocked" else 0
 
 
+def _append_watchdog_log(run_dir: str, payload: dict) -> None:
+    """Persist watchdog child lifecycle diagnostics for post-mortem debugging."""
+    try:
+        p = Path(run_dir) / "watchdog_child.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": time.time(), **payload}
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True)
@@ -123,12 +136,19 @@ def main() -> int:
     p.add_argument("--restart-backoff-s", type=float, default=None)
     p.add_argument("--poll-s", type=float, default=None)
     args = p.parse_args()
+    node_role = str(os.getenv("AUTONOMOUS_NODE_ROLE", "live") or "live").strip().lower()
+    if node_role == "compute":
+        cmd = [sys.executable, "-m", "cli.compute_node", "--run-dir", _resolve_run_dir(args.config)]
+        if args.once:
+            cmd.append("--once")
+        proc = subprocess.run(cmd, cwd=str(ROOT), check=False)
+        return int(proc.returncode)
 
     if args.paper and args.live:
         print(json.dumps({"status": "error", "reason": "flags_conflict_paper_and_live"}, indent=2))
         return 1
 
-    if not str(os.getenv("OPENAI_API_KEY", "")).strip():
+    if not str(os.getenv("OPENAI_API_KEY", "")).strip() and not str(os.getenv("GROQ_API_KEY", "")).strip():
         print(MISSING_KEY_MESSAGE)
 
     if args.paper:
@@ -187,15 +207,36 @@ def main() -> int:
 
     sup = WatchdogSupervisor(run_dir=run_dir, config=wd_cfg)
     loop_config_source = effective_config if args.paper else args.config
+    child_stdout: TextIO | None = None
+    child_stderr: TextIO | None = None
     while True:
         effective_config = apply_runtime_override(loop_config_source)
         if args.paper:
             effective_config = _force_execution_mode(effective_config, "paper")
+        child_out_path = Path(run_dir) / "watchdog_child.out"
+        child_err_path = Path(run_dir) / "watchdog_child.err"
+        child_out_path.parent.mkdir(parents=True, exist_ok=True)
+        child_stdout = child_out_path.open("a", encoding="utf-8")
+        child_stderr = child_err_path.open("a", encoding="utf-8")
+        child_stdout.write(f"\n=== child_start ts={time.time():.6f} config={effective_config}\n")
+        child_stdout.flush()
+        child_stderr.write(f"\n=== child_start ts={time.time():.6f} config={effective_config}\n")
+        child_stderr.flush()
         child = subprocess.Popen(
             [sys.executable, "-m", "cli.worker", "--config", effective_config],
             cwd=str(ROOT),
+            stdout=child_stdout,
+            stderr=child_stderr,
         )
         sup.mark_child_started(child.pid)
+        _append_watchdog_log(
+            run_dir,
+            {
+                "event": "child_started",
+                "child_pid": int(child.pid),
+                "effective_config": str(effective_config),
+            },
+        )
         restart_reason = "child_exit"
 
         while True:
@@ -217,7 +258,30 @@ def main() -> int:
             time.sleep(wd_cfg.poll_interval_s)
 
         sup.mark_child_stopped()
+        try:
+            if child_stdout is not None:
+                child_stdout.write(f"=== child_stop ts={time.time():.6f} reason={restart_reason}\n")
+                child_stdout.flush()
+                child_stdout.close()
+        except Exception:
+            pass
+        try:
+            if child_stderr is not None:
+                child_stderr.write(f"=== child_stop ts={time.time():.6f} reason={restart_reason}\n")
+                child_stderr.flush()
+                child_stderr.close()
+        except Exception:
+            pass
         final_rc = child.poll()
+        _append_watchdog_log(
+            run_dir,
+            {
+                "event": "child_stopped",
+                "child_pid": int(getattr(child, "pid", 0) or 0),
+                "restart_reason": str(restart_reason),
+                "child_return_code": int(final_rc) if final_rc is not None else None,
+            },
+        )
         if final_rc == 2:
             # Configuration/auth blocks are not recoverable via blind restarts.
             print(
@@ -258,8 +322,17 @@ def main() -> int:
             return 1
 
         sup.register_restart(restart_reason)
-        if wd_cfg.restart_backoff_s > 0:
-            time.sleep(wd_cfg.restart_backoff_s)
+        _append_watchdog_log(
+            run_dir,
+            {
+                "event": "restart_registered",
+                "restart_reason": str(restart_reason),
+                "restart_count": int(sup.state.restart_count),
+                "restart_backoff_s": float(wd_cfg.restart_backoff_s),
+            },
+        )
+        if wd_cfg.restart_backoff_s > 0.0:
+            time.sleep(float(wd_cfg.restart_backoff_s))
 
 
 if __name__ == "__main__":

@@ -68,6 +68,22 @@ llm:
   self_improvement_hours: 24.0
   self_improvement_every_s: 1800.0
   llm_augment_enabled: false
+distributed:
+  enabled: true
+  node_role: live
+  compute_bridge: auto
+  compute_timeout_s: 0.8
+  compute_refresh_s: 10.0
+  compute_top_n: 24
+  redis_url: ""
+  stream_prefix: autobot
+  stream_payload_version: v1
+  allow_local_fallback: true
+  enforce_remote_compute: false
+  postgres_mirror_enabled: false
+  postgres_dsn: ""
+  postgres_connect_timeout_s: 2.0
+  disable_advisory_on_live: true
 risk:
   max_daily_loss_pct: 1.5
   max_weekly_loss_pct: 5.0

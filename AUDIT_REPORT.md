@@ -301,3 +301,146 @@ After:
 - Safe path (`./scripts/run_paper.sh`): validated and green in this environment.
 - Live path (`./scripts/run_kraken_ultra_profit_full_throttle.sh`): blocked in this shell by missing Kraken env credentials before startup.
 - Therefore live readiness is code-ready but environment-blocked at credential gate in this execution context.
+
+## 2026-03-08 Ultra Throughput Repair Pass (Current)
+
+### Launch/Runtime Fixes Applied
+
+1. False private budget depletion removed:
+- `src/autonomous_investment_robot/services/reliability/rate_budget.py`
+- `src/autonomous_investment_robot/core/orchestrator.py`
+- Private rate-budget tokens are now refunded when `request_sent=false` (guard/no-op path), preventing synthetic `rate_budget_exhausted`.
+
+2. Missing-depth microstructure overblock removed:
+- `src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py`
+- Added `AUTONOMOUS_MICROSTRUCTURE_REQUIRE_DEPTH` (default `false`) and pass-through behavior when depth signal is unavailable.
+
+3. Dynamic universe quote-currency mismatch fixed:
+- `src/autonomous_investment_robot/core/orchestrator.py`
+- Added quote-aware market filter (`AUTONOMOUS_UNIVERSE_QUOTE_ALLOWLIST`) for crypto spot so dynamic universe does not keep selecting unsupported quote currencies (e.g., `*XBT`) for USD-funded runtime.
+
+4. ULTRA profile tightening:
+- `scripts/run_kraken_ultra_profit_full_throttle.sh`
+- Added explicit throughput/safety envs:
+  - `AUTONOMOUS_MAX_ORDERS_PER_MIN=30`
+  - `AUTONOMOUS_MAX_PUBLIC_CALLS_PER_MIN=240`
+  - `AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH=false`
+  - `AUTONOMOUS_EXPECTED_FILL_REQUIRE_DEPTH=false`
+  - `AUTONOMOUS_MICROSTRUCTURE_REQUIRE_DEPTH=false`
+  - `AUTONOMOUS_UNIVERSE_QUOTE_ALLOWLIST=USD,EUR,USDT`
+  - `AUTONOMOUS_QUOTE_RESERVE_RATIO=0.90`
+  - `AUTONOMOUS_PROBE_QUOTE_RESERVE_RATIO=0.65`
+
+### Current Runtime Truth (after restart)
+
+- Run dir: `runs/kraken_ultra_profit_full_throttle`
+- Live startup preflight: `ok`
+- Harmony: `guards_mode=fatal_only`, `order_cadence_s=9`, `sell_min_profit_bps=120`
+- Hard invariants: no sell-below-entry, no sell-below-min-profit violations
+- `rate_budget_exhausted`: eliminated from current-window top blockers
+- Market-class filter now reports `quote_not_allowed:XBT` blocks instead of attempting those pairs
+
+### Current Remaining Blockers
+
+Valid blockers still active:
+- `liquidity_map` / `spread_spike` (market condition guards)
+- `no_intent` / `fee_aware_no_edge` (decision-quality guards)
+- `insufficient_balance` on small quote balance (account-level constraint)
+
+Not retained as unresolved internal blocker:
+- synthetic private budget depletion
+- quote-currency universe mismatch selecting `*XBT` pairs in USD profile
+
+## 2026-03-09 Fatal-Only Mastermind De-Block Pass
+
+### Launch-Chain / Runtime Repairs
+
+1. `fatal_only` now treats non-fatal Mastermind stress as warn-only:
+- `src/autonomous_investment_robot/services/mastermind/service.py`
+- `observe_runtime(..., guards_mode=...)` now keeps `pause_buy=false` for non-fatal stress in `fatal_only` mode (`insufficient_balance_warn`, `rate_stress_warn`).
+
+2. Orchestrator now passes resolved guards mode into Mastermind runtime evaluation:
+- `src/autonomous_investment_robot/core/orchestrator.py`
+- `self.mastermind_supervisor.observe_runtime(..., guards_mode=str(guards_mode))`
+
+3. Test coverage added for warn-only behavior in `fatal_only`:
+- `tests/test_mastermind_supervisor.py`
+- Added:
+  - `test_runtime_insufficient_balance_is_warn_only_in_fatal_only_mode`
+  - `test_runtime_rate_stress_is_warn_only_in_fatal_only_mode`
+
+### Post-Restart Runtime Truth
+
+- Script used: `./scripts/run_kraken_ultra_profit_full_throttle.sh`
+- Run dir: `runs/kraken_ultra_profit_full_throttle`
+- Continuous runtime: `running` (`cli.run` + `cli.worker` active)
+- Mastermind runtime state now shows:
+  - `pause_buy=false`
+  - reason `insufficient_balance_warn` (warn-only, no hard pause)
+- Hard invariants remain intact (no sell-below-entry / no sell-below-min-profit violations).
+
+### Current Remaining Real Blockers (Valid)
+
+- `insufficient_balance_block` (available quote below effective minimum for current symbol path)
+- `fee_aware_no_edge` (net edge after modeled costs below threshold)
+- `no_intent` episodes during compression regime
+
+These are valid safety/economic blockers, not false launch-chain or supervisor pause blockers.
+
+## 2026-03-09 Cloud Distributed Upgrade (Variant A / Practical Variant 1)
+
+### Architecture Map (Implemented)
+
+- Live node runtime:
+  - `cli.run` (`AUTONOMOUS_NODE_ROLE=live`) + watchdog + `cli.worker`
+  - execution/risk/guardrails/audit loop remains in `RobotOrchestrator`
+  - distributed compute bridge integration with strict timeout + local fallback
+- Compute node runtime:
+  - `cli.compute_node` (`AUTONOMOUS_NODE_ROLE=compute`)
+  - consumes scan tasks from Redis Streams and publishes ranking results
+- Shared infra contracts:
+  - Redis Streams tasks/results/audit envelopes
+  - optional Postgres mirror sink for decision/execution/audit snapshots
+
+### Runtime Flow (Current)
+
+`live orchestrator` -> `distributed ranking request` -> `compute bridge (redis or local fallback)` -> `decision/risk/execution` -> `audit + event bus + optional Postgres mirror`.
+
+### Blocker Matrix (Current)
+
+| Reason | Source | Exact fix |
+|---|---|---|
+| Docker CLI unavailable on host (`docker: command not found`) | local execution environment | Install Docker Desktop/Engine on deployment host before compose validation/startup. |
+| Compute node Redis connection refused (no Redis service running locally) | `cli.compute_node` / `RedisComputeWorker.connect()` | Start Redis (`docker compose -f docker-compose.compute.yml up -d redis`) or point `AUTONOMOUS_REDIS_URL` to reachable Redis endpoint. |
+| Live trading remains economically blocked (`no_intent`, `insufficient_balance`, `cooldown_active`) | runtime audit `runs/kraken_ultra_profit_full_throttle/audit.log` | Keep hard guards; tune cadence/affordability and increase effective free quote balance per symbol path. |
+
+### Knob Collision Matrix (Cloud Runtime)
+
+| Setting | Winner | Losers | Final precedence |
+|---|---|---|---|
+| node role | `AUTONOMOUS_NODE_ROLE` env | `distributed.node_role` config | env wins for launcher/deploy explicit role |
+| distributed enable | `AUTONOMOUS_DISTRIBUTED_ENABLED` env | `distributed.enabled` config | env wins |
+| compute bridge backend | `AUTONOMOUS_COMPUTE_BRIDGE` env | `distributed.compute_bridge` config | env wins |
+| redis URL | `AUTONOMOUS_REDIS_URL` env (fallback `REDIS_URL`) | `distributed.redis_url` config | env wins |
+| postgres mirror dsn | `AUTONOMOUS_POSTGRES_DSN` env (fallback `POSTGRES_DSN`) | `distributed.postgres_dsn` config | env wins |
+| advisory on live node | `AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE` env | `distributed.disable_advisory_on_live` config | env wins |
+
+### Before / After (Cloud Readiness)
+
+Before:
+- no Redis-stream compute bridge in runtime path
+- no compute-node executable role
+- no optional Postgres mirror sink
+- no dedicated live/compute/full cloud compose bundles
+
+After:
+- distributed bridge + compute worker + envelope contracts implemented
+- live runtime wired with timeout/fallback distributed ranking path
+- optional Postgres mirror sink integrated (non-fatal on failure)
+- deployment artifacts added (`docker-compose.live/compute/full.yml`, deploy env templates, start/deploy scripts, cloud docs)
+
+### Remaining Blockers / Classification
+
+- Variant A: **partially implemented** (code and artifacts ready; host docker/runtime infra still required externally).
+- Practical Variant 1: **partially implemented** (live/compute separation and contracts implemented; full cluster runtime blocked in this host by missing docker/redis service runtime).
+- Variant 2: **scaffolded** (service boundaries/contracts prepared; full microservice extraction intentionally deferred).

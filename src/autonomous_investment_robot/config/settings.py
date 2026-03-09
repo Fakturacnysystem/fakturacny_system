@@ -87,6 +87,7 @@ class KrakenSpotExecutionSettings:
     backoff_base_ms: int = 300
     backoff_max_ms: int = 4000
     allow_unknown_permissions: bool = False
+    require_open_orders_scope: bool = False
     dry_run_long_only: bool = True
 
 
@@ -177,6 +178,12 @@ class MarketCoverageSettings:
     enable_optional_venues: bool = True
     discover_all_symbols: bool = True
     max_symbols: int = 0
+    enable_crypto_spot: bool = True
+    enable_xstocks: bool = False
+    enable_xstocks_etf: bool = False
+    xstocks_allowlist: list[str] = field(default_factory=list)
+    xstocks_denylist: list[str] = field(default_factory=list)
+    mixed_universe_mode: bool = False
 
 
 @dataclass
@@ -223,6 +230,42 @@ class MLOpsSettings:
     canary_risk_pct: float = 0.05
     rollback_dd_threshold_pct: float = 2.0
     drift_psi_threshold: float = 0.2
+
+
+@dataclass
+class LLMSettings:
+    provider: str = "auto"
+    model: str = ""
+    model_primary: str = ""
+    model_fallback: str = ""
+    base_url: str = ""
+    enabled: bool = True
+    timeout_s: float = 12.0
+    max_retries: int = 1
+    healthcheck_remote: bool = False
+    self_improvement_enabled: bool = True
+    self_improvement_hours: float = 24.0
+    self_improvement_every_s: float = 1800.0
+    llm_augment_enabled: bool = False
+
+
+@dataclass
+class DistributedRuntimeSettings:
+    enabled: bool = False
+    node_role: str = "live"
+    compute_bridge: str = "auto"
+    compute_timeout_s: float = 0.8
+    compute_refresh_s: float = 10.0
+    compute_top_n: int = 24
+    redis_url: str = ""
+    stream_prefix: str = "autobot"
+    stream_payload_version: str = "v1"
+    allow_local_fallback: bool = True
+    enforce_remote_compute: bool = False
+    postgres_mirror_enabled: bool = False
+    postgres_dsn: str = ""
+    postgres_connect_timeout_s: float = 2.0
+    disable_advisory_on_live: bool = True
 
 
 @dataclass
@@ -279,6 +322,8 @@ class RobotSettings:
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
+    llm: LLMSettings = field(default_factory=LLMSettings)
+    distributed: DistributedRuntimeSettings = field(default_factory=DistributedRuntimeSettings)
     universe_builder: UniverseBuilderSettings = field(default_factory=UniverseBuilderSettings)
     autonomous: AutonomousDecisionSettings = field(default_factory=AutonomousDecisionSettings)
 
@@ -352,6 +397,8 @@ class RobotSettings:
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
+            llm=LLMSettings(**data.get("llm", {})),
+            distributed=DistributedRuntimeSettings(**data.get("distributed", {})),
             universe_builder=UniverseBuilderSettings(**data.get("universe_builder", {})),
             autonomous=AutonomousDecisionSettings(**data.get("autonomous", {})),
         )

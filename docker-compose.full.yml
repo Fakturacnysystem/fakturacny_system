@@ -1,0 +1,102 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-robot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-robot}
+      POSTGRES_DB: ${POSTGRES_DB:-robot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  live-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - postgres
+    env_file:
+      - ./deploy/live-node.env.example
+    environment:
+      AUTONOMOUS_NODE_ROLE: live
+      AUTONOMOUS_DISTRIBUTED_ENABLED: ${AUTONOMOUS_DISTRIBUTED_ENABLED:-1}
+      AUTONOMOUS_COMPUTE_BRIDGE: ${AUTONOMOUS_COMPUTE_BRIDGE:-redis}
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_POSTGRES_MIRROR_ENABLED: ${AUTONOMOUS_POSTGRES_MIRROR_ENABLED:-1}
+      AUTONOMOUS_POSTGRES_DSN: ${AUTONOMOUS_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+    command:
+      [
+        "python",
+        "-m",
+        "cli.run",
+        "--config",
+        "${AUTONOMOUS_CONFIG_PATH:-config.kraken_spot.live_profit.yaml}",
+        "--nonstop"
+      ]
+    volumes:
+      - ./runs:/app/runs
+      - ./config.kraken_spot.live_profit.yaml:/app/config.kraken_spot.live_profit.yaml:ro
+
+  compute-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - postgres
+    env_file:
+      - ./deploy/compute-node.env.example
+    environment:
+      AUTONOMOUS_NODE_ROLE: compute
+      AUTONOMOUS_DISTRIBUTED_ENABLED: ${AUTONOMOUS_DISTRIBUTED_ENABLED:-1}
+      AUTONOMOUS_COMPUTE_BRIDGE: ${AUTONOMOUS_COMPUTE_BRIDGE:-redis}
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_POSTGRES_MIRROR_ENABLED: ${AUTONOMOUS_POSTGRES_MIRROR_ENABLED:-1}
+      AUTONOMOUS_POSTGRES_DSN: ${AUTONOMOUS_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+    command:
+      [
+        "python",
+        "-m",
+        "cli.compute_node",
+        "--run-dir",
+        "${AUTONOMOUS_COMPUTE_RUN_DIR:-runs/compute_node}"
+      ]
+    volumes:
+      - ./runs:/app/runs
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    depends_on:
+      - live-node
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  redis_data:
+  postgres_data:
