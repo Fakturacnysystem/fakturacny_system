@@ -389,6 +389,7 @@ class UniverseMind:
                 "proposal_strategies": [row.strategy for row in proposal_rows],
             }
         )
+        meta_for_shield: Mapping[str, Any] | None = None
         try:
             proposal_rows, meta_snapshot = self.meta.adapt_proposals(
                 proposal_rows,
@@ -396,6 +397,7 @@ class UniverseMind:
                 mission=mission,
                 cycle_id=cycle_id,
             )
+            meta_for_shield = meta_snapshot.to_dict()
         except Exception as exc:
             fallback_note = f"meta_intelligence_error:{exc}"
             meta_snapshot = MetaDecisionSnapshot(
@@ -415,6 +417,7 @@ class UniverseMind:
                 )
                 for row in proposal_rows
             ]
+            meta_for_shield = None
         for proposal in proposal_rows:
             event = self.emit(
                 event_type="StrategyProposalEvent",
@@ -435,7 +438,14 @@ class UniverseMind:
             score_floor=parliament_score_floor,
         )
         plan = self.execution.build_plan(verdict.selected, world=decision_world, mission=mission)
-        shield = self.shield.assess(world=decision_world, mission=mission, verdict=verdict, plan=plan)
+        shield = self.shield.assess(
+            world=decision_world,
+            mission=mission,
+            verdict=verdict,
+            plan=plan,
+            meta_diagnostics=meta_for_shield,
+            cycle_id=cycle_id,
+        )
         if shield.approved and plan.actionable:
             plan = plan.scaled(shield.size_scale)
         else:
@@ -450,9 +460,14 @@ class UniverseMind:
                 "symbol": symbol,
                 "venue": venue,
                 "mode": shield.mode,
-                "observe_only": shield.mode == "observe-only",
-                "hard_stop": shield.kill_switch,
-                "risk_flags": shield.reason_codes,
+                "previous_mode": shield.previous_mode,
+                "observe_only": shield.mode in {"observe_only", "observe-only"} or shield.no_trade_forced,
+                "hard_stop": bool(shield.kill_switch or shield.hard_stop_forced),
+                "risk_flags": list(shield.escalation_reason_codes or shield.reason_codes),
+                "hysteresis_state": dict(shield.hysteresis_state),
+                "no_trade_forced": bool(shield.no_trade_forced),
+                "hard_stop_forced": bool(shield.hard_stop_forced),
+                "recovery_eligibility": dict(shield.recovery_eligibility),
                 "model_confidence": decision_world.confidence_score,
                 "uncertainty_bps": decision_world.risk_state.uncertainty_bps,
             },

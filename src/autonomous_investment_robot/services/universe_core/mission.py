@@ -383,7 +383,7 @@ class MissionEngine:
                 MissionReasonCode.DRAWDOWN_PRESSURE.value,
                 MissionReasonCode.RISK_OFF_POSTURE.value,
             )
-        if context.risk_mode in {"defensive", "observe-only"}:
+        if context.risk_mode in {"defensive", "observe-only", "observe_only"}:
             return MissionType.RISK_OFF_DEFENSE, (
                 MissionReasonCode.DRAWDOWN_PRESSURE.value,
                 MissionReasonCode.RISK_OFF_POSTURE.value,

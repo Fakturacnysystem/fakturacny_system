@@ -52,7 +52,16 @@ from .parliament import (
 )
 from .research import PromotionState, ResearchReplayLab, ReplayStageResult
 from .service import UniverseMind, UniverseMindCycleResult
-from .shield import ShieldDecision, UniverseShield
+from .shield import (
+    ShieldDecision,
+    ShieldEscalationDecision,
+    ShieldEscalationReason,
+    ShieldEscalationState,
+    ShieldHealthEnvelope,
+    ShieldHysteresisState,
+    ShieldOverrideRecord,
+    UniverseShield,
+)
 from .state import SymbolStateSnapshot, WorldStateGraph, WorldStateSnapshot, WorldStateStore
 from .cross_asset import CrossAssetAllocator, UniverseAllocation, UniverseAllocationInput
 
@@ -98,6 +107,12 @@ __all__ = [
     "SchemaValidationError",
     "SchemaVersionError",
     "ShieldDecision",
+    "ShieldEscalationDecision",
+    "ShieldEscalationReason",
+    "ShieldEscalationState",
+    "ShieldHealthEnvelope",
+    "ShieldHysteresisState",
+    "ShieldOverrideRecord",
     "StrategyParliament",
     "StrategyProposal",
     "StrategyProposalContract",

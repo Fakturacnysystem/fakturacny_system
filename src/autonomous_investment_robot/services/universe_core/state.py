@@ -1040,7 +1040,7 @@ class WorldStateGraph:
             self.risk_state.allow_trade = False
             self.risk_state.restrict_new_entries = True
             self.risk_state.exposure_posture = "hard_stop"
-        elif self.risk_state.observe_only or self.risk_state.mode in {"observe-only", "defensive"}:
+        elif self.risk_state.observe_only or self.risk_state.mode in {"observe-only", "observe_only", "defensive"}:
             self.risk_state.allow_trade = False
             self.risk_state.restrict_new_entries = True
             self.risk_state.exposure_posture = "defensive"

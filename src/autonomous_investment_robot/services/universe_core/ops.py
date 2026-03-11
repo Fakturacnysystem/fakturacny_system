@@ -44,6 +44,16 @@ class UniverseOpsSnapshot:
     meta_risk_scale: float = 1.0
     meta_memory_records: int = 0
     meta_strategy_weights: list[dict[str, Any]] = field(default_factory=list)
+    shield_mode: str = "normal"
+    previous_shield_mode: str = "normal"
+    escalation_reason_codes: list[str] = field(default_factory=list)
+    escalation_inputs_summary: dict[str, Any] = field(default_factory=dict)
+    strategy_health_summary: dict[str, Any] = field(default_factory=dict)
+    meta_risk_summary: dict[str, Any] = field(default_factory=dict)
+    hysteresis_state: dict[str, Any] = field(default_factory=dict)
+    no_trade_forced: bool = False
+    hard_stop_forced: bool = False
+    recovery_eligibility: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +88,16 @@ class UniverseOpsSnapshot:
             "meta_risk_scale": float(self.meta_risk_scale),
             "meta_memory_records": int(self.meta_memory_records),
             "meta_strategy_weights": [dict(row) for row in self.meta_strategy_weights],
+            "shield_mode": self.shield_mode,
+            "previous_shield_mode": self.previous_shield_mode,
+            "escalation_reason_codes": list(self.escalation_reason_codes),
+            "escalation_inputs_summary": dict(self.escalation_inputs_summary),
+            "strategy_health_summary": dict(self.strategy_health_summary),
+            "meta_risk_summary": dict(self.meta_risk_summary),
+            "hysteresis_state": dict(self.hysteresis_state),
+            "no_trade_forced": bool(self.no_trade_forced),
+            "hard_stop_forced": bool(self.hard_stop_forced),
+            "recovery_eligibility": dict(self.recovery_eligibility),
         }
 
 
@@ -128,6 +148,16 @@ class UniverseOpsService:
         meta_memory_records = int(float(meta_payload.get("memory_records", 0) or 0))
         raw_weights = meta_payload.get("strategy_weights", [])
         meta_strategy_weights = [dict(row) for row in raw_weights] if isinstance(raw_weights, list) else []
+        shield_mode = str(getattr(shield, "mode", "normal") or "normal")
+        previous_shield_mode = str(getattr(shield, "previous_mode", shield_mode) or shield_mode)
+        escalation_reason_codes = list(getattr(shield, "escalation_reason_codes", list(getattr(shield, "reason_codes", []))))
+        escalation_inputs_summary = dict(getattr(shield, "escalation_inputs_summary", {}) or {})
+        strategy_health_summary = dict(getattr(shield, "strategy_health_summary", {}) or {})
+        meta_risk_summary = dict(getattr(shield, "meta_risk_summary", {}) or {})
+        hysteresis_state = dict(getattr(shield, "hysteresis_state", {}) or {})
+        no_trade_forced = bool(getattr(shield, "no_trade_forced", shield_mode in {"observe_only", "hard_stop"}))
+        hard_stop_forced = bool(getattr(shield, "hard_stop_forced", getattr(shield, "kill_switch", False)))
+        recovery_eligibility = dict(getattr(shield, "recovery_eligibility", {}) or {})
         readiness = research.score * 0.45 + world.confidence_score * 0.25 + world.state_stability * 0.20
         readiness += (0.10 if shield.approved else 0.0)
         readiness *= max(0.70, min(1.0, 0.70 + 0.30 * meta_risk_scale))
@@ -197,4 +227,14 @@ class UniverseOpsService:
             meta_risk_scale=meta_risk_scale,
             meta_memory_records=meta_memory_records,
             meta_strategy_weights=meta_strategy_weights,
+            shield_mode=shield_mode,
+            previous_shield_mode=previous_shield_mode,
+            escalation_reason_codes=escalation_reason_codes,
+            escalation_inputs_summary=escalation_inputs_summary,
+            strategy_health_summary=strategy_health_summary,
+            meta_risk_summary=meta_risk_summary,
+            hysteresis_state=hysteresis_state,
+            no_trade_forced=no_trade_forced,
+            hard_stop_forced=hard_stop_forced,
+            recovery_eligibility=recovery_eligibility,
         )

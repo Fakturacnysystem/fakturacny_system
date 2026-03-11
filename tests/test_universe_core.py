@@ -388,7 +388,7 @@ def test_universe_mind_shield_blocks_on_stale_feed_and_stress(tmp_path) -> None:
     )
     assert result.mission.mission == "observation_only"
     assert result.shield.approved is False
-    assert result.shield.mode == "observe-only"
+    assert result.shield.mode == "observe_only"
     assert result.execution_plan.actionable is False
     assert result.decision_packet.execution_plan["order_type"] == "none"
 

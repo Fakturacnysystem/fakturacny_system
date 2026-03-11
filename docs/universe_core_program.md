@@ -118,7 +118,7 @@ That test file covers the first operational slice across Phases 1 through 10 wit
 | `UNIVERSE MISSION` | `services/policy/mastermind_policy.py`, orchestrator mode/guard logic, `services/incident`, `services/universe_core/mission.py` | Implemented in `universe_core` meta-layer; legacy orchestrator path remains authoritative |
 | `UNIVERSE PARLIAMENT` | `services/policy/service.py`, `services/policy/allocator.py`, `services/policy/mastermind_policy.py` | Partial, but not a formal proposal parliament |
 | `UNIVERSE EXEC` | `services/execution/smart_router.py`, `services/execution/live_*`, `services/execution/cost_engine.py`, `services/execution/rate_limit_governor.py` | Strong partial foundation |
-| `UNIVERSE SHIELD` | `services/risk_engine`, `services/execution/profit_gate.py`, `services/reliability/health_audit_110.py`, `services/reliability/watchdog.py`, `services/governance`, `services/compliance` | Strong partial foundation |
+| `UNIVERSE SHIELD` | `services/risk_engine`, `services/execution/profit_gate.py`, `services/reliability/health_audit_110.py`, `services/reliability/watchdog.py`, `services/governance`, `services/compliance`, `services/universe_core/shield.py` | Implemented in `universe_core` meta-layer; legacy orchestrator authority path intentionally preserved |
 | `UNIVERSE MEMORY` | `services/storage`, `services/event_store`, `services/research/service.py`, `services/research/self_improvement.py` | Partial, but fragmented across stores |
 | `UNIVERSE OPS` | `services/ops/service.py`, `services/distributed/*`, `scripts/runtime_audit.py`, deployment docs/runbooks | Strong partial foundation |
 
@@ -131,7 +131,7 @@ That test file covers the first operational slice across Phases 1 through 10 wit
 | Phase 3. Mission Engine | Implemented (meta-layer) | `services/universe_core/mission.py` + mission policy propagation/events | orchestrator-side objective migration still pending |
 | Phase 4. Strategy Parliament | Partial | strategy components, allocator weights, mastermind scoring | typed `StrategyProposal`, parliament judge, conflict resolution/blending, memory hooks |
 | Phase 5. Execution Intelligence | Strong partial | smart routing, cost model, slicing, live services, rate controls | explicit `ExecutionPlan` contract, lifecycle metrics, repricing orchestration |
-| Phase 6. Universe Shield | Strong partial | profit floor, watchdog, health audit, governance, compliance, risk engine | unified escalation matrix and consistent integration into mission/parliament/exec |
+| Phase 6. Universe Shield | Implemented (meta-layer) | typed `ShieldEscalation*` contracts, deterministic escalation matrix, hysteresis state, mission/parliament/meta-aware shield decisions, ops/decision-packet diagnostics | legacy orchestrator remains authoritative path until planned migration |
 | Phase 7. Memory Engine | Partial | SQLite persistence, event store, research registry, self-improvement logs | unified decision packet schema, grading pipeline, regime-policy performance memory |
 | Phase 8. Research / Replay Lab | Strong partial | record/replay, walk-forward, nested OOS gate, paper mode | event-store-backed replay lab, standardized promotion ladder and reports |
 | Phase 9. Cross-Asset Expansion | Partial | spot, futures, perps, xStocks-related paths, distributed ranking | explicit cross-asset allocator and adapter contracts |
@@ -363,10 +363,14 @@ Current baseline:
 - `services/risk_engine/service.py`, `services/execution/profit_gate.py`, `services/reliability/health_audit_110.py`, `services/reliability/watchdog.py`, `services/governance`, and `services/compliance` already enforce strong guardrails.
 - Incident and health logic already support degraded and fail-closed behavior.
 
-Truthful gap:
+Phase 6 status update:
 
-- Shield behavior is powerful but distributed. There is no single escalation matrix explaining which mode changes happen for which failure classes.
-- Shield integration into mission, parliament, and execution is implicit.
+- `services/universe_core/shield.py` now exposes typed escalation contracts: `ShieldEscalationState`, `ShieldEscalationReason`, `ShieldEscalationDecision`, `ShieldHealthEnvelope`, `ShieldOverrideRecord`, and `ShieldHysteresisState`.
+- `UniverseShield.assess(...)` now consumes mission output, parliament diagnostics, adaptive/meta diagnostics, regime confidence, exploration state, execution/infra/account stress, and world/risk posture to produce deterministic escalation decisions.
+- Escalation modes are now explicit and replay-safe: `normal`, `cautious`, `defensive`, `observe_only`, `hard_stop`.
+- Conservative de-escalation with hysteresis is enforced via sustained-recovery windows and stepwise unwind.
+- `UniverseMind.run_cycle()` now propagates shield escalation details into risk events, ops snapshot, and decision memory packets.
+- Existing hard safety doctrines (`hard_stop`/`observe_only` authority and fail-closed behavior) remain non-bypassable.
 
 Required deliverables:
 
