@@ -119,7 +119,7 @@ That test file covers the first operational slice across Phases 1 through 10 wit
 | `UNIVERSE PARLIAMENT` | `services/policy/service.py`, `services/policy/allocator.py`, `services/policy/mastermind_policy.py` | Partial, but not a formal proposal parliament |
 | `UNIVERSE EXEC` | `services/execution/smart_router.py`, `services/execution/live_*`, `services/execution/cost_engine.py`, `services/execution/rate_limit_governor.py` | Strong partial foundation |
 | `UNIVERSE SHIELD` | `services/risk_engine`, `services/execution/profit_gate.py`, `services/reliability/health_audit_110.py`, `services/reliability/watchdog.py`, `services/governance`, `services/compliance`, `services/universe_core/shield.py` | Implemented in `universe_core` meta-layer; legacy orchestrator authority path intentionally preserved |
-| `UNIVERSE MEMORY` | `services/storage`, `services/event_store`, `services/research/service.py`, `services/research/self_improvement.py` | Partial, but fragmented across stores |
+| `UNIVERSE MEMORY` | `services/storage`, `services/event_store`, `services/research/service.py`, `services/research/self_improvement.py`, `services/universe_core/memory.py` | Implemented in `universe_core` meta-layer; legacy orchestrator authority path intentionally preserved |
 | `UNIVERSE OPS` | `services/ops/service.py`, `services/distributed/*`, `scripts/runtime_audit.py`, deployment docs/runbooks | Strong partial foundation |
 
 ## Truth Summary By Phase
@@ -132,8 +132,8 @@ That test file covers the first operational slice across Phases 1 through 10 wit
 | Phase 4. Strategy Parliament | Partial | strategy components, allocator weights, mastermind scoring | typed `StrategyProposal`, parliament judge, conflict resolution/blending, memory hooks |
 | Phase 5. Execution Intelligence | Strong partial | smart routing, cost model, slicing, live services, rate controls | explicit `ExecutionPlan` contract, lifecycle metrics, repricing orchestration |
 | Phase 6. Universe Shield | Implemented (meta-layer) | typed `ShieldEscalation*` contracts, deterministic escalation matrix, hysteresis state, mission/parliament/meta-aware shield decisions, ops/decision-packet diagnostics | legacy orchestrator remains authoritative path until planned migration |
-| Phase 7. Memory Engine | Partial | SQLite persistence, event store, research registry, self-improvement logs | unified decision packet schema, grading pipeline, regime-policy performance memory |
-| Phase 8. Research / Replay Lab | Strong partial | record/replay, walk-forward, nested OOS gate, paper mode | event-store-backed replay lab, standardized promotion ladder and reports |
+| Phase 7. Memory Engine | Implemented (meta-layer) | typed decision memory records, deterministic outcome grading, shield-aware policy grading, promotion/demotion/retirement recommendation gates, bounded retention compaction, ops learning summaries | legacy orchestrator-wide adoption remains out of scope for additive rollout |
+| Phase 8. Research / Replay Lab | Implemented (meta-layer) | deterministic replay session, decision reconstruction, comparative counterfactual evaluation, walk-forward holdout evaluation, promotion ladder stages, adaptive activation gate, replay retention/compaction, UniverseMind/ops integration | legacy orchestrator-wide authority migration remains out of scope for additive rollout |
 | Phase 9. Cross-Asset Expansion | Partial | spot, futures, perps, xStocks-related paths, distributed ranking | explicit cross-asset allocator and adapter contracts |
 | Phase 10. Universe Ops / Productionization | Strong partial | metrics, audit logs, distributed audit stream, runbooks, deployment scripts | unified governance checklist, rollout/rollback contract, final readiness artifact |
 
@@ -400,79 +400,79 @@ Primary entry points:
 
 Linear scope: `7.1` through `7.6`
 
-Current baseline:
+Phase 7 status update:
 
-- `services/storage` already persists submissions and runtime records.
-- `services/event_store/service.py` already stores event streams.
-- `services/research/service.py` already records experiments, feature schemas, and nested walk-forward results.
-- `services/research/self_improvement.py` already writes bounded self-improvement suggestions.
+- `services/universe_core/memory.py` now defines typed memory and learning contracts:
+  - `DecisionMemoryRecord`, `DecisionMemorySnapshot`, `DecisionFingerprint`
+  - `DecisionOutcomeGrade`, `OutcomeGrade`, `OutcomeGradeReason`
+  - `PolicyGradeRecord`, `StrategyPolicyGrade`, `GradeWindowSummary`
+  - `PromotionGateDecision`, `DemotionGateDecision`, `RetirementGateDecision`
+  - `ReplayPromotionCandidate`, `PromotionEvidenceBundle`, `LearningCandidateRecord`
+  - `MemoryRetentionPolicy`, `MemoryCompactionDecision`, `MemoryArchiveSummary`
+- Universe Core now persists bounded decision memory records with stable fingerprints and replay eligibility markers.
+- Outcome grading is deterministic from persisted evidence and explicitly shield-aware.
+- Promotion/demotion/retirement gates produce recommendation records only; they do not silently activate live behavior changes.
+- Bounded compaction and archive summaries are now part of memory retention health.
+- `UniverseMind.run_cycle()` now enriches ops snapshots and decision packets with Phase 7 learning summaries in additive mode.
 
 Truthful gap:
 
-- There is no single decision packet schema tying together world state, mission, proposals, execution plan, shield state, and outcome.
-- Post-trade grading and regime/policy memory are not first-class services.
-
-Required deliverables:
-
-- Define a decision packet record that binds phases 2 through 6 together.
-- Persist post-trade and post-skip grading.
-- Build regime-by-asset-by-policy performance memory.
-- Add governance hooks for controlled policy updates only after validated improvement.
+- This rollout is intentionally additive to Universe Core; legacy orchestrator authority path is unchanged.
 
 Acceptance criteria:
 
-- Every decision can be reconstructed from one persisted packet.
-- Grading is deterministic and does not mutate live policy directly.
-- Memory features are read-only to production decisioning unless explicitly promoted.
+- Every Universe Core decision remains reconstructable from persisted packet + memory record.
+- Grading, policy summaries, and gate recommendations are deterministic and replay-safe.
+- Learning remains recommendation-only unless explicitly promoted outside this phase.
 
 Validation:
 
-- Extend `tests/test_self_improvement.py` and storage-related tests.
-- Add packet persistence tests, grading tests, and policy-promotion gate tests.
-
-Primary entry points:
-
-- `src/autonomous_investment_robot/services/storage`
-- `src/autonomous_investment_robot/services/research/service.py`
-- `src/autonomous_investment_robot/services/research/self_improvement.py`
+- `tests/test_universe_memory_phase7.py`
+- `tests/test_universe_core.py`
+- `tests/test_universe_meta_intelligence.py`
+- `tests/test_universe_shield_phase6.py`
 
 ### Phase 8: Research / Replay Lab
 
 Linear scope: `8.1` through `8.6`
 
-Current baseline:
+Phase 8 status update:
 
-- Record/replay flows already exist and are covered by replay tests.
-- `ResearchPlatformService` already supports feature parity, leakage checks, experiments, nested walk-forward, and robust OOS gates.
-- Paper mode already exists in the runtime.
+- `services/universe_core/replay_ladder.py` now provides production-grade replay/promotion primitives:
+  - deterministic replay batch/session execution
+  - decision reconstruction with explicit inferred markers
+  - comparative counterfactual evaluation
+  - walk-forward + holdout evaluation flow
+  - strategy replay grading with reproducibility metadata
+  - promotion ladder stages:
+    - `offline_replay`
+    - `walk_forward_validated`
+    - `shadow_ready`
+    - `paper_ready`
+    - `limited_live_ready`
+    - `scaled_live_candidate`
+  - backward-compatible legacy aliases retained (`sandbox_shadow`, `shadow_live`, etc.)
+  - adaptive activation gate with hard kill-switch handling
+  - bounded replay retention and compaction in memory persistence
+- `UniverseMind.run_cycle()` now runs the Phase 8 ladder when enabled (`UNIVERSE_REPLAY_PROMOTION_ENABLED=1`) and propagates replay/promotion summaries into:
+  - memory artifacts
+  - ops snapshot
+  - decision packet learning summary
+- Recommendation vs activation remains separated:
+  - ladder emits promotion decisions and gated activation recommendations
+  - no silent global live promotion is performed by Phase 8 itself.
 
 Truthful gap:
 
-- Research is not yet centered on the unified event store that Phase 1 requires.
-- Promotion from replay to shadow to paper to limited live is not expressed as one formal ladder with standard reports.
-
-Required deliverables:
-
-- Rebuild replay on top of the unified event fabric and decision packets.
-- Add shadow-mode evaluation using the same decision artifacts as live.
-- Standardize evaluation reports and promotion gates.
-
-Acceptance criteria:
-
-- Replay, shadow, and paper share the same core state and decision contracts.
-- Promotion decisions are evidence-based and reproducible.
-- Reports capture both return metrics and safety/quality metrics.
+- This remains additive inside Universe Core; legacy orchestrator authority path is intentionally unchanged.
 
 Validation:
 
-- Preserve `tests/test_record_replay_recordings.py`, `tests/test_replay_golden.py`, `tests/test_research*`, and walk-forward tests.
-- Add promotion-ladder tests that fail closed when evidence is insufficient.
-
-Primary entry points:
-
-- `src/autonomous_investment_robot/services/replay`
-- `src/autonomous_investment_robot/services/research/service.py`
-- `src/autonomous_investment_robot/main.py`
+- `tests/test_universe_replay_phase8.py`
+- `tests/test_universe_core.py`
+- `tests/test_universe_meta_intelligence.py`
+- `tests/test_universe_shield_phase6.py`
+- `tests/test_universe_memory_phase7.py`
 
 ### Phase 9: Cross-Asset Expansion
 
