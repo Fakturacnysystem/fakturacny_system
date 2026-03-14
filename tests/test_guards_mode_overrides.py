@@ -248,6 +248,72 @@ def test_rate_limit_cooldown_blocks_do_not_count_as_trade_attempt(tmp_path, monk
     assert float(orc.ops.metrics.get("reject_rate", 0.0)) >= 0.0
 
 
+def test_no_trade_zone_blocks_do_not_count_as_trade_attempt(tmp_path, monkeypatch):
+    _configure_env(monkeypatch)
+    orc = RobotOrchestrator(_settings(str(tmp_path / "run5c")))
+    _force_intent(orc)
+
+    def _exec(_intent):
+        return _ExecResult(status="blocked", reason="no_trade_zone", order={"request_sent": False})
+
+    orc.execution.execute_live = _exec  # type: ignore[method-assign]
+    orc.risk.evaluate = lambda *args, **kwargs: RiskDecision(True, "passed", adjusted_notional=20.0, details={})  # type: ignore[method-assign]
+    orc.governance.enforce_policy_constraints = lambda **kwargs: GovernanceDecision(True, "ok", {}, fatal=False)  # type: ignore[method-assign]
+
+    out = orc._live_loop(_FakeLive(), symbol="XBTEUR", mode=orc.settings.execution_mode_enum())
+    assert out["status"] == "ok"
+    assert float(orc.ops.metrics.get("intents_total", 0.0)) > 0.0
+    assert float(orc.ops.metrics.get("executions_attempted_total", 0.0)) == 0.0
+
+
+def test_noop_execution_refunds_private_rate_budget_token(tmp_path, monkeypatch):
+    _configure_env(monkeypatch)
+    orc = RobotOrchestrator(_settings(str(tmp_path / "run5d")))
+    _force_intent(orc)
+
+    def _exec(_intent):
+        return _ExecResult(status="blocked", reason="microstructure_no_momentum_buy", order={"request_sent": False})
+
+    orc.execution.execute_live = _exec  # type: ignore[method-assign]
+    orc.risk.evaluate = lambda *args, **kwargs: RiskDecision(True, "passed", adjusted_notional=20.0, details={})  # type: ignore[method-assign]
+    orc.governance.enforce_policy_constraints = lambda **kwargs: GovernanceDecision(True, "ok", {}, fatal=False)  # type: ignore[method-assign]
+
+    pre = orc.rate_budget.state(now_ts=time.time())
+    out = orc._live_loop(_FakeLive(), symbol="XBTEUR", mode=orc.settings.execution_mode_enum())
+    post = orc.rate_budget.state(now_ts=time.time())
+
+    assert out["status"] == "ok"
+    assert float(orc.ops.metrics.get("executions_attempted_total", 0.0)) == 0.0
+    # Internal guard block with request_sent=False should not permanently consume private budget.
+    assert abs(post.private_capacity - post.private_tokens) < 1e-6
+    assert post.private_tokens >= pre.private_tokens - 1e-6
+
+
+def test_market_filter_blocks_crypto_quotes_outside_allowlist(tmp_path, monkeypatch):
+    _configure_env(monkeypatch)
+    monkeypatch.setenv("AUTONOMOUS_UNIVERSE_QUOTE_ALLOWLIST", "USD,EUR")
+    orc = RobotOrchestrator(_settings(str(tmp_path / "run5e")))
+    orc._symbol_market_class = {"ADAXBT": "crypto_spot", "XBTUSD": "crypto_spot"}
+    orc._symbol_quote_ccy = {"ADAXBT": "XBT", "XBTUSD": "USD"}
+    out, diag = orc._filter_symbols_for_market_coverage(["ADAXBT", "XBTUSD"])
+    assert out == ["XBTUSD"]
+    blocked = dict(diag.get("blocked_reasons", {}) or {})
+    assert blocked.get("quote_not_allowed:XBT", 0) >= 1
+
+
+def test_market_filter_keeps_xstocks_even_with_crypto_quote_allowlist(tmp_path, monkeypatch):
+    _configure_env(monkeypatch)
+    monkeypatch.setenv("AUTONOMOUS_UNIVERSE_QUOTE_ALLOWLIST", "USD,EUR")
+    monkeypatch.setenv("AUTONOMOUS_ENABLE_XSTOCKS", "true")
+    orc = RobotOrchestrator(_settings(str(tmp_path / "run5f")))
+    orc._symbol_market_class = {"TSLAXUSD": "xstock", "AAPLXUSD": "xstock"}
+    orc._symbol_quote_ccy = {"TSLAXUSD": "USD", "AAPLXUSD": "USD"}
+    out, diag = orc._filter_symbols_for_market_coverage(["TSLAXUSD", "AAPLXUSD"])
+    assert out == ["TSLAXUSD", "AAPLXUSD"]
+    blocked = dict(diag.get("blocked_reasons", {}) or {})
+    assert blocked.get("quote_not_allowed:USD", 0) == 0
+
+
 def test_entry_safe_mode_override(tmp_path, monkeypatch):
     _configure_env(monkeypatch)
     monkeypatch.setenv("AUTONOMOUS_GUARDS_MODE", "strict")

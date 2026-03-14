@@ -12,6 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from autonomous_investment_robot.services.llm import (  # noqa: E402
+    LLMProviderClient,
+    resolve_provider_config,
+)
+
 try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover - handled at runtime
@@ -19,8 +29,8 @@ except Exception:  # pragma: no cover - handled at runtime
 
 
 DEFAULT_RUN_DIR = "runs/kraken_spot_live"
-DEFAULT_MODEL = "gpt-5.2"
-RESERVED_ENV_KEYS = {"OPENAI_API_KEY"}
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+RESERVED_ENV_KEYS = {"OPENAI_API_KEY", "GROQ_API_KEY", "KRAKEN_API_KEY", "KRAKEN_API_SECRET"}
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ALLOWED_OVERRIDE_ENVS = {
     "AUTONOMOUS_MIN_NET_EDGE_BPS",
@@ -304,12 +314,15 @@ def _extract_response_text(response: Any) -> str:
 
 
 def call_openai_with_schema(*, model: str, prompt_payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on runtime env
-        raise SystemExit("Missing dependency: openai. Install with `pip install -r requirements.txt`.") from exc
+    """Backward-compatible function name; now uses provider abstraction (OpenAI/Groq)."""
+    cfg = resolve_provider_config(model=model)
+    client = LLMProviderClient(cfg)
+    health = client.health_check(remote=False)
+    if not bool(health.get("ok", False)):
+        cls = str(health.get("classification", "llm_unavailable") or "llm_unavailable")
+        reason = str(health.get("reason", "") or "")
+        raise SystemExit(f"LLM provider unavailable: {cls}. {reason}".strip())
 
-    client = OpenAI()
     instructions = (
         "You are a trading bot control-plane advisor with strict safety policy. "
         "Return only valid JSON that exactly matches the provided schema. "
@@ -322,56 +335,46 @@ def call_openai_with_schema(*, model: str, prompt_payload: dict[str, Any]) -> di
         "Never disable kill switch, never disable min-notional protection, never disable rate-limit protection. "
         "Universe must stay inside top-liquidity whitelist when provided."
     )
-    response = client.responses.create(
-        model=model,
+    return client.create_structured_json(
         instructions=instructions,
-        input=[
-            {
-                "role": "user",
-                "content": (
-                    "Analyze the local trading artifacts summary and suggest safe env overrides, "
-                    "universe updates, and config patch hints.\n"
-                    f"{json.dumps(prompt_payload, ensure_ascii=False)}"
-                ),
-            }
-        ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "gpt_bot_tuning",
-                "schema": SUGGESTION_SCHEMA,
-                "strict": True,
-            }
+        user_payload={
+            "prompt": "Analyze the local trading artifacts summary and suggest safe env overrides, universe updates, and config patch hints.",
+            "summary": prompt_payload,
         },
+        schema_name="gpt_bot_tuning",
+        schema=SUGGESTION_SCHEMA,
     )
-    output_text = _extract_response_text(response)
-    if not output_text.strip():
-        raise RuntimeError("OpenAI response did not include structured JSON output.")
-    parsed = json.loads(output_text)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("OpenAI response JSON root must be an object.")
-    return parsed
 
 
-def _scrub_openai_markers(value: Any, openai_key_value: str) -> Any:
+def _active_secret_values() -> list[str]:
+    out: list[str] = []
+    for key in ("OPENAI_API_KEY", "GROQ_API_KEY", "KRAKEN_API_KEY", "KRAKEN_API_SECRET"):
+        val = str(os.getenv(key, "") or "").strip()
+        if val and val not in out:
+            out.append(val)
+    return out
+
+
+def _scrub_secret_markers(value: Any, secret_values: list[str]) -> Any:
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
             if str(k).upper() in RESERVED_ENV_KEYS:
                 continue
-            out[str(k)] = _scrub_openai_markers(v, openai_key_value)
+            out[str(k)] = _scrub_secret_markers(v, secret_values)
         return out
     if isinstance(value, list):
-        return [_scrub_openai_markers(v, openai_key_value) for v in value]
+        return [_scrub_secret_markers(v, secret_values) for v in value]
     if isinstance(value, str):
-        clean = value.replace("OPENAI_API_KEY", "REDACTED_OPENAI_ENV")
-        if openai_key_value:
-            clean = clean.replace(openai_key_value, "[REDACTED]")
+        clean = value.replace("OPENAI_API_KEY", "REDACTED_API_ENV")
+        clean = clean.replace("GROQ_API_KEY", "REDACTED_API_ENV")
+        for secret in secret_values:
+            clean = clean.replace(secret, "[REDACTED]")
         return clean
     return value
 
 
-def sanitize_overrides(raw: Any, openai_key_value: str) -> dict[str, str]:
+def sanitize_overrides(raw: Any, secret_values: list[str]) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str] = {}
@@ -387,7 +390,7 @@ def sanitize_overrides(raw: Any, openai_key_value: str) -> dict[str, str]:
             continue
         if not ENV_NAME_RE.match(env_name):
             continue
-        env_val = _scrub_openai_markers(str(value), openai_key_value)
+        env_val = _scrub_secret_markers(str(value), secret_values)
         out[env_name] = _clamp_override(env_name, str(env_val))
     return out
 
@@ -518,10 +521,6 @@ def build_env_exports(overrides: dict[str, str]) -> str:
 
 
 def run_control_plane(args: argparse.Namespace) -> dict[str, Any]:
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-    if not openai_key.strip():
-        raise SystemExit("OPENAI_API_KEY is required. Export it first, then re-run the control plane.")
-
     config_path = Path(args.config).expanduser() if args.config else None
     run_dir = resolve_run_dir(args.run_dir, config_path)
     summary = summarize_artifacts(run_dir, audit_lines=args.audit_lines)
@@ -532,12 +531,13 @@ def run_control_plane(args: argparse.Namespace) -> dict[str, Any]:
         event_bus_lines=summary.event_bus_lines_read,
     )
 
-    model = args.model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+    model = args.model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
     raw_suggestion = call_openai_with_schema(model=model, prompt_payload=summary.as_prompt_payload())
-    sanitized = _scrub_openai_markers(raw_suggestion, openai_key)
+    secret_values = _active_secret_values()
+    sanitized = _scrub_secret_markers(raw_suggestion, secret_values)
     if not isinstance(sanitized, dict):
         raise RuntimeError("Sanitized suggestion payload is not an object.")
-    sanitized["overrides"] = sanitize_overrides(sanitized.get("overrides", {}), openai_key)
+    sanitized["overrides"] = sanitize_overrides(sanitized.get("overrides", {}), secret_values)
     sanitized["universe"] = sanitize_universe(
         sanitized.get("universe", []),
         run_dir=run_dir,
@@ -566,7 +566,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", default="config.kraken_spot.live_profit.yaml", help="Path to robot YAML config.")
     parser.add_argument("--run-dir", default=None, help="Override run directory (otherwise from config storage.run_dir).")
     parser.add_argument("--audit-lines", type=int, default=2000, help="How many recent audit.log lines to analyze.")
-    parser.add_argument("--model", default=None, help=f"OpenAI model to use (default env OPENAI_MODEL or {DEFAULT_MODEL}).")
+    parser.add_argument("--model", default=None, help=f"LLM model to use (default env LLM_MODEL/OPENAI_MODEL or {DEFAULT_MODEL}).")
     parser.set_defaults(dry_run=True)
     parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Print JSON suggestions (default).")
     parser.add_argument("--apply", dest="dry_run", action="store_false", help="Write run_dir/env_overrides.sh and gpt_suggestions.json.")

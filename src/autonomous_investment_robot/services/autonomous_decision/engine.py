@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 import importlib
+import json
 import logging
 import math
+import os
 from typing import Any, Mapping
+
+from autonomous_investment_robot.services.autonomous_decision.causal_market_twin import (
+    CausalMarketTwinEngine,
+    MarketTwinSnapshot,
+    attach_market_twin_diagnostics,
+    persist_market_twin_snapshot,
+)
+from autonomous_investment_robot.services.reliability.runtime_cache import FeatureCache, SignalCache
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +47,21 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return float(out)
 
 
+def _hard_sell_floor_bps(default: float = 30.0) -> float:
+    raw = os.getenv(
+        "AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS",
+        os.getenv("AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", str(default)),
+    )
+    return max(0.0, _safe_float(raw, default))
+
+
+def _stable_cache_key(payload: Mapping[str, Any]) -> str:
+    """Build deterministic cache key from JSON-serializable mapping payload."""
+
+    raw = json.dumps(dict(payload), sort_keys=True, default=str, separators=(",", ":"))
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _market_class_modifiers(market_class: str) -> dict[str, float]:
     cls = str(market_class or "crypto_spot").strip().lower()
     if cls == "xstock_etf":
@@ -61,6 +87,26 @@ def _market_class_modifiers(market_class: str) -> dict[str, float]:
         "slippage_mult": 1.0,
         "size_mult": 1.0,
     }
+
+
+def _normalize_market_class(value: str) -> str:
+    cls = str(value or "crypto_spot").strip().lower()
+    if cls in {"xstocks", "x_stock", "xstocks_equity"}:
+        return "xstock"
+    if cls in {"xstock_etfs", "xstocks_etf"}:
+        return "xstock_etf"
+    if cls in {"crypto", "spot", "crypto"}:
+        return "crypto_spot"
+    return cls
+
+
+def _market_class_threshold_value(mapping: Mapping[str, float], market_class: str) -> float | None:
+    cls = _normalize_market_class(market_class)
+    if cls in mapping:
+        return _safe_float(mapping.get(cls), 0.0)
+    if cls.startswith("xstock") and "xstock" in mapping:
+        return _safe_float(mapping.get("xstock"), 0.0)
+    return None
 
 
 @dataclass(frozen=True)
@@ -140,9 +186,11 @@ class DecisionContext:
     market_class: str = "crypto_spot"
     market_session: str = "always_open_24_7"
     guards_mode: str = "strict"
-    modeled_cost_floor_bps: float = 120.0
-    sell_min_profit_bps: float = 120.0
-    sell_target_profit_bps: float = 120.0
+    modeled_cost_floor_bps: float = 30.0
+    sell_min_profit_bps: float = 30.0
+    sell_target_profit_bps: float = 30.0
+    signal_age_s: float = 0.0
+    world_state_adapter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -400,7 +448,7 @@ def estimate_transaction_costs(
     fee = max(0.0, _safe_float(fee_bps, 0.0))
     slip = max(0.0, _safe_float(slippage_bps, 0.0))
     total = fee + slip + spread_cost_bps + impact_bps
-    modeled_floor = max(120.0, (2.0 * fee) + (2.0 * slip))
+    modeled_floor = max(_hard_sell_floor_bps(), (2.0 * fee) + (2.0 * slip))
     return {
         "fees_bps": fee,
         "slippage_bps": slip,
@@ -513,6 +561,41 @@ def nowcast_market_conditions(
         "execution_urgency": urgency,
         "market_state_confidence": _clamp(0.65 - (0.4 * _safe_float(latency_risk, 0.0)), 0.05, 0.95),
     }
+
+
+def detect_opportunity_decay(
+    *,
+    signal_age_s: float,
+    latency_ms: float,
+    regime: str,
+    market_class: str,
+    max_age_s: float = 45.0,
+) -> float:
+    """Score stale-opportunity risk in [0,1]."""
+
+    age = max(0.0, _safe_float(signal_age_s, 0.0))
+    age_cap = max(5.0, _safe_float(max_age_s, 45.0))
+    age_score = _clamp(age / age_cap, 0.0, 1.0)
+    latency_score = _clamp(max(0.0, _safe_float(latency_ms, 0.0)) / 1200.0, 0.0, 1.0)
+    regime_mult = 1.15 if regime in {"PANIC", "HIGH_VOL"} else 0.90 if regime in {"COMPRESSION"} else 1.0
+    cls_mult = 1.10 if _normalize_market_class(market_class).startswith("xstock") else 1.0
+    return _clamp((0.75 * age_score + 0.25 * latency_score) * regime_mult * cls_mult, 0.0, 1.0)
+
+
+def compute_cross_market_confirmation(
+    *,
+    market_class: str,
+    fused_features: Mapping[str, float],
+    market_state: Mapping[str, Any],
+) -> float:
+    """Estimate cross-market confirmation in [-1,1] used for buy-side gating."""
+
+    macro_risk_on = _safe_float(fused_features.get("macro_macro_risk_on"), 0.0)
+    sentiment = _safe_float(fused_features.get("sent_sentiment_score"), 0.0)
+    trend_bps = _safe_float(market_state.get("trend_bps"), 0.0)
+    trend = _clamp(trend_bps / 120.0, -1.0, 1.0)
+    class_bias = 0.10 if _normalize_market_class(market_class).startswith("xstock") else 0.0
+    return _clamp((0.50 * trend) + (0.35 * macro_risk_on) + (0.15 * sentiment) + class_bias, -1.0, 1.0)
 
 
 def forecast_return_distribution(
@@ -943,7 +1026,12 @@ def apply_profit_lock(
 ) -> dict[str, Any]:
     """Hard profit protection rule-set."""
 
-    hard_floor_bps = max(120.0, _safe_float(min_net_profit_bps, 120.0), _safe_float(modeled_cost_bps, 0.0))
+    hard_floor_cfg = _hard_sell_floor_bps()
+    hard_floor_bps = max(
+        hard_floor_cfg,
+        _safe_float(min_net_profit_bps, hard_floor_cfg),
+        _safe_float(modeled_cost_bps, 0.0),
+    )
     target_bps = max(hard_floor_bps, _safe_float(target_net_profit_bps, hard_floor_bps))
     if hold_time_s > 7200.0:
         target_bps = max(hard_floor_bps, target_bps * 0.9)
@@ -1849,22 +1937,43 @@ def run_decision_algorithm(
     regime, drift, multimodal, microstructure, risk, and execution awareness.
     """
 
-    price_volume = engine.multimodal.ingest_price_volume_features(features=context.features)
-    news_payload = context.news_features or _extract_prefixed_features(context.features, "news_")
-    macro_payload = context.macro_features or _extract_prefixed_features(context.features, "macro_")
-    fundamental_payload = context.fundamental_features or _extract_prefixed_features(context.features, "fund_")
-    sentiment_payload = context.sentiment_features or _extract_prefixed_features(context.features, "sent_")
-    news = engine.multimodal.ingest_news_features(news_payload=news_payload)
-    macro = engine.multimodal.ingest_macro_features(macro_payload=macro_payload)
-    fundamentals = engine.multimodal.ingest_fundamental_features(fundamental_payload=fundamental_payload)
-    sentiment = engine.multimodal.ingest_sentiment_features(sentiment_payload=sentiment_payload)
-    fused = engine.multimodal.fuse_multimodal_features(
-        price_volume=price_volume,
-        news=news if engine.enable_news else {},
-        macro=macro if engine.enable_macro else {},
-        fundamentals=fundamentals if engine.enable_fundamentals else {},
-        sentiment=sentiment if engine.enable_sentiment else {},
+    feature_cache_key = _stable_cache_key(
+        {
+            "symbol": str(context.symbol),
+            "market_class": str(context.market_class),
+            "bid": round(float(context.bid), 8),
+            "ask": round(float(context.ask), 8),
+            "depth_notional": round(float(context.depth_notional), 6),
+            "features": {str(k): round(float(v), 8) for k, v in sorted(dict(context.features).items())},
+            "enable_news": bool(engine.enable_news),
+            "enable_macro": bool(engine.enable_macro),
+            "enable_fundamentals": bool(engine.enable_fundamentals),
+            "enable_sentiment": bool(engine.enable_sentiment),
+        }
     )
+    feature_cache_hit = False
+    cached_fused = engine.feature_cache.get(feature_cache_key)
+    if cached_fused is not None:
+        fused = dict(cached_fused)
+        feature_cache_hit = True
+    else:
+        price_volume = engine.multimodal.ingest_price_volume_features(features=context.features)
+        news_payload = context.news_features or _extract_prefixed_features(context.features, "news_")
+        macro_payload = context.macro_features or _extract_prefixed_features(context.features, "macro_")
+        fundamental_payload = context.fundamental_features or _extract_prefixed_features(context.features, "fund_")
+        sentiment_payload = context.sentiment_features or _extract_prefixed_features(context.features, "sent_")
+        news = engine.multimodal.ingest_news_features(news_payload=news_payload)
+        macro = engine.multimodal.ingest_macro_features(macro_payload=macro_payload)
+        fundamentals = engine.multimodal.ingest_fundamental_features(fundamental_payload=fundamental_payload)
+        sentiment = engine.multimodal.ingest_sentiment_features(sentiment_payload=sentiment_payload)
+        fused = engine.multimodal.fuse_multimodal_features(
+            price_volume=price_volume,
+            news=news if engine.enable_news else {},
+            macro=macro if engine.enable_macro else {},
+            fundamentals=fundamentals if engine.enable_fundamentals else {},
+            sentiment=sentiment if engine.enable_sentiment else {},
+        )
+        engine.feature_cache.set(feature_cache_key, dict(fused))
     fused["timestamp"] = float(context.now_ts)
 
     lob_state = engine.lob.model_limit_order_book(
@@ -1993,12 +2102,44 @@ def run_decision_algorithm(
         forecast_confidence=adjusted_forecast_confidence,
     )
     confidence = _clamp(confidence * (1.0 - min(0.25, max(0.0, decay_score) * 0.2)), 0.0, 1.0)
-    signal = engine.signal.generate_trade_signal(
-        alpha_signals=alpha_signals,
-        return_distribution=ret_dist,
-        uncertainty=uq,
-        confidence=confidence,
+    signal_cache_key = _stable_cache_key(
+        {
+            "symbol": str(context.symbol),
+            "alpha_ensemble": round(_safe_float(alpha_signals.get("ensemble"), 0.0), 8),
+            "return_mean_bps": round(float(ret_dist.mean_bps), 8),
+            "return_std_bps": round(float(ret_dist.std_bps), 8),
+            "uncertainty_bps": round(float(uq.total_bps), 8),
+            "confidence": round(float(confidence), 8),
+        }
     )
+    signal_cache_hit = False
+    cached_signal = engine.signal_cache.get(signal_cache_key)
+    if isinstance(cached_signal, dict):
+        signal = TradeSignal(
+            action=str(cached_signal.get("action", "hold") or "hold"),
+            side=str(cached_signal.get("side", "hold") or "hold"),
+            score_bps=float(cached_signal.get("score_bps", 0.0) or 0.0),
+            confidence=float(cached_signal.get("confidence", confidence) or confidence),
+            reason=str(cached_signal.get("reason", "cached_signal") or "cached_signal"),
+        )
+        signal_cache_hit = True
+    else:
+        signal = engine.signal.generate_trade_signal(
+            alpha_signals=alpha_signals,
+            return_distribution=ret_dist,
+            uncertainty=uq,
+            confidence=confidence,
+        )
+        engine.signal_cache.set(
+            signal_cache_key,
+            {
+                "action": str(signal.action),
+                "side": str(signal.side),
+                "score_bps": float(signal.score_bps),
+                "confidence": float(signal.confidence),
+                "reason": str(signal.reason),
+            },
+        )
 
     cost = engine.execution.estimate_transaction_costs(
         fee_bps=context.fee_bps,
@@ -2019,11 +2160,17 @@ def run_decision_algorithm(
         0.0,
         0.95,
     )
+    class_conf_floor = _market_class_threshold_value(engine.market_class_confidence_thresholds, context.market_class)
+    if class_conf_floor is not None:
+        effective_conf_threshold = max(effective_conf_threshold, _clamp(class_conf_floor, 0.0, 0.95))
     effective_uncertainty_threshold_bps = max(
         20.0,
         _safe_float(regime_params.get("uncertainty_threshold_bps"), engine.uncertainty_threshold_bps)
         + _safe_float(market_mod.get("uncertainty_delta_bps"), 0.0),
     )
+    class_uncertainty_cap = _market_class_threshold_value(engine.market_class_uncertainty_threshold_bps, context.market_class)
+    if class_uncertainty_cap is not None and class_uncertainty_cap > 0.0:
+        effective_uncertainty_threshold_bps = max(20.0, min(effective_uncertainty_threshold_bps, class_uncertainty_cap))
     effective_latency_threshold = _clamp(
         engine.latency_risk_threshold + _safe_float(market_mod.get("latency_delta"), 0.0),
         0.05,
@@ -2050,6 +2197,12 @@ def run_decision_algorithm(
     size *= engine.adaptive_sizing.scale(confidence, uq.total_bps)
     size *= engine.liquidity_aware_sizing.scale(context.depth_notional, context.spread_bps)
     size *= _clamp(_safe_float(market_mod.get("size_mult"), 1.0), 0.25, 1.5)
+    regime_size_multiplier = _clamp(
+        _safe_float(engine.regime_size_multipliers.get(regime), 1.0),
+        0.25,
+        1.75,
+    )
+    size *= regime_size_multiplier
     cross_pair_score = _safe_float(alpha_signals.get("cross_pair_opportunity"), 0.0)
     portfolio_div_scale = engine.portfolio_diversifier.scale(
         cross_pair_score=cross_pair_score,
@@ -2064,11 +2217,110 @@ def run_decision_algorithm(
     rotation_scale = _clamp(1.0 + (0.15 * rotation_score), 0.6, 1.3)
     size *= portfolio_div_scale
     size *= rotation_scale
+    cross_market_score = compute_cross_market_confirmation(
+        market_class=context.market_class,
+        fused_features=fused,
+        market_state=market_state,
+    )
+    cross_market_pass = (not engine.cross_market_confirmation_enabled) or (
+        cross_market_score >= engine.cross_market_confirmation_min
+    )
+    signal_age_s = max(0.0, _safe_float(context.signal_age_s, -1.0))
+    if signal_age_s <= 0.0:
+        feature_ts = _safe_float(context.features.get("signal_ts"), 0.0)
+        if feature_ts <= 0.0:
+            feature_ts = _safe_float(context.features.get("feature_ts"), context.now_ts)
+        signal_age_s = max(0.0, _safe_float(context.now_ts, 0.0) - max(0.0, feature_ts))
+    opportunity_decay_score = detect_opportunity_decay(
+        signal_age_s=signal_age_s,
+        latency_ms=context.latency_ms,
+        regime=regime,
+        market_class=context.market_class,
+        max_age_s=engine.opportunity_decay_max_age_s,
+    )
+    if opportunity_decay_score > engine.opportunity_decay_guard_threshold:
+        confidence = _clamp(confidence * (1.0 - min(0.50, opportunity_decay_score * 0.6)), 0.0, 1.0)
+    has_position = context.position_notional_quote > 1e-9
+    market_twin_snapshot: MarketTwinSnapshot | None = None
+    market_twin_best_action = "skip"
+    market_twin_route_pref = ""
+    market_twin_sizing_scale = 1.0
+    market_twin_block_reason = ""
+    market_twin_error = ""
+    market_twin_exit_override = ""
+    try:
+        market_twin_snapshot = engine.market_twin.evaluate(
+            timestamp=context.now_ts,
+            symbol=context.symbol,
+            market_class=context.market_class,
+            regime=regime,
+            market_state=market_state,
+            nowcast=nowcast,
+            fused_features=fused,
+            confidence=confidence,
+            uncertainty_bps=uq.total_bps,
+            liquidity_pressure=liquidity_pressure,
+            projected_edge_bps=signal.score_bps,
+            fee_bps=context.fee_bps,
+            slippage_bps=context.slippage_bps,
+            spread_bps=context.spread_bps,
+            depth_notional=context.depth_notional,
+            latency_risk=latency_risk,
+            signal_age_s=signal_age_s,
+            cadence_s=context.order_cadence_s,
+            has_position=has_position,
+            current_profit_bps=context.current_profit_bps,
+        )
+        best_scenario = market_twin_snapshot.best_scenario()
+        if best_scenario is not None:
+            market_twin_best_action = str(best_scenario.action)
+            if best_scenario.action == "enter_limit":
+                market_twin_route_pref = "maker"
+            elif best_scenario.action == "enter_market":
+                market_twin_route_pref = "taker"
+            if best_scenario.action in {"enter_market", "enter_limit", "scale_in_entry"}:
+                market_twin_sizing_scale = _clamp(best_scenario.fill_probability, 0.35, 1.0)
+            if signal.side == "buy" and best_scenario.action in {"skip", "wait_one_cadence"}:
+                market_twin_sizing_scale = 0.0
+                market_twin_block_reason = "counterfactual_no_edge" if best_scenario.action == "skip" else "counterfactual_wait_preferred"
+            if has_position and best_scenario.action in {"partial_exit", "full_exit"}:
+                market_twin_exit_override = "partial_close" if best_scenario.action == "partial_exit" else "full_close"
+    except Exception as exc:
+        market_twin_error = str(exc)
+        LOGGER.warning("market_twin_evaluation_failed", extra={"symbol": context.symbol, "error": market_twin_error})
+
     alloc = engine.portfolio.allocate_portfolio_capital(
         position_size_quote=size,
         quote_free=context.quote_free,
         max_exposure_notional=context.max_exposure_notional,
         current_exposure_notional=context.signed_exposure_notional_quote,
+    )
+    alloc *= max(0.0, market_twin_sizing_scale)
+
+    world_state_adapter = dict(context.world_state_adapter or {})
+    world_state_available = bool(world_state_adapter.get("world_state_available", True))
+    world_state_graph_available = bool(world_state_adapter.get("graph_available", world_state_available))
+    world_state_safe_to_trade = bool(
+        world_state_adapter.get("safe_to_trade", world_state_available and world_state_graph_available)
+    )
+    world_state_source = str(world_state_adapter.get("source", "none") or "none")
+    world_state_freshness = world_state_adapter.get("freshness_s", {})
+    world_state_freshness_s = (
+        {str(k): max(0.0, _safe_float(v, 0.0)) for k, v in dict(world_state_freshness).items()}
+        if isinstance(world_state_freshness, Mapping)
+        else {}
+    )
+    stale_domains_raw = world_state_adapter.get("stale_domains", [])
+    world_state_stale_domains = (
+        [str(item) for item in stale_domains_raw if str(item)]
+        if isinstance(stale_domains_raw, list)
+        else []
+    )
+    stale_critical_raw = world_state_adapter.get("stale_critical_domains", [])
+    world_state_stale_critical_domains = (
+        [str(item) for item in stale_critical_raw if str(item)]
+        if isinstance(stale_critical_raw, list)
+        else []
     )
 
     risk_validation = engine.risk.validate_risk_constraints(
@@ -2091,6 +2343,24 @@ def run_decision_algorithm(
         latency_threshold=effective_latency_threshold,
         liquidity_threshold=engine.liquidity_pressure_guard_threshold,
     )
+    if (not world_state_available) or (not world_state_graph_available):
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "world_state_unavailable" not in reasons:
+            reasons.append("world_state_unavailable")
+        risk_validation["reasons"] = reasons
+    if world_state_stale_critical_domains:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "world_state_stale" not in reasons:
+            reasons.append("world_state_stale")
+        risk_validation["reasons"] = reasons
+    if not world_state_safe_to_trade:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "world_state_guard" not in reasons:
+            reasons.append("world_state_guard")
+        risk_validation["reasons"] = reasons
     if str(context.market_session or "").lower() in {"xstock_session_closed", "xstock_weekend_closed"}:
         risk_validation["allowed"] = False
         reasons = list(risk_validation.get("reasons", []))
@@ -2122,8 +2392,25 @@ def run_decision_algorithm(
         if "execution_risk" not in reasons:
             reasons.append("execution_risk")
         risk_validation["reasons"] = reasons
+    if opportunity_decay_score > engine.opportunity_decay_guard_threshold:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "opportunity_decay" not in reasons:
+            reasons.append("opportunity_decay")
+        risk_validation["reasons"] = reasons
+    if signal.side == "buy" and not cross_market_pass:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if "cross_market_filter" not in reasons:
+            reasons.append("cross_market_filter")
+        risk_validation["reasons"] = reasons
+    if market_twin_block_reason:
+        risk_validation["allowed"] = False
+        reasons = list(risk_validation.get("reasons", []))
+        if market_twin_block_reason not in reasons:
+            reasons.append(market_twin_block_reason)
+        risk_validation["reasons"] = reasons
 
-    has_position = context.position_notional_quote > 1e-9
     entry_action = engine.trade_decision.decide_trade_entry(
         trade_signal=signal,
         has_open_position=has_position,
@@ -2134,8 +2421,11 @@ def run_decision_algorithm(
         has_open_position=has_position,
         current_profit_bps=context.current_profit_bps,
     )
+    if has_position and exit_action == "hold" and market_twin_exit_override in {"partial_close", "full_close"}:
+        exit_action = market_twin_exit_override
+    sell_floor_bps = _hard_sell_floor_bps()
     effective_target_bps = engine.dynamic_tp.expand(
-        max(120.0, context.sell_target_profit_bps),
+        max(sell_floor_bps, context.sell_target_profit_bps),
         confidence,
         regime,
     )
@@ -2158,8 +2448,8 @@ def run_decision_algorithm(
         bid=context.bid,
         avg_entry_price=context.avg_entry_price,
         modeled_cost_bps=max(cost["modeled_floor_bps"], context.modeled_cost_floor_bps),
-        min_net_profit_bps=max(120.0, context.sell_min_profit_bps),
-        target_net_profit_bps=max(120.0, effective_target_bps),
+        min_net_profit_bps=max(sell_floor_bps, context.sell_min_profit_bps),
+        target_net_profit_bps=max(sell_floor_bps, effective_target_bps),
         hold_time_s=context.position_age_s,
     )
     if (
@@ -2167,7 +2457,7 @@ def run_decision_algorithm(
         and managed_action in {"full_close", "partial_close", "reduce"}
         and smart_hold_extend
         and context.position_age_s < adaptive_hold_s
-        and context.current_profit_bps >= max(120.0, 0.6 * effective_target_bps)
+        and context.current_profit_bps >= max(sell_floor_bps, 0.6 * effective_target_bps)
     ):
         managed_action = "hold"
         hold_diag = {
@@ -2203,6 +2493,12 @@ def run_decision_algorithm(
         execution_urgency=_safe_float(nowcast.get("execution_urgency"), 0.0),
         spread_bps=context.spread_bps,
     )
+    if action in {"open", "add"} and market_twin_route_pref == "maker":
+        route["order_type"] = "maker"
+        route["taker_allowed"] = False
+    elif action in {"open", "add"} and market_twin_route_pref == "taker":
+        route["order_type"] = "taker"
+        route["taker_allowed"] = True
     allow_exec, exec_reason = engine.execution.execute_order_safely(
         action=action,
         side=side,
@@ -2238,6 +2534,77 @@ def run_decision_algorithm(
             fused_features=fused,
             realized_return_bps=ret_dist.mean_bps,
             adaptation=online_adaptation,
+        )
+    if market_twin_snapshot is not None:
+        engine.model_state = persist_market_twin_snapshot(
+            model_state=engine.model_state,
+            snapshot=market_twin_snapshot,
+            max_snapshots=engine.market_twin.max_snapshots,
+        )
+
+    diagnostics_payload: dict[str, Any] = {
+        "signal": signal.reason,
+        "entry_action": entry_action,
+        "exit_action": exit_action,
+        "managed_action": managed_action,
+        "feature_cache_hit": 1.0 if feature_cache_hit else 0.0,
+        "signal_cache_hit": 1.0 if signal_cache_hit else 0.0,
+        "feature_cache_stats": engine.feature_cache.stats().to_dict(),
+        "signal_cache_stats": engine.signal_cache.stats().to_dict(),
+        "slippage_ok": slippage_ok,
+        "signal_decay_score": decay_score,
+        "signal_decay_guard_threshold": engine.signal_decay_guard_threshold,
+        "execution_quality_guard_threshold": engine.execution_quality_guard_threshold,
+        "liquidity_threshold": engine.liquidity_pressure_guard_threshold,
+        "adaptive_hold_s": adaptive_hold_s,
+        "smart_hold_extend": 1.0 if smart_hold_extend else 0.0,
+        "market_class": str(context.market_class),
+        "market_session": str(context.market_session),
+        "market_class_modifiers": dict(market_mod),
+        "portfolio_diversification_scale": portfolio_div_scale,
+        "capital_rotation_score": rotation_score,
+        "capital_rotation_scale": rotation_scale,
+        "regime_size_multiplier": regime_size_multiplier,
+        "cross_market_confirmation_score": cross_market_score,
+        "cross_market_confirmation_enabled": 1.0 if engine.cross_market_confirmation_enabled else 0.0,
+        "cross_market_confirmation_min": engine.cross_market_confirmation_min,
+        "cross_market_confirmation_pass": 1.0 if cross_market_pass else 0.0,
+        "signal_age_s": signal_age_s,
+        "opportunity_decay_score": opportunity_decay_score,
+        "opportunity_decay_guard_threshold": engine.opportunity_decay_guard_threshold,
+        "forecast_backend": engine.forecast_backend_adapter.backend_name,
+        "forecast_backend_mean_adjust_bps": backend_adjustment.mean_adjust_bps,
+        "forecast_backend_std_scale": backend_adjustment.std_scale,
+        "forecast_backend_confidence_scale": backend_adjustment.confidence_scale,
+        "forecast_backend_diagnostics": backend_adjustment.diagnostics,
+        "drift_top_features": drift_report.get("top_features", []),
+        "self_optimization": self_optimization,
+        "market_twin_best_action": market_twin_best_action,
+        "market_twin_route_preference": market_twin_route_pref,
+        "market_twin_sizing_scale": market_twin_sizing_scale,
+        "market_twin_block_reason": market_twin_block_reason,
+        "market_twin_error": market_twin_error,
+        "adaptive_thresholds": {
+            "confidence_threshold": effective_conf_threshold,
+            "uncertainty_threshold_bps": effective_uncertainty_threshold_bps,
+            "market_class_confidence_floor": class_conf_floor if class_conf_floor is not None else None,
+            "market_class_uncertainty_cap_bps": class_uncertainty_cap if class_uncertainty_cap is not None else None,
+            "max_slippage_bps": effective_max_slippage_bps,
+            "latency_risk_threshold": effective_latency_threshold,
+            "liquidity_pressure_guard_threshold": engine.liquidity_pressure_guard_threshold,
+        },
+        "world_state_source": world_state_source,
+        "world_state_available": 1.0 if world_state_available else 0.0,
+        "world_state_graph_available": 1.0 if world_state_graph_available else 0.0,
+        "world_state_safe_to_trade": 1.0 if world_state_safe_to_trade else 0.0,
+        "world_state_freshness_s": world_state_freshness_s,
+        "world_state_stale_domains": world_state_stale_domains,
+        "world_state_stale_critical_domains": world_state_stale_critical_domains,
+    }
+    if market_twin_snapshot is not None:
+        diagnostics_payload = attach_market_twin_diagnostics(
+            diagnostics=diagnostics_payload,
+            snapshot=market_twin_snapshot,
         )
 
     return DecisionOutcome(
@@ -2282,39 +2649,7 @@ def run_decision_algorithm(
         },
         profit_protection=profit_protection,
         online_adaptation=online_adaptation,
-        diagnostics={
-            "signal": signal.reason,
-            "entry_action": entry_action,
-            "exit_action": exit_action,
-            "managed_action": managed_action,
-            "slippage_ok": slippage_ok,
-            "signal_decay_score": decay_score,
-            "signal_decay_guard_threshold": engine.signal_decay_guard_threshold,
-            "execution_quality_guard_threshold": engine.execution_quality_guard_threshold,
-            "liquidity_threshold": engine.liquidity_pressure_guard_threshold,
-            "adaptive_hold_s": adaptive_hold_s,
-            "smart_hold_extend": 1.0 if smart_hold_extend else 0.0,
-            "market_class": str(context.market_class),
-            "market_session": str(context.market_session),
-            "market_class_modifiers": dict(market_mod),
-            "portfolio_diversification_scale": portfolio_div_scale,
-            "capital_rotation_score": rotation_score,
-            "capital_rotation_scale": rotation_scale,
-            "forecast_backend": engine.forecast_backend_adapter.backend_name,
-            "forecast_backend_mean_adjust_bps": backend_adjustment.mean_adjust_bps,
-            "forecast_backend_std_scale": backend_adjustment.std_scale,
-            "forecast_backend_confidence_scale": backend_adjustment.confidence_scale,
-            "forecast_backend_diagnostics": backend_adjustment.diagnostics,
-            "drift_top_features": drift_report.get("top_features", []),
-            "self_optimization": self_optimization,
-            "adaptive_thresholds": {
-                "confidence_threshold": effective_conf_threshold,
-                "uncertainty_threshold_bps": effective_uncertainty_threshold_bps,
-                "max_slippage_bps": effective_max_slippage_bps,
-                "latency_risk_threshold": effective_latency_threshold,
-                "liquidity_pressure_guard_threshold": engine.liquidity_pressure_guard_threshold,
-            },
-        },
+        diagnostics=diagnostics_payload,
     )
 
 
@@ -2353,6 +2688,18 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self_optimization_window: int = 120,
         self_optimization_min_samples: int = 24,
         self_optimization_apply_every: int = 12,
+        feature_cache_ttl_s: float = 2.0,
+        signal_cache_ttl_s: float = 1.0,
+        market_class_confidence_thresholds: Mapping[str, float] | None = None,
+        market_class_uncertainty_threshold_bps: Mapping[str, float] | None = None,
+        regime_size_multipliers: Mapping[str, float] | None = None,
+        opportunity_decay_max_age_s: float = 45.0,
+        opportunity_decay_guard_threshold: float = 0.65,
+        cross_market_confirmation_enabled: bool = True,
+        cross_market_confirmation_min: float = -0.35,
+        counterfactual_min_edge_bps: float = 1.0,
+        market_twin_include_advanced_scenarios: bool = True,
+        market_twin_max_snapshots: int = 256,
     ) -> None:
         self.base_risk_budget_quote = max(0.0, _safe_float(base_risk_budget_quote, 25.0))
         self.confidence_threshold = _clamp(confidence_threshold, 0.0, 1.0)
@@ -2380,6 +2727,42 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.self_optimization_window = max(20, int(self_optimization_window))
         self.self_optimization_min_samples = max(10, int(self_optimization_min_samples))
         self.self_optimization_apply_every = max(1, int(self_optimization_apply_every))
+        self.feature_cache_ttl_s = max(
+            0.05,
+            _safe_float(
+                os.getenv("AUTONOMOUS_FEATURE_CACHE_TTL_S", str(feature_cache_ttl_s) or "2.0"),
+                feature_cache_ttl_s,
+            ),
+        )
+        self.signal_cache_ttl_s = max(
+            0.05,
+            _safe_float(
+                os.getenv("AUTONOMOUS_SIGNAL_CACHE_TTL_S", str(signal_cache_ttl_s) or "1.0"),
+                signal_cache_ttl_s,
+            ),
+        )
+        self.market_class_confidence_thresholds = {
+            _normalize_market_class(str(k)): _clamp(_safe_float(v, 0.0), 0.0, 0.95)
+            for k, v in dict(market_class_confidence_thresholds or {}).items()
+            if str(k).strip()
+        }
+        self.market_class_uncertainty_threshold_bps = {
+            _normalize_market_class(str(k)): max(20.0, _safe_float(v, 0.0))
+            for k, v in dict(market_class_uncertainty_threshold_bps or {}).items()
+            if str(k).strip()
+        }
+        self.regime_size_multipliers = {
+            str(k).strip().upper(): _clamp(_safe_float(v, 1.0), 0.25, 1.75)
+            for k, v in dict(regime_size_multipliers or {}).items()
+            if str(k).strip()
+        }
+        self.opportunity_decay_max_age_s = max(5.0, _safe_float(opportunity_decay_max_age_s, 45.0))
+        self.opportunity_decay_guard_threshold = _clamp(opportunity_decay_guard_threshold, 0.1, 1.0)
+        self.cross_market_confirmation_enabled = bool(cross_market_confirmation_enabled)
+        self.cross_market_confirmation_min = _clamp(cross_market_confirmation_min, -1.0, 1.0)
+        self.counterfactual_min_edge_bps = max(0.0, _safe_float(counterfactual_min_edge_bps, 1.0))
+        self.market_twin_include_advanced_scenarios = bool(market_twin_include_advanced_scenarios)
+        self.market_twin_max_snapshots = max(32, int(market_twin_max_snapshots))
 
         self.signal = SignalEngine()
         self.forecasting = ProbabilisticMarketForecastingEngine()
@@ -2407,6 +2790,8 @@ class AutonomousMarketPredictionAndDecisionEngine:
             min_samples=self.self_optimization_min_samples,
             apply_every=self.self_optimization_apply_every,
         )
+        self.feature_cache = FeatureCache(ttl_s=self.feature_cache_ttl_s, max_items=4096)
+        self.signal_cache = SignalCache(ttl_s=self.signal_cache_ttl_s, max_items=8192)
         self.risk_inference = RiskCalibratedMarketInferenceEngine()
 
         self.smart_hold = SmartHoldExtension()
@@ -2421,6 +2806,11 @@ class AutonomousMarketPredictionAndDecisionEngine:
         self.capital_rotation = DynamicCapitalRotationEngine()
         self.signal_decay = SignalDecayDetector()
         self.liquidity_heatmap = LiquidityHeatmap()
+        self.market_twin = CausalMarketTwinEngine(
+            min_counterfactual_edge_bps=self.counterfactual_min_edge_bps,
+            include_advanced_scenarios=self.market_twin_include_advanced_scenarios,
+            max_snapshots=self.market_twin_max_snapshots,
+        )
 
         self.forecast_backend_registry = ForecastBackendRegistry()
         self.forecast_backend_adapter: ForecastBackendAdapter = self.forecast_backend_registry.resolve(

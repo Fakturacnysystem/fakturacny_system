@@ -54,3 +54,82 @@ def test_mastermind_entry_budget_blocks_excess_entries() -> None:
     out = m.choose(base_intent=_intent(), now_ts=1010.0, mode="aggressive_hf")
     assert out.allowed is False
     assert out.reason == "mastermind_entry_budget"
+
+
+def test_mastermind_choose_propagates_mission_bridge_advisory() -> None:
+    m = MastermindPolicy(MastermindConfig(enabled=True, max_entry_orders_per_min=6))
+    intent = _intent()
+    intent.why["mission_bridge"] = {
+        "mission": "observation_only",
+        "reason_codes": ["observe_only_guard", "risk_off_posture"],
+        "no_trade_preferred": True,
+        "allow_new_risk": False,
+    }
+    out = m.choose(base_intent=intent, now_ts=1000.0, mode="aggressive_hf")
+    assert out.allowed is True
+    assert out.intent is not None
+    mastermind_payload = out.intent.why.get("mastermind", {})
+    assert mastermind_payload.get("mission_advisory", {}).get("mission") == "observation_only"
+    assert mastermind_payload.get("mission_advisory", {}).get("reason_codes") == [
+        "observe_only_guard",
+        "risk_off_posture",
+    ]
+    assert mastermind_payload.get("mission_advisory", {}).get("no_trade_preferred") is True
+    assert mastermind_payload.get("mission_advisory", {}).get("allow_new_risk") is False
+
+
+def test_mastermind_blocks_entry_side_flip_by_default() -> None:
+    m = MastermindPolicy(MastermindConfig(enabled=True, max_entry_orders_per_min=6))
+    intent = OrderIntent(
+        symbol="SOLEUR",
+        side="buy",
+        target_notional=2.0,
+        why={
+            "components": [
+                {
+                    "strategy": "pairs_stat_arb",
+                    "signal_side": "sell",
+                    "signal_notional": 10.0,
+                    "final_edge_bps": 50.0,
+                    "confidence": 0.9,
+                    "cost_total_bps": 1.0,
+                }
+            ]
+        },
+    )
+    out = m.choose(base_intent=intent, now_ts=1000.0, mode="aggressive_hf")
+    assert out.allowed is True
+    assert out.intent is not None
+    assert out.intent.side == "buy"
+    assert out.intent.target_notional == 2.0
+    mastermind_payload = out.intent.why.get("mastermind", {})
+    assert mastermind_payload.get("entry_side_flip_blocked") is True
+    assert mastermind_payload.get("entry_side_flip_original_signal_side") == "sell"
+
+
+def test_mastermind_allows_entry_side_flip_when_enabled() -> None:
+    m = MastermindPolicy(
+        MastermindConfig(enabled=True, max_entry_orders_per_min=6, allow_entry_side_flip=True)
+    )
+    intent = OrderIntent(
+        symbol="SOLEUR",
+        side="buy",
+        target_notional=2.0,
+        why={
+            "components": [
+                {
+                    "strategy": "pairs_stat_arb",
+                    "signal_side": "sell",
+                    "signal_notional": 10.0,
+                    "final_edge_bps": 50.0,
+                    "confidence": 0.9,
+                    "cost_total_bps": 1.0,
+                }
+            ]
+        },
+    )
+    out = m.choose(base_intent=intent, now_ts=1000.0, mode="aggressive_hf")
+    assert out.allowed is True
+    assert out.intent is not None
+    assert out.intent.side == "sell"
+    assert out.intent.target_notional == 10.0

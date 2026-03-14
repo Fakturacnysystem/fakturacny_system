@@ -116,3 +116,31 @@ def test_apply_writes_env_and_suggestions_without_openai_key(monkeypatch, tmp_pa
     assert payload["universe"] == ["XBTUSD", "ETHUSD"]
     assert payload["config_patch"]["suggested_changes"]["risk"]["max_orders_per_min"] == 12
     assert "rate_limit_disable" not in payload["config_patch"]["suggested_changes"]["risk"]
+
+
+def test_apply_works_with_groq_key_only(monkeypatch, tmp_path):
+    module = _load_module()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "audit.log").write_text("", encoding="utf-8")
+    (run_dir / "event_bus.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "dashboard_snapshot.json").write_text(json.dumps({"groups": {}}), encoding="utf-8")
+    (run_dir / "symbols_trade_candidates.txt").write_text("XBTUSD\n", encoding="utf-8")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test-123")
+
+    def _fake_call_openai_with_schema(*, model: str, prompt_payload: dict):
+        assert model
+        return {
+            "overrides": {"AUTONOMOUS_MAX_ORDERS_PER_MIN": "11"},
+            "universe": ["XBTUSD"],
+            "config_patch": {"yaml_path": "config.kraken_spot.live_profit.yaml", "suggested_changes": {}},
+            "rationale": {"why": "ok", "evidence": {}, "risks": []},
+        }
+
+    monkeypatch.setattr(module, "call_openai_with_schema", _fake_call_openai_with_schema)
+    rc = module.main(["--run-dir", str(run_dir), "--apply"])
+    assert rc == 0
+    env_raw = (run_dir / "env_overrides.sh").read_text(encoding="utf-8")
+    assert "AUTONOMOUS_MAX_ORDERS_PER_MIN=11" in env_raw

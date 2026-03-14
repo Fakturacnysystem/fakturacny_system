@@ -1,7 +1,12 @@
 {
   "mode": "live",
-  "provider_whitelist": ["kraken_spot"],
-  "universe": ["XBTUSD", "ETHUSD"],
+  "provider_whitelist": [
+    "kraken_spot"
+  ],
+  "universe": [
+    "XBTUSD",
+    "ETHUSD"
+  ],
   "execution": {
     "mode": "live_readonly",
     "fee_bps": 16.0,
@@ -44,8 +49,23 @@
     "divergence_threshold_bps": 30.0,
     "crowding_score_kill": 30.0
   },
-  "tco": {"max_total_cost_bps": 40.0, "max_impact_bps": 20.0},
-  "policy": {"confidence_threshold": 0.60, "safety_buffer_bps": 2.0, "base_risk_budget": 500.0},
-  "storage": {"run_dir": "runs/kraken_spot_live_readonly"},
-  "fixtures": {"ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv"}
+  "tco": {
+    "max_total_cost_bps": 40.0,
+    "max_impact_bps": 20.0
+  },
+  "policy": {
+    "confidence_threshold": 0.6,
+    "safety_buffer_bps": 2.0,
+    "base_risk_budget": 500.0
+  },
+  "storage": {
+    "run_dir": "runs/kraken_spot_live_readonly"
+  },
+  "fixtures": {
+    "ohlcv_csv": "data/fixtures/perps/btcusdt_perp_5m.csv",
+    "symbol_files": {
+      "XBTUSD": "data/fixtures/kraken_spot_validation/xbtusd_1h.csv",
+      "ETHUSD": "data/fixtures/kraken_spot_validation/ethusd_1h.csv"
+    }
+  }
 }

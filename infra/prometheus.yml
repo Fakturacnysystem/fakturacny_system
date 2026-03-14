@@ -6,3 +6,7 @@ scrape_configs:
   - job_name: autobot
     static_configs:
       - targets: ["host.docker.internal:9108"]
+  - job_name: universe_gateway
+    metrics_path: /internal/metrics
+    static_configs:
+      - targets: ["gateway-api:8081"]

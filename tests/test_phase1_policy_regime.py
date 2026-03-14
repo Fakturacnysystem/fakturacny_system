@@ -191,12 +191,43 @@ def test_dynamic_edge_floor_blocks_weak_net_edge(monkeypatch):
 
 def test_max_order_notional_quote_caps_target(monkeypatch):
     monkeypatch.setenv("AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE", "7.5")
+    monkeypatch.setenv("AUTONOMOUS_STRATEGY_PROPOSAL_ADAPTER_ENABLED", "1")
     policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
     fc = _forecast()
     intent = policy.make_intent(fc, {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
     assert intent is not None
     assert intent.target_notional == 7.5
     assert intent.why.get("max_order_notional_quote_cap") == 7.5
+    proposals = intent.why.get("strategy_proposals", [])
+    assert isinstance(proposals, list)
+    assert proposals
+    assert proposals[0]["target_notional_quote"] <= 7.5
+    assert proposals[0]["source"] == "legacy_policy_adapter"
+
+
+def test_policy_strategy_proposal_serialization_is_deterministic(monkeypatch):
+    monkeypatch.setenv("AUTONOMOUS_STRATEGY_PROPOSAL_ADAPTER_ENABLED", "1")
+    policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    fc = _forecast()
+    features = {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}
+    intent_a = policy.make_intent(fc, features, fee_bps=1.0, slippage_bps=0.1)
+    intent_b = policy.make_intent(fc, features, fee_bps=1.0, slippage_bps=0.1)
+    assert intent_a is not None
+    assert intent_b is not None
+    proposals_a = intent_a.why.get("strategy_proposals", [])
+    proposals_b = intent_b.why.get("strategy_proposals", [])
+    assert proposals_a == proposals_b
+    assert intent_a.why.get("strategy_proposals_contract_version") == "v1"
+    assert proposals_a[0]["strategy"] == "unit"
+    assert sum(float(row["target_notional_quote"]) for row in proposals_a) <= intent_a.target_notional + 1e-9
+
+
+def test_policy_strategy_proposal_adapter_is_default_off_for_replay_stability():
+    policy = _policy(TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0))
+    fc = _forecast()
+    intent = policy.make_intent(fc, {"depth_notional": 10_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0}, fee_bps=1.0, slippage_bps=0.1)
+    assert intent is not None
+    assert "strategy_proposals" not in intent.why
 
 
 def test_max_order_cap_below_min_floor_skips_intent(monkeypatch):

@@ -4,13 +4,71 @@
   "ack_i_understand_risks": true,
   "canary_mode": true,
   "safe_mode_default": false,
-  "provider_whitelist": ["kraken_spot"],
-  "universe": ["XBTEUR", "ETHEUR"],
-  "execution": {"mode": "live", "fee_bps": 1.0, "slippage_bps": 0.5, "maker_preference": false, "maker_timeout_s": 6, "kraken_spot": {"allow_unknown_permissions": true, "dry_run_long_only": false}},
-  "policy": {"confidence_threshold": 0.0, "safety_buffer_bps": -40.0, "base_risk_budget": 20.0},
-  "risk": {"max_daily_loss_pct": 1.5, "max_weekly_loss_pct": 5.0, "max_drawdown_pct": 6.0, "max_position_notional": 40.0, "max_exposure_notional": 120.0, "max_symbol_exposure_notional": 40.0, "max_cluster_exposure_notional": 120.0, "max_orders_per_min": 30, "leverage": 0, "target_portfolio_vol": 0.12, "cvar_limit_pct": 20.0, "stress_loss_limit_pct": 3.0, "max_spread_bps": 35.0, "min_depth_notional": 0.0, "stale_data_seconds": 30.0, "min_margin_buffer": 1.0, "max_funding_cost_per_day": 5.0, "max_oi_spike_pct": 200.0, "max_liquidation_spike": 10000000.0, "divergence_threshold_bps": 30.0, "crowding_score_kill": 40.0},
-  "tco": {"max_total_cost_bps": 140.0, "max_impact_bps": 60.0},
-  "storage": {"run_dir": "runs/kraken_spot_live"},
-  "fixtures": {"ohlcv_csv": "data/fixtures/btcusdt_1h.csv"},
-  "universe_builder": {"top_n_target": 5000, "candidate_max": 5000, "trade_max_positions": 5000, "min_24h_quote_volume": 0.0, "max_spread_bps": 10000.0}
+  "provider_whitelist": [
+    "kraken_spot"
+  ],
+  "universe": [
+    "XBTEUR",
+    "ETHEUR"
+  ],
+  "execution": {
+    "mode": "live",
+    "fee_bps": 1.0,
+    "slippage_bps": 0.5,
+    "maker_preference": false,
+    "maker_timeout_s": 6,
+    "kraken_spot": {
+      "allow_unknown_permissions": true,
+      "dry_run_long_only": false
+    }
+  },
+  "policy": {
+    "confidence_threshold": 0.0,
+    "safety_buffer_bps": -40.0,
+    "base_risk_budget": 20.0
+  },
+  "risk": {
+    "max_daily_loss_pct": 1.5,
+    "max_weekly_loss_pct": 5.0,
+    "max_drawdown_pct": 6.0,
+    "max_position_notional": 40.0,
+    "max_exposure_notional": 120.0,
+    "max_symbol_exposure_notional": 40.0,
+    "max_cluster_exposure_notional": 120.0,
+    "max_orders_per_min": 30,
+    "leverage": 0,
+    "target_portfolio_vol": 0.12,
+    "cvar_limit_pct": 20.0,
+    "stress_loss_limit_pct": 3.0,
+    "max_spread_bps": 35.0,
+    "min_depth_notional": 0.0,
+    "stale_data_seconds": 30.0,
+    "min_margin_buffer": 1.0,
+    "max_funding_cost_per_day": 5.0,
+    "max_oi_spike_pct": 200.0,
+    "max_liquidation_spike": 10000000.0,
+    "divergence_threshold_bps": 30.0,
+    "crowding_score_kill": 40.0
+  },
+  "tco": {
+    "max_total_cost_bps": 140.0,
+    "max_impact_bps": 60.0
+  },
+  "storage": {
+    "run_dir": "runs/kraken_spot_live"
+  },
+  "fixtures": {
+    "ohlcv_csv": "data/fixtures/btcusdt_1h.csv",
+    "symbol_files": {
+      "XBTEUR": "data/fixtures/kraken_spot_validation/xbteur_1h.csv",
+      "ETHEUR": "data/fixtures/kraken_spot_validation/etheur_1h.csv"
+    }
+  },
+  "universe_builder": {
+    "top_n_target": 5000,
+    "candidate_max": 5000,
+    "trade_max_positions": 5000,
+    "min_24h_quote_volume": 0.0,
+    "max_spread_bps": 10000.0
+  }
 }

@@ -1,0 +1,192 @@
+{
+  "artifact_paths": {
+    "audit_log": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/audit.log",
+    "dashboard_snapshot": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/dashboard_snapshot.json",
+    "event_bus": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/event_bus.jsonl",
+    "event_bus_fallback": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/universe_events/event_bus.jsonl",
+    "fills_events": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/events_fills.jsonl",
+    "governance_audit": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/governance_audit.jsonl",
+    "harmony_report": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/harmony_report.json",
+    "llm_diagnostics": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/llm_self_improvement_diagnostics.json",
+    "market_discovery": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/market_discovery.json",
+    "mastermind_status": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/mastermind_status.json",
+    "orders_events": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/events_orders.jsonl",
+    "universe_diagnostics": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/universe_diagnostics.json"
+  },
+  "blockers": {},
+  "dashboard_metrics": {
+    "efficiency.cost_to_alpha_ratio": 0.0,
+    "efficiency.tco_total_bps_rt": 0.0,
+    "execution.fill_rate": 1.0,
+    "execution.intents_total": 0.0,
+    "execution.orders_rejected_total": 6.0,
+    "execution.orders_submitted_total": 5.0,
+    "execution.reject_rate": 0.5454545454545454
+  },
+  "event_bus_topics": {
+    "all_topics": {
+      "decision": 652,
+      "execution": 2608,
+      "portfolio": 131,
+      "risk": 261
+    },
+    "decision": 652,
+    "execution": 2608,
+    "market_data": 0,
+    "portfolio": 131,
+    "risk": 261,
+    "signal": 0,
+    "source_diagnostics": {
+      "paths_used": [
+        "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/universe_events/event_bus.jsonl"
+      ],
+      "sources": {
+        "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday/universe_events/event_bus.jsonl": {
+          "lines_considered": 3000,
+          "lines_seen": 21827,
+          "normalized_topics": {
+            "decision": 652,
+            "execution": 2608,
+            "portfolio": 131,
+            "risk": 261
+          },
+          "parsed_rows": 3000,
+          "raw_topics": {
+            "universe": 3000
+          },
+          "truncated_to_line_limit": true
+        }
+      }
+    }
+  },
+  "event_window": {
+    "loaded": 3000,
+    "requested": 3000,
+    "top_event_types": {
+      "distributed_runtime_boot": 1000,
+      "harmony_boot_report": 1000,
+      "self_improvement_boot": 1000
+    },
+    "top_reasons": {}
+  },
+  "execution_presence": {
+    "execution_topic_present": true,
+    "live_exec_counts": {
+      "blocked": 0,
+      "killed": 0,
+      "rejected": 0,
+      "submitted": 1500
+    }
+  },
+  "hard_invariants": {
+    "ok": true,
+    "profit_lock_guard_hits": {
+      "profit_lock_sell_below_entry": 0,
+      "profit_lock_sell_below_min_profit": 0
+    },
+    "profit_lock_sell_below_entry": 0,
+    "profit_lock_sell_below_min_profit": 0
+  },
+  "harmony": {
+    "effective_min_order_quote": 2.0,
+    "guards_mode": "strict",
+    "hard_sell_floor_bps": 30.0,
+    "order_cadence_s": 60.0,
+    "sell_min_profit_bps": 30.0,
+    "sell_min_profit_ok": true,
+    "sell_target_profit_bps": 200.0
+  },
+  "mastermind": {
+    "conflicts": [],
+    "exists": true,
+    "guardrails": {
+      "hard_floor_bps": 30.0,
+      "sell_min_profit_bps": 30.0
+    },
+    "health": {
+      "component": "preflight",
+      "status": "OK"
+    },
+    "overrides": {}
+  },
+  "optimization_recommendation": {
+    "parameter": "",
+    "safe_range": "",
+    "why": ""
+  },
+  "order_evidence_consistency": {
+    "blocked_delta_abs": 0,
+    "killed_delta_abs": 0,
+    "rejected_delta_abs": 0,
+    "submitted_delta_abs": 1500
+  },
+  "order_stats": {
+    "blocked_orders": 0,
+    "buy_submitted": 900,
+    "killed_orders": 0,
+    "rejected_orders": 0,
+    "sell_submitted": 600,
+    "submitted_orders": 1500
+  },
+  "order_stats_source": "events_files",
+  "order_stats_sources": {
+    "audit_log": {
+      "blocked_orders": 0,
+      "buy_submitted": 0,
+      "killed_orders": 0,
+      "rejected_orders": 0,
+      "sell_submitted": 0,
+      "submitted_orders": 0
+    },
+    "events_files": {
+      "blocked_orders": 0,
+      "buy_submitted": 900,
+      "fills_observed": 3000,
+      "killed_orders": 0,
+      "orders_rows_observed": 3000,
+      "rejected_orders": 0,
+      "sell_submitted": 600,
+      "submitted_orders": 1500
+    }
+  },
+  "provider_diagnostics": {
+    "exists": true,
+    "llm_augment_enabled": false,
+    "llm_enabled": false,
+    "model": "openai/gpt-oss-120b",
+    "model_effective": "openai/gpt-oss-120b",
+    "model_fallback": "",
+    "provider": "groq",
+    "provider_health": {
+      "api_key_env": "GROQ_API_KEY",
+      "base_url": "https://api.groq.com/openai/v1",
+      "classification": "disabled",
+      "enabled": false,
+      "key_present": false,
+      "model": "openai/gpt-oss-120b",
+      "model_fallback": "",
+      "ok": false,
+      "provider": "groq",
+      "reason": "llm_disabled_or_missing_key",
+      "remote_checked": false
+    }
+  },
+  "rollback_dry_run": {
+    "artifact_id": "84926e2e84a1c7a1bf85bb5a6314a2eeaf06bd193beaf5be3b3c484338f0864b",
+    "reason_codes": [],
+    "validated": true
+  },
+  "run_dir": "/Users/martinholik/Projects/fakturacny_system/runs/perps_intraday",
+  "system_state": "OK",
+  "xstocks": {
+    "detected_etf_symbols": [],
+    "detected_market_class_counts": {},
+    "detected_symbols": [],
+    "discovery_exists": false,
+    "discovery_market_class_counts": {},
+    "eligible_market_class_counts": {},
+    "filter_reasons": {},
+    "mixed_universe_mode": null,
+    "universe_diag_exists": false
+  }
+}

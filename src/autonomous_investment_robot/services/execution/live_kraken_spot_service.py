@@ -385,13 +385,16 @@ class LiveKrakenSpotService:
         self._taker_fallback_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK", True)
         self._taker_fallback_buy_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK_BUY", self._taker_fallback_enabled)
         self._taker_fallback_sell_enabled = _env_bool("AUTONOMOUS_KRAKEN_TAKER_FALLBACK_SELL", self._taker_fallback_enabled)
-        self._profit_target_net = max(0.0, _env_float("AUTONOMOUS_PROFIT_TARGET_NET", 0.02))
+        self._profit_target_net = max(0.0, _env_float("AUTONOMOUS_PROFIT_TARGET_NET", 0.003))
         self._tp_only_mode = _env_bool("AUTONOMOUS_TP_ONLY_MODE", False)
         self._tp_ladder_cfg = TPLadderConfig.from_env()
         # Enforce a configurable hard net-profit floor and round-trip break-even floor from costs.
         hard_floor_bps = max(
             0.0,
-            _env_float("AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", 90.0),
+            _env_float(
+                "AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS",
+                _env_float("AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", 30.0),
+            ),
         )
         self._sell_profit_lock_floor_bps = max(
             hard_floor_bps,
@@ -519,17 +522,38 @@ class LiveKrakenSpotService:
             0.0,
             min(1.0, _env_float("AUTONOMOUS_MICROSTRUCTURE_IMBALANCE_THRESHOLD", 0.10)),
         )
+        self._microstructure_require_depth = _env_bool("AUTONOMOUS_MICROSTRUCTURE_REQUIRE_DEPTH", False)
         self._fee_aware_sizing_enabled = _env_bool("AUTONOMOUS_FEE_AWARE_SIZING", True)
         self._fee_aware_edge_buffer_bps = max(0.0, _env_float("AUTONOMOUS_FEE_AWARE_EDGE_BUFFER_BPS", 15.0))
+        self._fee_aware_require_sell_floor_for_entry = _env_bool(
+            "AUTONOMOUS_FEE_AWARE_REQUIRE_SELL_FLOOR_FOR_ENTRY",
+            True,
+        )
+        self._fee_aware_entry_min_edge_bps = max(
+            0.0,
+            _env_float("AUTONOMOUS_FEE_AWARE_ENTRY_MIN_EDGE_BPS", 0.0),
+        )
         self._no_trade_zone_enabled = _env_bool("AUTONOMOUS_NO_TRADE_ZONE_ENABLED", True)
         self._no_trade_zone_spread_bps = max(
             0.0,
             _env_float_profile("AUTONOMOUS_NO_TRADE_ZONE_SPREAD_BPS", _env_float_profile("AUTONOMOUS_SPREAD_HIGH_BPS", 25.0)),
         )
         self._no_trade_zone_min_top_qty = max(0.0, _env_float("AUTONOMOUS_NO_TRADE_ZONE_MIN_TOP_QTY", 0.01))
+        self._no_trade_zone_require_depth = _env_bool("AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH", False)
         self._book_min_depth_quote = max(0.0, _env_float_profile("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE", 200.0))
+        self._book_min_depth_quote_btc = max(0.0, _env_float_profile("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE_BTC", 0.02))
+        self._book_min_depth_quote_eth = max(0.0, _env_float_profile("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE_ETH", 0.25))
+        self._book_min_depth_quote_other_crypto = max(
+            0.0,
+            _env_float_profile("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE_OTHER_CRYPTO", 5.0),
+        )
+        self._book_min_depth_quote_xstock = max(
+            0.0,
+            _env_float_profile("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE_XSTOCK", self._book_min_depth_quote),
+        )
         self._expected_fill_prob_gate_enabled = _env_bool("AUTONOMOUS_EXPECTED_FILL_PROB_GATE", True)
         self._expected_fill_prob_min = max(0.01, min(1.0, _env_float("AUTONOMOUS_EXPECTED_FILL_PROB_MIN", 0.15)))
+        self._expected_fill_require_depth = _env_bool("AUTONOMOUS_EXPECTED_FILL_REQUIRE_DEPTH", False)
         self._endpoint_rate_limit_budget = max(1, int(os.getenv("AUTONOMOUS_ENDPOINT_RATE_LIMIT_BUDGET", "5") or "5"))
         self._endpoint_rate_limit_window_s = max(10.0, _env_float("AUTONOMOUS_ENDPOINT_RATE_LIMIT_WINDOW_S", 60.0))
         self._endpoint_retry_budget = max(1, int(os.getenv("AUTONOMOUS_ENDPOINT_RETRY_BUDGET", "2") or "2"))
@@ -673,9 +697,19 @@ class LiveKrakenSpotService:
         microprice = ((ask * bid_qty) + (bid * ask_qty)) / denom
         return {"imbalance": imbalance, "microprice": microprice}
 
-    def _entry_allowed_by_microstructure(self, side: str, metrics: dict[str, float]) -> tuple[bool, str]:
+    def _entry_allowed_by_microstructure(
+        self,
+        side: str,
+        metrics: dict[str, float],
+        *,
+        depth_available: bool,
+    ) -> tuple[bool, str]:
         if not self._microstructure_enabled:
             return True, "microstructure_disabled"
+        if (not depth_available) and (not self._microstructure_require_depth):
+            # Ticker-only feeds may not provide top-of-book sizes. In that case,
+            # treat microstructure signal as unavailable rather than bearish.
+            return True, "microstructure_depth_unavailable"
         imbalance = float(metrics.get("imbalance", 0.0))
         threshold = float(self._microstructure_imbalance_threshold)
         side_n = str(side).lower()
@@ -700,8 +734,11 @@ class LiveKrakenSpotService:
         if not isinstance(comps, list) or not comps:
             return True, {}
         best_edge_bps = max(float(c.get("final_edge_bps", c.get("edge_bps", 0.0)) or 0.0) for c in comps)
+        entry_floor_bps = float(self._fee_aware_entry_min_edge_bps)
+        if self._fee_aware_require_sell_floor_for_entry:
+            entry_floor_bps += float(self._sell_profit_lock_min_bps)
         required_move_bps = (
-            float(self._sell_profit_lock_min_bps)
+            entry_floor_bps
             + float(self._entry_fee_bps)
             + float(self._exit_fee_bps)
             + (2.0 * float(slippage_bps))
@@ -711,6 +748,7 @@ class LiveKrakenSpotService:
         return best_edge_bps >= required_move_bps, {
             "best_edge_bps": best_edge_bps,
             "required_move_bps": required_move_bps,
+            "entry_floor_bps": float(entry_floor_bps),
             "spread_bps": float(spread_bps),
             "slippage_bps": float(slippage_bps),
         }
@@ -816,7 +854,7 @@ class LiveKrakenSpotService:
     ) -> tuple[float, float, float]:
         baseline_min_tp_pct = max(
             float(self._profit_target_net) * 100.0,
-            float(os.getenv("AUTONOMOUS_MIN_TAKE_PROFIT_PCT", "0.9") or "0.9"),
+            float(os.getenv("AUTONOMOUS_MIN_TAKE_PROFIT_PCT", "0.3") or "0.3"),
         )
         # Backward-compatible behavior: when TP ladder is disabled, keep a stable
         # fixed threshold and do not let historical peak state unexpectedly raise
@@ -943,10 +981,37 @@ class LiveKrakenSpotService:
             return False, "orderbook_sanity_zero_spread"
         return True, "ok"
 
+    def _effective_book_min_depth_quote(self, *, pair: str, quote_ccy: str) -> float:
+        """Resolve depth guard threshold in native quote units by market class.
+
+        Kraken spot markets can use non-fiat quote currencies (for example `XXBT`),
+        where a fiat-sized depth floor would over-block entries. Keep stricter floors
+        for fiat/xStocks while using quote-aware floors for crypto-quoted pairs.
+        """
+
+        default_floor = max(0.0, float(self._book_min_depth_quote))
+        if self._is_xstock_pair(pair):
+            return max(default_floor, float(self._book_min_depth_quote_xstock))
+        meta = self.min_guard.pair_meta(pair)
+        quote_meta = str(meta.get("quote", "") or "")
+        quote_raw = str(quote_meta or quote_ccy or "").upper()
+        if quote_raw.startswith(("X", "Z")) and len(quote_raw) > 1:
+            quote_norm = quote_raw[1:]
+        else:
+            quote_norm = quote_raw
+        if quote_norm in {"USD", "USDT", "EUR", "GBP", "CHF", "CAD", "AUD"}:
+            return default_floor
+        if quote_norm in {"XBT", "BTC"}:
+            return max(0.0, min(default_floor, float(self._book_min_depth_quote_btc)))
+        if quote_norm in {"ETH"}:
+            return max(0.0, min(default_floor, float(self._book_min_depth_quote_eth)))
+        return max(0.0, min(default_floor, float(self._book_min_depth_quote_other_crypto)))
+
     def _expected_fill_probability_allows(
         self,
         *,
         pair: str,
+        quote_ccy: str,
         bid: float,
         ask: float,
         bid_qty: float,
@@ -958,15 +1023,29 @@ class LiveKrakenSpotService:
         ledger = self._ledger_for(pair)
         hist_fill_prob = 0.0 if ledger.order_attempts <= 0 else (ledger.order_fills + 1.0) / (ledger.order_attempts + 2.0)
         depth_quote = min(max(0.0, bid_qty * bid), max(0.0, ask_qty * ask))
+        min_depth_quote = self._effective_book_min_depth_quote(pair=pair, quote_ccy=quote_ccy)
+        depth_available = (bid_qty > 0.0) and (ask_qty > 0.0)
         spread_factor = max(0.0, min(1.0, 1.0 - (spread_bps / max(1.0, self._no_trade_zone_spread_bps * 1.5))))
-        depth_factor = max(0.0, min(1.0, depth_quote / max(1e-9, self._book_min_depth_quote)))
+        if (not depth_available) and (not self._expected_fill_require_depth):
+            # Depth signal unavailable (common on ticker-only feeds): keep the
+            # gate informative without hard-blocking solely on missing L2 qty.
+            depth_factor = 0.5
+        elif min_depth_quote <= 0.0:
+            depth_factor = 1.0
+        else:
+            depth_factor = max(0.0, min(1.0, depth_quote / max(1e-9, min_depth_quote)))
         expected_fill_prob = 0.5 * hist_fill_prob + 0.25 * spread_factor + 0.25 * depth_factor
-        ok = expected_fill_prob >= self._expected_fill_prob_min and depth_quote >= self._book_min_depth_quote
+        if (not depth_available) and (not self._expected_fill_require_depth):
+            depth_ok = True
+        else:
+            depth_ok = True if min_depth_quote <= 0.0 else (depth_quote >= min_depth_quote)
+        ok = expected_fill_prob >= self._expected_fill_prob_min and depth_ok
         return ok, {
             "expected_fill_prob": float(expected_fill_prob),
             "min_expected_fill_prob": float(self._expected_fill_prob_min),
             "depth_quote": float(depth_quote),
-            "min_depth_quote": float(self._book_min_depth_quote),
+            "min_depth_quote": float(min_depth_quote),
+            "depth_available": bool(depth_available),
             "hist_fill_prob": float(hist_fill_prob),
             "spread_bps": float(spread_bps),
         }
@@ -2420,10 +2499,11 @@ class LiveKrakenSpotService:
         quote = str(meta.get("quote", ""))
         candidates: list[str] = []
         if quote:
-            candidates.append(quote)
-            if quote.startswith("X") or quote.startswith("Z"):
-                candidates.append(quote[1:])
-        candidates.extend(["ZUSD", "USD", "USDT", "ZEUR", "EUR"])
+            quote_norm = str(quote).upper()
+            quote_core = quote_norm[1:] if (quote_norm.startswith("X") or quote_norm.startswith("Z")) else quote_norm
+            candidates.extend([quote_norm, quote_core, f"Z{quote_core}", f"X{quote_core}"])
+        else:
+            candidates.extend(["ZUSD", "USD", "USDT", "ZEUR", "EUR"])
         seen = set()
         ordered = [k for k in candidates if k and not (k in seen or seen.add(k))]
         for k in ordered:
@@ -2432,6 +2512,8 @@ class LiveKrakenSpotService:
                     return (k, float(bal.get(k) or 0.0))
                 except Exception:
                     return (k, 0.0)
+        if quote:
+            return (str(quote), 0.0)
         return ("ZUSD", 0.0)
 
     def _available_base_balance(self, pair: str, *, force_refresh: bool = False) -> tuple[str, float]:
@@ -2579,6 +2661,34 @@ class LiveKrakenSpotService:
         pair = intent.symbol
         why_raw = getattr(intent, "why", {})
         why = dict(why_raw) if isinstance(why_raw, Mapping) else {}
+        execution_plan_bridge = why.get("execution_plan_bridge", {}) if isinstance(why, dict) else {}
+        if not isinstance(execution_plan_bridge, Mapping):
+            execution_plan_bridge = {}
+        execution_plan_bridge_enabled = _env_bool("AUTONOMOUS_UNIVERSE_EXECUTION_PLAN_BRIDGE_ENABLED", False)
+        if execution_plan_bridge_enabled and side == "buy":
+            contract = execution_plan_bridge.get("contract", {})
+            if not isinstance(contract, Mapping):
+                contract = {}
+            expected_net_edge_bps = float(contract.get("expected_net_edge_bps", 0.0) or 0.0)
+            abort = bool(execution_plan_bridge.get("abort", False))
+            advisory_severity = str(execution_plan_bridge.get("advisory_severity", "") or "").strip().lower()
+            block_reason = ""
+            if abort:
+                block_reason = "execution_plan_abort"
+            elif expected_net_edge_bps <= 0.0:
+                block_reason = "execution_plan_non_positive_edge"
+            elif advisory_severity == "critical":
+                block_reason = "execution_plan_critical_advisory"
+            if block_reason:
+                return LiveExecutionResult(
+                    status="blocked",
+                    reason=block_reason,
+                    order={
+                        "pair": pair,
+                        "side": side,
+                        "execution_plan_bridge": dict(execution_plan_bridge),
+                    },
+                )
         is_probe = bool(why.get("scheduler_probe", False))
         self._maybe_refresh_fee_profile(pair=pair)
         self._maybe_calibrate_slippage(now)
@@ -2676,10 +2786,17 @@ class LiveKrakenSpotService:
                         reason=ob_reason,
                         order={"pair": pair, "side": side, "bid": bid, "ask": ask, "bid_qty": bid_qty, "ask_qty": ask_qty, "spread_bps": spread_bps},
                     )
+                min_depth_quote = self._effective_book_min_depth_quote(pair=pair, quote_ccy=quote_ccy)
+                depth_available = (bid_qty > 0.0) and (ask_qty > 0.0)
+                top_qty_block = depth_available and (min(bid_qty, ask_qty) < self._no_trade_zone_min_top_qty)
+                depth_block = depth_available and (min(bid_qty * bid, ask_qty * ask) < min_depth_quote)
+                if (not depth_available) and self._no_trade_zone_require_depth:
+                    top_qty_block = True
+                    depth_block = True
                 if self._no_trade_zone_enabled and (
                     spread_bps > self._no_trade_zone_spread_bps
-                    or min(bid_qty, ask_qty) < self._no_trade_zone_min_top_qty
-                    or min(bid_qty * bid, ask_qty * ask) < self._book_min_depth_quote
+                    or top_qty_block
+                    or depth_block
                 ):
                     return LiveExecutionResult(
                         status="blocked",
@@ -2690,12 +2807,15 @@ class LiveKrakenSpotService:
                             "spread_bps": spread_bps,
                             "bid_qty": bid_qty,
                             "ask_qty": ask_qty,
+                            "depth_available": depth_available,
                             "depth_quote": min(bid_qty * bid, ask_qty * ask),
-                            "min_depth_quote": self._book_min_depth_quote,
+                            "min_depth_quote": min_depth_quote,
+                            "require_depth": bool(self._no_trade_zone_require_depth),
                         },
                     )
                 fill_ok, fill_diag = self._expected_fill_probability_allows(
                     pair=pair,
+                    quote_ccy=quote_ccy,
                     bid=bid,
                     ask=ask,
                     bid_qty=bid_qty,
@@ -2708,7 +2828,11 @@ class LiveKrakenSpotService:
                         reason="expected_fill_probability_low",
                         order={"pair": pair, "side": side, **fill_diag},
                     )
-                ms_ok, ms_reason = self._entry_allowed_by_microstructure(side, micro)
+                ms_ok, ms_reason = self._entry_allowed_by_microstructure(
+                    side,
+                    micro,
+                    depth_available=depth_available,
+                )
                 if not ms_ok:
                     if not is_probe:
                         return LiveExecutionResult(

@@ -20,6 +20,33 @@ def test_incident_policy_funding_budget_warns_and_then_exits():
     assert inc2.reason == "FundingBudgetExceeded"
 
 
+def test_incident_policy_mission_bridge_advisory_blocks_new_opens_only() -> None:
+    p = IncidentPolicy()
+    inc = p.evaluate(
+        {
+            "mission_bridge_no_trade_preferred": 1.0,
+            "mission_bridge_allow_new_risk": 0.0,
+        }
+    )
+    assert inc is not None
+    assert inc.action == "no_open_until_stable"
+    assert inc.reason == "MissionNoTradeAdvisory"
+
+
+def test_incident_policy_hard_safety_precedes_mission_bridge_advisory() -> None:
+    p = IncidentPolicy()
+    inc = p.evaluate(
+        {
+            "data_lag_seconds": 120.0,
+            "mission_bridge_no_trade_preferred": 1.0,
+            "mission_bridge_allow_new_risk": 0.0,
+        }
+    )
+    assert inc is not None
+    assert inc.action == "kill_safe_mode_no_open"
+    assert inc.reason == "DataStale"
+
+
 def test_incident_responder_sets_kill_safe_flatten_cooldown_on_risk_engine():
     risk = RiskEngineService(
         limits=RiskLimits(

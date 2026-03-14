@@ -16,6 +16,7 @@ def _write_audit(run_dir: Path, rows: list[dict]) -> None:
 
 def test_self_improve_reports_missing_openai_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_audit(
@@ -30,12 +31,14 @@ def test_self_improve_reports_missing_openai_key(tmp_path, monkeypatch) -> None:
 
     assert out["status"] == "ok"
     assert out["openai_enabled"] is False
+    assert out["llm_enabled"] is False
     assert out["message"] == MISSING_KEY_MESSAGE
     assert Path(out["output_file"]).exists()
 
 
 def test_self_improve_generates_rate_limit_suggestion(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_audit(
@@ -51,6 +54,7 @@ def test_self_improve_generates_rate_limit_suggestion(tmp_path, monkeypatch) -> 
 
     assert out["status"] == "ok"
     assert out["openai_enabled"] is True
+    assert out["llm_enabled"] is True
     assert out["message"] == ""
     keys = {row["key"] for row in out["suggestions"]}
     assert "AUTONOMOUS_RATE_LIMIT_COOLDOWN_S" in keys
@@ -66,3 +70,24 @@ def test_self_improve_cannot_submit_orders(tmp_path) -> None:
     advisor = OpenAISelfImprovementAdvisor(str(run_dir), api_key="dummy")
     assert not hasattr(advisor, "add_order")
     assert not hasattr(advisor, "send_order")
+
+
+def test_self_improve_auto_uses_groq_when_openai_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-dummy")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_audit(
+        run_dir,
+        [
+            {"event_type": "heartbeat", "payload": {"symbol": "XBTEUR"}},
+        ],
+    )
+
+    advisor = OpenAISelfImprovementAdvisor(str(run_dir))
+    out = advisor.run(last_hours=24.0)
+
+    assert out["status"] == "ok"
+    assert out["provider"] == "groq"
+    assert out["llm_enabled"] is True
+    assert out["openai_enabled"] is False

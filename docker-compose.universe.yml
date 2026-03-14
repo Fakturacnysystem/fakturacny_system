@@ -1,0 +1,219 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ["storage"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_universe_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    profiles: ["storage"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-robot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-robot}
+      POSTGRES_DB: ${POSTGRES_DB:-robot}
+    volumes:
+      - postgres_universe_data:/var/lib/postgresql/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    profiles: ["storage"]
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-robot}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-robot}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-robot}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_universe_data:/var/lib/clickhouse
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    profiles: ["storage"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-robot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-robotrobot}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    volumes:
+      - minio_universe_data:/data
+
+  live-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["runtime"]
+    depends_on:
+      - redis
+      - postgres
+    env_file:
+      - ./deploy/live-node.env.example
+    environment:
+      AUTONOMOUS_NODE_ROLE: ${AUTONOMOUS_NODE_ROLE:-live}
+      AUTONOMOUS_DISTRIBUTED_ENABLED: ${AUTONOMOUS_DISTRIBUTED_ENABLED:-1}
+      AUTONOMOUS_COMPUTE_BRIDGE: ${AUTONOMOUS_COMPUTE_BRIDGE:-redis}
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_POSTGRES_MIRROR_ENABLED: ${AUTONOMOUS_POSTGRES_MIRROR_ENABLED:-1}
+      AUTONOMOUS_POSTGRES_DSN: ${AUTONOMOUS_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+      AUTONOMOUS_LIVE_GO: ${AUTONOMOUS_LIVE_GO:-0}
+      TESTNET_VALIDATED: ${TESTNET_VALIDATED:-false}
+      KRAKEN_API_KEY: ${KRAKEN_API_KEY:-}
+      KRAKEN_API_SECRET: ${KRAKEN_API_SECRET:-}
+      LLM_ENABLED: ${LLM_ENABLED:-0}
+    command:
+      [
+        "/bin/bash",
+        "-lc",
+        "./scripts/run_kraken_spot_profit_full_throttle.sh"
+      ]
+    volumes:
+      - ./runs:/app/runs
+      - ./ops:/app/ops
+      - ./config.kraken_spot.live_profit.yaml:/app/config.kraken_spot.live_profit.yaml:ro
+
+  compute-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["runtime"]
+    depends_on:
+      - redis
+      - postgres
+    env_file:
+      - ./deploy/compute-node.env.example
+    environment:
+      AUTONOMOUS_NODE_ROLE: ${AUTONOMOUS_NODE_ROLE:-compute}
+      AUTONOMOUS_DISTRIBUTED_ENABLED: ${AUTONOMOUS_DISTRIBUTED_ENABLED:-1}
+      AUTONOMOUS_COMPUTE_BRIDGE: ${AUTONOMOUS_COMPUTE_BRIDGE:-redis}
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_POSTGRES_MIRROR_ENABLED: ${AUTONOMOUS_POSTGRES_MIRROR_ENABLED:-1}
+      AUTONOMOUS_POSTGRES_DSN: ${AUTONOMOUS_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+    command:
+      [
+        "python",
+        "-m",
+        "cli.compute_node",
+        "--run-dir",
+        "${AUTONOMOUS_RUN_DIR:-runs/compute_node}"
+      ]
+    volumes:
+      - ./runs:/app/runs
+
+  gateway-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["api"]
+    depends_on:
+      - redis
+      - postgres
+      - clickhouse
+      - minio
+    environment:
+      AUTONOMOUS_UNIVERSE_RUN_DIR: ${AUTONOMOUS_UNIVERSE_RUN_DIR:-runs/latest}
+      AUTONOMOUS_UNIVERSE_RUN_SELECTION: ${AUTONOMOUS_UNIVERSE_RUN_SELECTION:-auto}
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_UNIVERSE_POSTGRES_DSN: ${AUTONOMOUS_UNIVERSE_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+      AUTONOMOUS_JWT_SECRET: ${AUTONOMOUS_JWT_SECRET:-unsafe-dev-secret}
+      AUTONOMOUS_LOG_LEVEL: ${AUTONOMOUS_LOG_LEVEL:-INFO}
+    command:
+      [
+        "python",
+        "-m",
+        "cli.universe_gateway",
+        "--run-dir",
+        "${AUTONOMOUS_UNIVERSE_RUN_DIR:-runs/latest}",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8081"
+      ]
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./runs:/app/runs
+      - ./ops:/app/ops
+
+  realtime-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["realtime"]
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_UNIVERSE_POSTGRES_DSN: ${AUTONOMOUS_UNIVERSE_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+      AUTONOMOUS_UNIVERSE_RT_GROUP: ${AUTONOMOUS_UNIVERSE_RT_GROUP:-universe_realtime}
+      AUTONOMOUS_UNIVERSE_RT_CONSUMER: ${AUTONOMOUS_UNIVERSE_RT_CONSUMER:-realtime-worker}
+      AUTONOMOUS_UNIVERSE_TELEMETRY_FLUSH_S: ${AUTONOMOUS_UNIVERSE_TELEMETRY_FLUSH_S:-0.2}
+      AUTONOMOUS_LOG_LEVEL: ${AUTONOMOUS_LOG_LEVEL:-INFO}
+    command: ["python", "-m", "cli.realtime_worker"]
+    volumes:
+      - ./runs:/app/runs
+
+  simulation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["realtime"]
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      AUTONOMOUS_REDIS_URL: ${AUTONOMOUS_REDIS_URL:-redis://redis:6379/0}
+      AUTONOMOUS_UNIVERSE_POSTGRES_DSN: ${AUTONOMOUS_UNIVERSE_POSTGRES_DSN:-postgresql://robot:robot@postgres:5432/robot}
+      AUTONOMOUS_UNIVERSE_SIMULATION_INTERVAL_S: ${AUTONOMOUS_UNIVERSE_SIMULATION_INTERVAL_S:-10}
+      AUTONOMOUS_LOG_LEVEL: ${AUTONOMOUS_LOG_LEVEL:-INFO}
+    command: ["python", "-m", "cli.simulation_worker"]
+    volumes:
+      - ./runs:/app/runs
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    depends_on:
+      - gateway-api
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-universe-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: ${GF_AUTH_ANONYMOUS_ENABLED:-true}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: ${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/universe-control-center.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  redis_universe_data:
+  postgres_universe_data:
+  clickhouse_universe_data:
+  minio_universe_data:

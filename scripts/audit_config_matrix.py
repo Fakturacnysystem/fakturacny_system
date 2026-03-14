@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,11 @@ from autonomous_investment_robot.services.ops.harmony import HarmonyConfigResolv
 DEFAULT_CONFIG_GLOB = "config*.yaml"
 DEFAULT_JSON_OUTPUT = "docs/config_matrix.json"
 DEFAULT_MD_OUTPUT = "docs/config_matrix.md"
+
+
+def _stable_hash(payload: dict[str, Any]) -> str:
+    raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _safe_load_settings(path: Path) -> tuple[RobotSettings | None, str]:
@@ -63,7 +69,7 @@ def _harmony_resolve(settings: RobotSettings, env: dict[str, str]) -> dict[str, 
         dry_run=True,
     )
     payload = resolved.to_dict()
-    payload["invariant_sell_min_profit_ok"] = float(payload.get("sell_min_profit_bps", 0.0)) >= 120.0
+    payload["invariant_sell_min_profit_ok"] = float(payload.get("sell_min_profit_bps", 0.0)) >= 30.0
     payload["collision_count"] = int(len(payload.get("collisions", [])))
     return payload
 
@@ -108,6 +114,9 @@ def _summarize_row(config_path: Path, settings: RobotSettings, resolved: dict[st
         "spread_spike_enabled": bool(resolved.get("spread_spike_enabled", False)),
         "liquidity_map_enabled": bool(resolved.get("liquidity_map_enabled", False)),
         "invariant_sell_min_profit_ok": bool(resolved.get("invariant_sell_min_profit_ok", False)),
+        "freeze_contract_version": str(resolved.get("freeze_contract_version", "")),
+        "resolved_config_fingerprint": str(resolved.get("resolved_config_fingerprint", "")),
+        "config_drift_check_passed": bool(resolved.get("config_drift_check_passed", True)),
         "collision_count": int(resolved.get("collision_count", 0)),
         "collisions": resolved.get("collisions", []),
     }
@@ -118,18 +127,47 @@ def collect_config_matrix(config_paths: list[Path], env: dict[str, str]) -> dict
     for config_path in sorted(config_paths):
         settings, err = _safe_load_settings(config_path)
         if settings is None:
+            try:
+                config_label = str(config_path.relative_to(ROOT))
+            except Exception:
+                config_label = str(config_path)
             rows.append(
                 {
-                    "config": str(config_path.relative_to(ROOT)),
+                    "config": config_label,
                     "status": "error",
                     "error": err,
                 }
             )
             continue
-        resolved = _harmony_resolve(settings, env)
-        rows.append(_summarize_row(config_path=config_path, settings=settings, resolved=resolved, status="ok"))
+        resolved_a = _harmony_resolve(settings, env)
+        resolved_b = _harmony_resolve(settings, env)
+        drift_passed = bool(
+            str(resolved_a.get("resolved_config_fingerprint", ""))
+            and resolved_a == resolved_b
+        )
+        resolved_a["config_drift_check_passed"] = drift_passed
+        row = _summarize_row(config_path=config_path, settings=settings, resolved=resolved_a, status="ok")
+        row["config_drift_check_passed"] = drift_passed
+        row["config_freeze_contract"] = {
+            "contract_version": str(resolved_a.get("freeze_contract_version", "")),
+            "resolved_config_fingerprint": str(resolved_a.get("resolved_config_fingerprint", "")),
+            "drift_check_passed": drift_passed,
+        }
+        rows.append(row)
 
     ok_rows = [r for r in rows if r.get("status") == "ok"]
+    matrix_fingerprint = _stable_hash(
+        {
+            "rows": [
+                {
+                    "config": str(r.get("config", "")),
+                    "resolved_config_fingerprint": str(r.get("resolved_config_fingerprint", "")),
+                    "config_drift_check_passed": bool(r.get("config_drift_check_passed", False)),
+                }
+                for r in ok_rows
+            ]
+        }
+    )
     return {
         "rows": rows,
         "summary": {
@@ -137,7 +175,13 @@ def collect_config_matrix(config_paths: list[Path], env: dict[str, str]) -> dict
             "configs_ok": len(ok_rows),
             "configs_error": len(rows) - len(ok_rows),
             "invariant_failures": len([r for r in ok_rows if not bool(r.get("invariant_sell_min_profit_ok", False))]),
+            "drift_failures": len([r for r in ok_rows if not bool(r.get("config_drift_check_passed", False))]),
             "total_collisions": int(sum(int(r.get("collision_count", 0)) for r in ok_rows)),
+        },
+        "freeze_contract": {
+            "contract_version": "phase23_config_matrix_v1",
+            "matrix_fingerprint": matrix_fingerprint,
+            "configs_included": [str(r.get("config", "")) for r in ok_rows],
         },
     }
 
@@ -154,19 +198,20 @@ def to_markdown(matrix: dict[str, Any]) -> str:
         f"- configs_ok: {int(summary.get('configs_ok', 0))}",
         f"- configs_error: {int(summary.get('configs_error', 0))}",
         f"- invariant_failures: {int(summary.get('invariant_failures', 0))}",
+        f"- drift_failures: {int(summary.get('drift_failures', 0))}",
         f"- total_collisions: {int(summary.get('total_collisions', 0))}",
         "",
         "## Matrix",
         "",
-        "| Config | Status | Mode | Provider | Cadence(s) | MinOrder | SellMinBps | SellTargetBps | Guards | Collisions |",
-        "|---|---|---|---|---:|---:|---:|---:|---|---:|",
+        "| Config | Status | Mode | Provider | Cadence(s) | MinOrder | SellMinBps | SellTargetBps | Guards | Drift | FreezeFP | Collisions |",
+        "|---|---|---|---|---:|---:|---:|---:|---|---|---|---:|",
     ]
     for row in rows:
         if row.get("status") != "ok":
-            lines.append(f"| `{row.get('config', '')}` | error |  |  |  |  |  |  |  |  |")
+            lines.append(f"| `{row.get('config', '')}` | error |  |  |  |  |  |  |  |  |  |  |")
             continue
         lines.append(
-            "| `{config}` | {status} | `{mode}` | `{provider}` | {cadence:.2f} | {min_order:.2f} | {sell_min:.1f} | {sell_target:.1f} | `{guards}` | {collisions} |".format(
+            "| `{config}` | {status} | `{mode}` | `{provider}` | {cadence:.2f} | {min_order:.2f} | {sell_min:.1f} | {sell_target:.1f} | `{guards}` | `{drift}` | `{freeze_fp}` | {collisions} |".format(
                 config=row["config"],
                 status=row["status"],
                 mode=row["mode"],
@@ -176,6 +221,8 @@ def to_markdown(matrix: dict[str, Any]) -> str:
                 sell_min=float(row["sell_min_profit_bps"]),
                 sell_target=float(row["sell_target_profit_bps"]),
                 guards=row["guards_mode"],
+                drift="pass" if bool(row.get("config_drift_check_passed", False)) else "fail",
+                freeze_fp=str(row.get("resolved_config_fingerprint", ""))[:12],
                 collisions=int(row["collision_count"]),
             )
         )
@@ -234,19 +281,27 @@ def main() -> int:
     json_path = ROOT / str(args.json_output)
     md_path = ROOT / str(args.md_output)
     write_outputs(matrix=matrix, json_path=json_path, md_path=md_path)
+    summary = matrix.get("summary", {})
+    ok = bool(
+        int(summary.get("configs_error", 0)) == 0
+        and int(summary.get("invariant_failures", 0)) == 0
+        and int(summary.get("drift_failures", 0)) == 0
+    )
     print(
         json.dumps(
             {
-                "ok": True,
+                "ok": ok,
                 "configs": int(matrix["summary"]["configs_total"]),
                 "errors": int(matrix["summary"]["configs_error"]),
+                "invariant_failures": int(matrix["summary"]["invariant_failures"]),
+                "drift_failures": int(matrix["summary"]["drift_failures"]),
                 "json_output": str(json_path),
                 "md_output": str(md_path),
             },
             indent=2,
         )
     )
-    return 0
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

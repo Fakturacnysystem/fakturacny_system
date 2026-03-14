@@ -38,6 +38,73 @@ def _stable_hash(payload: Mapping[str, Any]) -> str:
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
+def build_promotion_replay_contract(
+    *,
+    batch_status: Mapping[str, Any],
+    top_strategy_candidates: Iterable[Mapping[str, Any]] = (),
+    quarantine_strategy_fingerprints: Iterable[str] = (),
+) -> dict[str, Any]:
+    status = _safe_mapping(batch_status)
+    reproducibility = _safe_mapping(status.get("reproducibility_metadata", {}))
+    session_id = str(status.get("session_id", reproducibility.get("replay_session_id", "")) or "")
+    top_fingerprints = sorted(
+        {
+            str(row.get("strategy_fingerprint", "") or "")
+            for row in top_strategy_candidates
+            if isinstance(row, Mapping) and str(row.get("strategy_fingerprint", "") or "")
+        }
+    )
+    from_status_quarantine = status.get("quarantine_strategy_fingerprints", [])
+    status_quarantine_list = [str(item) for item in from_status_quarantine] if isinstance(from_status_quarantine, list) else []
+    quarantine = sorted(
+        {
+            *[str(item) for item in quarantine_strategy_fingerprints if str(item)],
+            *[str(item) for item in status_quarantine_list if str(item)],
+        }
+    )
+    scenario_fingerprints_raw = reproducibility.get("scenario_fingerprints", [])
+    inferred_markers_raw = reproducibility.get("inferred_markers", [])
+    scenario_fingerprints = sorted(str(item) for item in scenario_fingerprints_raw) if isinstance(scenario_fingerprints_raw, list) else []
+    inferred_markers = sorted(str(item) for item in inferred_markers_raw) if isinstance(inferred_markers_raw, list) else []
+    packet_fingerprint = str(reproducibility.get("packet_fingerprint", "") or "")
+    if not packet_fingerprint:
+        packet_fingerprint = _stable_hash(
+            {
+                "batch_id": str(status.get("batch_id", "") or ""),
+                "session_id": session_id,
+                "top_strategy_fingerprints": top_fingerprints,
+                "quarantine_strategy_fingerprints": quarantine,
+            }
+        )
+    contract_payload = {
+        "contract_version": "phase19_promotion_replay_contract_v1",
+        "batch_id": str(status.get("batch_id", "") or ""),
+        "session_id": session_id,
+        "algorithm_version": str(reproducibility.get("algorithm_version", "phase8_replay:v1") or "phase8_replay:v1"),
+        "packet_fingerprint": packet_fingerprint,
+        "scenario_fingerprints": scenario_fingerprints,
+        "mission_filter": str(reproducibility.get("mission_filter", "") or ""),
+        "capital_scale": float(_safe_float(reproducibility.get("capital_scale", 0.0), 0.0)),
+        "processed_packets": max(0, _safe_int(status.get("processed_packets", 0), 0)),
+        "scenario_count": max(0, _safe_int(status.get("scenario_count", 0), 0)),
+        "trace_count": max(0, _safe_int(status.get("trace_count", 0), 0)),
+        "deterministic": bool(status.get("deterministic", True)),
+        "failed": bool(status.get("failed", False)),
+        "top_strategy_fingerprints": top_fingerprints,
+        "quarantine_strategy_fingerprints": quarantine,
+        "inferred_markers": inferred_markers,
+    }
+    required_fields_missing = [
+        key
+        for key in ("batch_id", "session_id", "algorithm_version", "packet_fingerprint")
+        if not str(contract_payload.get(key, "") or "")
+    ]
+    contract_payload["required_fields_missing"] = required_fields_missing
+    contract_payload["contract_ready"] = len(required_fields_missing) == 0
+    contract_payload["contract_id"] = _stable_hash(contract_payload)
+    return contract_payload
+
+
 def _stage_from_value(value: str | PromotionStage | None) -> "PromotionStage":
     if isinstance(value, PromotionStage):
         return value

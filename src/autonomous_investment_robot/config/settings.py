@@ -126,6 +126,8 @@ class LiveUnlockSettings:
     ack_i_understand_risks: bool = False
     require_testnet_passed: bool = True
     canary_required_before_full: bool = True
+    require_operator_confirmation_artifact: bool = True
+    operator_confirmation_file: str = "ops/live_operator_confirmation.txt"
 
 
 @dataclass
@@ -272,6 +274,12 @@ class DistributedRuntimeSettings:
 class AutonomousDecisionSettings:
     confidence_threshold: float = 0.55
     uncertainty_threshold_bps: float = 85.0
+    confidence_threshold_crypto: float = 0.52
+    confidence_threshold_xstock: float = 0.58
+    confidence_threshold_xstock_etf: float = 0.60
+    uncertainty_threshold_bps_crypto: float = 92.0
+    uncertainty_threshold_bps_xstock: float = 74.0
+    uncertainty_threshold_bps_xstock_etf: float = 68.0
     conformal_alpha: float = 0.1
     drift_threshold: float = 0.2
     regime_hold_s: float = 30.0
@@ -295,6 +303,20 @@ class AutonomousDecisionSettings:
     self_optimization_window: int = 120
     self_optimization_min_samples: int = 24
     self_optimization_apply_every: int = 12
+    regime_size_mult_bull_trend: float = 1.15
+    regime_size_mult_trend: float = 1.10
+    regime_size_mult_range: float = 0.95
+    regime_size_mult_chop: float = 0.80
+    regime_size_mult_panic: float = 0.45
+    regime_size_mult_high_vol: float = 0.60
+    regime_size_mult_low_liquidity: float = 0.55
+    opportunity_decay_max_age_s: float = 45.0
+    opportunity_decay_guard_threshold: float = 0.65
+    cross_market_confirmation_enabled: bool = True
+    cross_market_confirmation_min: float = -0.35
+    counterfactual_min_edge_bps: float = 1.0
+    market_twin_include_advanced_scenarios: bool = True
+    market_twin_max_snapshots: int = 256
 
 
 @dataclass
@@ -485,8 +507,22 @@ class RobotSettings:
         if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode:
             missing.append("CANARY_MODE")
         if mode == ExecutionMode.LIVE and unlock.require_testnet_passed:
-            if os.getenv("TESTNET_VALIDATED", "false").lower() != "true":
+            if os.getenv("TESTNET_VALIDATED", "false").lower() not in {"1", "true", "yes", "on"}:
                 missing.append("TESTNET_VALIDATED")
+        if mode == ExecutionMode.LIVE and bool(unlock.require_operator_confirmation_artifact):
+            if os.getenv("AUTONOMOUS_LIVE_GO", "false").lower() not in {"1", "true", "yes", "on"}:
+                missing.append("AUTONOMOUS_LIVE_GO")
+            confirmation_path = str(
+                os.getenv(
+                    "AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE",
+                    str(unlock.operator_confirmation_file or ""),
+                )
+                or ""
+            ).strip()
+            if not confirmation_path:
+                missing.append("AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE")
+            elif not Path(confirmation_path).exists():
+                missing.append("LIVE_OPERATOR_CONFIRMATION_FILE")
 
         if missing:
             raise ValueError(f"Live trading blocked until configured: {missing}")

@@ -1,0 +1,6 @@
+[run_kraken_spot_profit_full_throttle] Starting live Kraken SPOT robot...
+[run_kraken_spot_profit_full_throttle] Config: config.kraken_spot.live_profit.yaml
+[run_kraken_spot_profit_full_throttle] Run directory: runs/kraken_ultra_profit_full_throttle
+[run_kraken_spot_profit_full_throttle] Guards mode: strict
+[run_kraken_spot_profit_full_throttle] Sell min profit: 120 bps
+/Users/martinholik/Projects/fakturacny_system/scripts/run_kraken_spot_profit_full_throttle.sh: line 746: 19874 Terminated: 15          TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true PYTHONPATH=src "${PYTHON_BIN}" -m cli.run --config "${LIVE_CONFIG}" --nonstop

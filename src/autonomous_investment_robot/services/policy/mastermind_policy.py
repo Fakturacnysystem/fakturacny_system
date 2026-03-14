@@ -13,16 +13,27 @@ from autonomous_investment_robot.services.policy.service import OrderIntent
 class MastermindConfig:
     enabled: bool = True
     max_entry_orders_per_min: int = 6
+    allow_entry_side_flip: bool = False
 
     @classmethod
     def from_env(cls) -> "MastermindConfig":
         raw_enabled = os.getenv("AUTONOMOUS_MASTERMIND_ENABLED")
         enabled = True if raw_enabled is None else str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
+        raw_allow_entry_side_flip = os.getenv("AUTONOMOUS_MASTERMIND_ALLOW_ENTRY_SIDE_FLIP")
+        allow_entry_side_flip = (
+            False
+            if raw_allow_entry_side_flip is None
+            else str(raw_allow_entry_side_flip).strip().lower() in {"1", "true", "yes", "on"}
+        )
         try:
             max_orders = int(float(os.getenv("AUTONOMOUS_MASTERMIND_MAX_ENTRY_ORDERS_PER_MIN", "6") or "6"))
         except Exception:
             max_orders = 6
-        return cls(enabled=enabled, max_entry_orders_per_min=max(1, max_orders))
+        return cls(
+            enabled=enabled,
+            max_entry_orders_per_min=max(1, max_orders),
+            allow_entry_side_flip=allow_entry_side_flip,
+        )
 
 
 @dataclass
@@ -126,6 +137,9 @@ class MastermindPolicy:
 
         why = base_intent.why if isinstance(base_intent.why, dict) else {}
         components = why.get("components", []) if isinstance(why, dict) else []
+        mission_bridge = why.get("mission_bridge", {}) if isinstance(why, dict) else {}
+        if not isinstance(mission_bridge, dict):
+            mission_bridge = {}
         if not isinstance(components, list) or not components:
             return MastermindDecision(
                 allowed=True,
@@ -185,16 +199,34 @@ class MastermindPolicy:
             )
 
         side_out = signal_side if signal_side in {"buy", "sell"} else side
+        notional_out = float(signal_notional)
+        side_flip_blocked = False
+        # Keep entry intents tradeable in SPOT mode: by default, do not let
+        # a buy-intent get flipped into sell by strategy-side hints.
+        if is_entry and side_out == "sell" and not bool(self.config.allow_entry_side_flip):
+            side_out = "buy"
+            notional_out = float(base_intent.target_notional)
+            side_flip_blocked = True
         intent = OrderIntent(
             symbol=base_intent.symbol,
             side=side_out,
-            target_notional=float(signal_notional),
+            target_notional=notional_out,
             why={
                 **(base_intent.why if isinstance(base_intent.why, dict) else {}),
                 "mastermind": {
                     "mode": str(mode),
                     "selected_strategy": selected_strategy,
                     "score": float(best_score),
+                    "entry_side_flip_blocked": bool(side_flip_blocked),
+                    "entry_side_flip_original_signal_side": str(signal_side),
+                    "mission_advisory": {
+                        "mission": str(mission_bridge.get("mission", "") or ""),
+                        "reason_codes": list(mission_bridge.get("reason_codes", []))
+                        if isinstance(mission_bridge.get("reason_codes", []), list)
+                        else [],
+                        "no_trade_preferred": bool(mission_bridge.get("no_trade_preferred", False)),
+                        "allow_new_risk": bool(mission_bridge.get("allow_new_risk", True)),
+                    },
                 },
             },
         )

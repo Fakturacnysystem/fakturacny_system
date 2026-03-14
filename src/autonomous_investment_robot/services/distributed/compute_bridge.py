@@ -6,16 +6,20 @@ from hashlib import sha256
 import json
 import os
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Mapping
 
 from autonomous_investment_robot.services.distributed.contracts import (
     DEFAULT_PAYLOAD_VERSION,
+    DistributedConsumerGroups,
     DistributedEnvelope,
     DistributedStreamNames,
     build_idempotency_key,
     decode_stream_entry,
     encode_stream_entry,
 )
+from autonomous_investment_robot.services.universe_core.cross_asset import normalize_market_class
 
 
 def _utc_now_iso() -> str:
@@ -27,12 +31,36 @@ def _stable_score(symbol: str) -> float:
     return float(int(digest[:8], 16) % 1000) / 1000.0
 
 
+def deterministic_shard_identity(
+    *,
+    run_id: str,
+    symbol: str,
+    contract_id: str,
+    payload_version: str = DEFAULT_PAYLOAD_VERSION,
+) -> str:
+    raw = json.dumps(
+        {
+            "run_id": str(run_id),
+            "symbol": str(symbol),
+            "contract_id": str(contract_id),
+            "payload_version": str(payload_version),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def _market_class_multiplier(market_class: str) -> float:
-    cls = str(market_class or "crypto_spot").strip().lower()
+    cls = normalize_market_class(str(market_class or "crypto_spot"))
+    if cls in {"futures", "crypto_perp"}:
+        return 0.94
     if cls in {"xstock", "xstock_etf"}:
         return 0.96
     if cls in {"xstock_perp", "xstock_etf_perp"}:
         return 0.92
+    if cls == "fx":
+        return 0.97
     return 1.0
 
 
@@ -102,10 +130,42 @@ class ComputeBridge:
 class LocalComputeBridge(ComputeBridge):
     """Deterministic local ranking fallback used when distributed compute is unavailable."""
 
+    def _parallel_workers(self, symbol_count: int) -> int:
+        requested = max(
+            1,
+            int(float(os.getenv("AUTONOMOUS_PARALLEL_SYMBOL_WORKERS", "4") or "4")),
+        )
+        return max(1, min(requested, max(1, int(symbol_count))))
+
+    @staticmethod
+    def _build_ranking(
+        *,
+        symbol: str,
+        idx: int,
+        total: int,
+        market_class_by_symbol: Mapping[str, str],
+    ) -> DistributedRanking:
+        cls = normalize_market_class(str(market_class_by_symbol.get(symbol, "crypto_spot") or "crypto_spot"))
+        base = _stable_score(symbol) * _market_class_multiplier(cls)
+        rank_boost = max(0.0, 1.0 - (idx / max(total, 1)))
+        score = (0.65 * base) + (0.35 * rank_boost)
+        confidence = max(0.05, min(0.95, 0.35 + (score * 0.6)))
+        expected_return_bps = (score - 0.5) * 32.0
+        uncertainty_bps = max(5.0, 95.0 - (score * 60.0))
+        return DistributedRanking(
+            symbol=symbol,
+            score=score,
+            confidence=confidence,
+            expected_return_bps=expected_return_bps,
+            uncertainty_bps=uncertainty_bps,
+            market_class=cls,
+        )
+
     def health(self) -> dict[str, Any]:
         return {
             "backend": "local",
             "ok": True,
+            "parallel_workers_default": self._parallel_workers(64),
             "ts": _utc_now_iso(),
         }
 
@@ -119,22 +179,30 @@ class LocalComputeBridge(ComputeBridge):
         timeout_s: float,
     ) -> ComputeRankResponse:
         rows: dict[str, DistributedRanking] = {}
-        for idx, symbol in enumerate(symbols):
-            cls = str(market_class_by_symbol.get(symbol, "crypto_spot") or "crypto_spot")
-            base = _stable_score(symbol) * _market_class_multiplier(cls)
-            rank_boost = max(0.0, 1.0 - (idx / max(len(symbols), 1)))
-            score = (0.65 * base) + (0.35 * rank_boost)
-            confidence = max(0.05, min(0.95, 0.35 + (score * 0.6)))
-            expected_return_bps = (score - 0.5) * 32.0
-            uncertainty_bps = max(5.0, 95.0 - (score * 60.0))
-            rows[symbol] = DistributedRanking(
-                symbol=symbol,
-                score=score,
-                confidence=confidence,
-                expected_return_bps=expected_return_bps,
-                uncertainty_bps=uncertainty_bps,
-                market_class=cls,
-            )
+        workers = self._parallel_workers(len(symbols))
+        if workers <= 1 or len(symbols) <= 1:
+            for idx, symbol in enumerate(symbols):
+                rows[symbol] = self._build_ranking(
+                    symbol=symbol,
+                    idx=idx,
+                    total=len(symbols),
+                    market_class_by_symbol=market_class_by_symbol,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="local-rank") as pool:
+                futures = {
+                    pool.submit(
+                        self._build_ranking,
+                        symbol=symbol,
+                        idx=idx,
+                        total=len(symbols),
+                        market_class_by_symbol=market_class_by_symbol,
+                    ): symbol
+                    for idx, symbol in enumerate(symbols)
+                }
+                for fut in as_completed(futures):
+                    row = fut.result()
+                    rows[row.symbol] = row
         return ComputeRankResponse(
             ok=True,
             source="local",
@@ -144,6 +212,7 @@ class LocalComputeBridge(ComputeBridge):
                 "symbols": len(symbols),
                 "top_n_requested": int(top_n),
                 "timeout_s": float(timeout_s),
+                "parallel_workers_used": int(workers),
             },
         )
 
@@ -156,16 +225,21 @@ class RedisComputeBridge(ComputeBridge):
         *,
         redis_url: str,
         stream_names: DistributedStreamNames,
+        consumer_groups: DistributedConsumerGroups | None = None,
+        consumer_name: str | None = None,
         payload_version: str = DEFAULT_PAYLOAD_VERSION,
         ttl_s: float = 5.0,
     ) -> None:
         self.redis_url = str(redis_url or "").strip()
         self.stream_names = stream_names
+        self.consumer_groups = consumer_groups or DistributedConsumerGroups.from_env()
+        self.consumer_name = str(consumer_name or f"live-{os.getpid()}-{uuid.uuid4().hex[:8]}").strip()
         self.payload_version = str(payload_version or DEFAULT_PAYLOAD_VERSION)
         self.ttl_s = max(0.5, float(ttl_s))
         self._publish_dedupe: set[str] = set()
         self._client = None
         self._client_error = ""
+        self._groups_ready = False
 
     def _connect(self) -> Any:
         if self._client is not None:
@@ -179,6 +253,7 @@ class RedisComputeBridge(ComputeBridge):
             self._client = redis.Redis.from_url(self.redis_url, decode_responses=False)
             self._client.ping()
             self._client_error = ""
+            self._groups_ready = False
             return self._client
         except Exception as exc:
             self._client = None
@@ -197,13 +272,39 @@ class RedisComputeBridge(ComputeBridge):
                 "task_scan": self.stream_names.task_scan,
                 "result_rankings": self.stream_names.result_rankings,
             },
+            "consumer_groups": {
+                "live_node": self.consumer_groups.live_node,
+                "compute_node": self.consumer_groups.compute_node,
+            },
+            "consumer_name": self.consumer_name,
             "ts": _utc_now_iso(),
         }
 
-    def _decode_messages(self, messages: list[tuple[bytes, list[tuple[bytes, dict[bytes, bytes]]]]]) -> list[DistributedEnvelope]:
-        out: list[DistributedEnvelope] = []
+    def _ensure_groups(self, client: Any) -> None:
+        if self._groups_ready:
+            return
+        group_defs = (
+            (self.stream_names.task_scan, self.consumer_groups.compute_node),
+            (self.stream_names.result_rankings, self.consumer_groups.live_node),
+            (self.stream_names.result_signals, self.consumer_groups.live_node),
+            (self.stream_names.audit_events, self.consumer_groups.live_node),
+        )
+        for stream_name, group_name in group_defs:
+            try:
+                client.xgroup_create(stream_name, group_name, id="$", mkstream=True)
+            except Exception as exc:
+                if "BUSYGROUP" not in str(exc):
+                    # Group create failures are surfaced via health/error but remain non-fatal for fallback.
+                    self._client_error = f"group_init_failed:{stream_name}:{group_name}:{exc}"
+        self._groups_ready = True
+
+    def _decode_messages(
+        self,
+        messages: list[tuple[bytes, list[tuple[bytes, dict[bytes, bytes]]]]],
+    ) -> list[tuple[str, DistributedEnvelope]]:
+        out: list[tuple[str, DistributedEnvelope]] = []
         for _, rows in messages:
-            for _, fields in rows:
+            for msg_id, fields in rows:
                 mapped: dict[str, Any] = {}
                 for key, value in dict(fields).items():
                     if isinstance(key, bytes):
@@ -211,7 +312,8 @@ class RedisComputeBridge(ComputeBridge):
                     else:
                         k = str(key)
                     mapped[k] = value
-                out.append(decode_stream_entry(mapped))
+                row_id = msg_id.decode("utf-8", errors="ignore") if isinstance(msg_id, bytes) else str(msg_id)
+                out.append((row_id, decode_stream_entry(mapped)))
         return out
 
     def request_rankings(
@@ -231,6 +333,7 @@ class RedisComputeBridge(ComputeBridge):
                 error=f"redis_unavailable:{self._client_error or 'unknown'}",
                 stale=True,
             )
+        self._ensure_groups(client)
 
         now_ts = time.time()
         task_id = f"scan:{int(now_ts * 1000)}:{abs(hash((run_id, tuple(symbols)))) % 1000000}"
@@ -278,14 +381,16 @@ class RedisComputeBridge(ComputeBridge):
             )
 
         deadline = time.time() + max(0.1, float(timeout_s))
-        cursor = "$"
         matched: DistributedEnvelope | None = None
+        matched_msg_id = ""
         poll_ms = 120
         while time.time() < deadline:
             remaining_ms = max(1, int((deadline - time.time()) * 1000.0))
             try:
-                rows = client.xread(
-                    {self.stream_names.result_rankings: cursor},
+                rows = client.xreadgroup(
+                    self.consumer_groups.live_node,
+                    self.consumer_name,
+                    {self.stream_names.result_rankings: ">"},
                     count=64,
                     block=min(poll_ms, remaining_ms),
                 )
@@ -299,10 +404,28 @@ class RedisComputeBridge(ComputeBridge):
             if not rows:
                 continue
             decoded = self._decode_messages(rows)
-            for msg in decoded:
+            for row_id, msg in decoded:
                 if msg.task_id == task_id:
                     matched = msg
+                    matched_msg_id = row_id
+                    try:
+                        client.xack(
+                            self.stream_names.result_rankings,
+                            self.consumer_groups.live_node,
+                            row_id,
+                        )
+                    except Exception:
+                        pass
                     break
+                # Unmatched rows are acknowledged to avoid stale pending growth.
+                try:
+                    client.xack(
+                        self.stream_names.result_rankings,
+                        self.consumer_groups.live_node,
+                        row_id,
+                    )
+                except Exception:
+                    pass
             if matched is not None:
                 break
         if matched is None:
@@ -315,6 +438,7 @@ class RedisComputeBridge(ComputeBridge):
                     "task_id": task_id,
                     "timeout_s": float(timeout_s),
                     "symbols": len(symbols),
+                    "consumer_group": self.consumer_groups.live_node,
                 },
             )
 
@@ -340,6 +464,8 @@ class RedisComputeBridge(ComputeBridge):
                 "symbol_count": len(rows),
                 "payload_version": matched.payload_version,
                 "expired": bool(matched.expired),
+                "consumer_group": self.consumer_groups.live_node,
+                "message_id": matched_msg_id,
             },
             error="" if rows else "empty_rankings_payload",
         )
@@ -356,6 +482,11 @@ def build_compute_bridge_from_env() -> ComputeBridge:
     stream_prefix = str(os.getenv("AUTONOMOUS_STREAM_PREFIX", "autobot") or "autobot").strip()
     payload_version = str(os.getenv("AUTONOMOUS_STREAM_PAYLOAD_VERSION", DEFAULT_PAYLOAD_VERSION) or DEFAULT_PAYLOAD_VERSION)
     ttl_s = max(0.5, float(os.getenv("AUTONOMOUS_COMPUTE_MESSAGE_TTL_S", "8.0") or "8.0"))
+    groups = DistributedConsumerGroups.from_env(
+        live_node=str(os.getenv("AUTONOMOUS_CONSUMER_GROUP_LIVE_NODE", "live_node") or "live_node"),
+        compute_node=str(os.getenv("AUTONOMOUS_CONSUMER_GROUP_COMPUTE_NODE", "compute_node") or "compute_node"),
+    )
+    consumer_name = str(os.getenv("AUTONOMOUS_CONSUMER_NAME", "") or "").strip() or None
 
     if backend == "local":
         return LocalComputeBridge()
@@ -363,6 +494,8 @@ def build_compute_bridge_from_env() -> ComputeBridge:
         return RedisComputeBridge(
             redis_url=redis_url,
             stream_names=DistributedStreamNames.from_prefix(stream_prefix),
+            consumer_groups=groups,
+            consumer_name=consumer_name,
             payload_version=payload_version,
             ttl_s=ttl_s,
         )
@@ -373,6 +506,8 @@ def build_compute_bridge_from_env() -> ComputeBridge:
         return RedisComputeBridge(
             redis_url=redis_url,
             stream_names=DistributedStreamNames.from_prefix(stream_prefix),
+            consumer_groups=groups,
+            consumer_name=consumer_name,
             payload_version=payload_version,
             ttl_s=ttl_s,
         )

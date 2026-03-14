@@ -1,0 +1,13 @@
+{
+  "artifact_id": "approval-martinholik-1773394312",
+  "stage": "limited_live_ready",
+  "approved": true,
+  "approver": "martinholik",
+  "approval_ts": 1773394312,
+  "reason_codes": [
+    "manual_dual_control_confirmation"
+  ],
+  "metadata": {
+    "source": "create_live_confirmation_artifact.sh"
+  }
+}

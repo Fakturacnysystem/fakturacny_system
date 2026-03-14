@@ -50,6 +50,12 @@ class IncidentPolicy:
             return IncidentAction("risk_throttle_or_exit", "FundingBudgetHigh")
         if metrics.get("slippage_bps", 0) > 20:
             return IncidentAction("reduce_size", "HighSlippage")
+        mission_no_trade_preferred = float(metrics.get("mission_bridge_no_trade_preferred", 0.0) or 0.0) > 0.0
+        mission_allow_new_risk = float(metrics.get("mission_bridge_allow_new_risk", 1.0) or 1.0) > 0.0
+        if mission_no_trade_preferred or (not mission_allow_new_risk):
+            # Advisory bridge only: evaluated after hard incident clauses so core
+            # safety doctrine always keeps strict precedence.
+            return IncidentAction("no_open_until_stable", "MissionNoTradeAdvisory")
         return None
 
 

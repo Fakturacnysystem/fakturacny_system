@@ -64,7 +64,14 @@ class _FakeKrakenSpotConnector:
                 "lot_decimals": 8,
                 "base": "XXBT",
                 "quote": "ZUSD",
-            }
+            },
+            "ADAEUR": {
+                "ordermin": "1.0",
+                "pair_decimals": 5,
+                "lot_decimals": 6,
+                "base": "ADA",
+                "quote": "ZEUR",
+            },
         }
 
     def ticker(self, pair=None):  # noqa: ARG002
@@ -213,6 +220,17 @@ def test_market_snapshot_includes_top_of_book_quantities(monkeypatch):
     assert snap["ask_qty"] == 1.5
 
 
+def test_available_quote_balance_respects_pair_quote_currency(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = _FakeKrakenSpotConnector()
+    fake._balance = {"ZUSD": "11.57", "XXBT": "0.0"}
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    quote_ccy, free_quote = svc._available_quote_balance("ADAEUR")
+    assert quote_ccy in {"ZEUR", "EUR"}
+    assert free_quote == 0.0
+
+
 def test_execute_intent_submits_market_buy(monkeypatch):
     monkeypatch.setenv("KRAKEN_API_KEY", "k")
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
@@ -223,6 +241,56 @@ def test_execute_intent_submits_market_buy(monkeypatch):
     assert out.order is not None
     assert out.order["txid"] == "T1"
     assert fake.add_calls == 1
+
+
+def test_execute_intent_blocks_on_execution_plan_bridge_abort(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_UNIVERSE_EXECUTION_PLAN_BRIDGE_ENABLED", "1")
+    fake = _FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={
+                "execution_plan_bridge": {
+                    "contract": {"expected_net_edge_bps": 8.0},
+                    "abort": True,
+                    "advisory_severity": "normal",
+                }
+            },
+        )
+    )
+    assert out.status == "blocked"
+    assert out.reason == "execution_plan_abort"
+    assert fake.add_calls == 0
+
+
+def test_execute_intent_blocks_on_execution_plan_bridge_non_positive_edge(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_UNIVERSE_EXECUTION_PLAN_BRIDGE_ENABLED", "1")
+    fake = _FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={
+                "execution_plan_bridge": {
+                    "contract": {"expected_net_edge_bps": 0.0},
+                    "abort": False,
+                    "advisory_severity": "critical",
+                }
+            },
+        )
+    )
+    assert out.status == "blocked"
+    assert out.reason == "execution_plan_non_positive_edge"
+    assert fake.add_calls == 0
 
 
 def test_preflight_classifies_temporary_lockout_and_writes_diag(monkeypatch, tmp_path):
@@ -246,6 +314,33 @@ def test_preflight_classifies_temporary_lockout_and_writes_diag(monkeypatch, tmp
     diag = json.loads(diag_path.read_text(encoding="utf-8"))
     assert diag["blocker_class"] == "temporary_lockout"
     assert diag["permission_diag"]["classification"] == "temporary_lockout"
+
+
+def test_preflight_allows_optional_scope_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    fake = _FakeKrakenSpotConnector()
+    fake.private_diag = {
+        "ok": True,
+        "scope": "all",
+        "classification": "optional_scope_unavailable",
+        "reason": "Kraken permission error: EGeneral:Permission denied",
+        "optional_scope": "open_orders",
+        "optional_classification": "invalid_permissions",
+        "optional_reason": "Kraken permission error: EGeneral:Permission denied",
+    }
+    settings = _settings(dry_run=False)
+    settings.storage.run_dir = str(tmp_path)
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    ok, reason = svc.preflight()
+    assert ok is True
+    assert reason == "ok"
+    diag_path = tmp_path / "live_startup_diagnostics.json"
+    assert diag_path.exists()
+    diag = json.loads(diag_path.read_text(encoding="utf-8"))
+    assert diag["blocker_class"] == "optional_scope_unavailable"
+    assert diag["permission_diag"]["classification"] == "optional_scope_unavailable"
+    assert diag["permission_diag"]["optional_scope"] == "open_orders"
 
 
 def test_execute_intent_maker_timeout_blocks_if_edge_not_ok(monkeypatch):
@@ -398,7 +493,7 @@ def test_sell_profit_lock_skips_when_bid_below_entry_plus_cost(monkeypatch):
     assert out.status == "skipped"
     assert out.reason == "profit_lock_sell_below_entry"
     assert out.order is not None
-    assert out.order["required_profit_bps"] == 200.0
+    assert out.order["required_profit_bps"] >= svc._sell_profit_lock_target_bps
     assert fake.add_calls == 0
 
 
@@ -801,7 +896,7 @@ def test_sell_invariant_guard_trips_safe_mode_on_invalid_required_ratio(monkeypa
         bid=50000.0,
         ask=50010.0,
         qty=0.001,
-        gate_details={"required_net_profit_ratio": 0.01},
+        gate_details={"required_net_profit_ratio": 0.001},
         slippage_bps=8.0,
     )
     assert ok is False
@@ -951,6 +1046,18 @@ def test_aggressive_hf_profile_defaults_are_loaded(monkeypatch):
     assert svc._book_min_depth_quote == 120.0
 
 
+def test_depth_floor_is_quote_aware_for_crypto_quotes(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE", "200")
+    monkeypatch.setenv("AUTONOMOUS_BOOK_MIN_DEPTH_QUOTE_BTC", "0.02")
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=_FakeKrakenSpotConnector())
+    btc_floor = svc._effective_book_min_depth_quote(pair="ADAXBT", quote_ccy="XXBT")
+    usd_floor = svc._effective_book_min_depth_quote(pair="XBTUSD", quote_ccy="ZUSD")
+    assert abs(btc_floor - 0.02) < 1e-12
+    assert abs(usd_floor - 200.0) < 1e-12
+
+
 def test_probe_distance_ticks_is_applied_to_maker_probe_buy(monkeypatch):
     monkeypatch.setenv("KRAKEN_API_KEY", "k")
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
@@ -1005,6 +1112,141 @@ def test_expected_fill_probability_gate_blocks_low_depth_buy(monkeypatch):
     out = svc.execute_intent(OrderIntent(symbol="XBTUSD", side="buy", target_notional=100.0, why={}))
     assert out.status == "blocked"
     assert out.reason in {"expected_fill_probability_low", "no_trade_zone"}
+
+
+def test_no_trade_zone_does_not_block_when_depth_signal_missing(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_SPREAD_BPS", "50")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_EXPECTED_FILL_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_MAKER_ONLY", "false")
+    fake = _FakeKrakenSpotConnector()
+    fake.bid_qty = 0.0
+    fake.ask_qty = 0.0
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={"components": [{"edge_bps": 30.0, "cost_total_bps": 1.0}]},
+        )
+    )
+    assert out.reason != "no_trade_zone"
+
+
+def test_no_trade_zone_blocks_when_depth_required_and_missing(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_SPREAD_BPS", "50")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH", "true")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_MAKER_ONLY", "false")
+    fake = _FakeKrakenSpotConnector()
+    fake.bid_qty = 0.0
+    fake.ask_qty = 0.0
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={"components": [{"edge_bps": 30.0, "cost_total_bps": 1.0}]},
+        )
+    )
+    assert out.status == "blocked"
+    assert out.reason == "no_trade_zone"
+
+
+def test_microstructure_gate_does_not_block_when_depth_signal_missing(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_EXPECTED_FILL_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_MICROSTRUCTURE_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_MAKER_ONLY", "false")
+    fake = _FakeKrakenSpotConnector()
+    fake.bid_qty = 0.0
+    fake.ask_qty = 0.0
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={"components": [{"edge_bps": 240.0, "cost_total_bps": 1.0}]},
+        )
+    )
+    assert out.reason != "microstructure_no_momentum_buy"
+
+
+def test_microstructure_gate_blocks_when_depth_required_and_missing(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_NO_TRADE_ZONE_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_EXPECTED_FILL_REQUIRE_DEPTH", "false")
+    monkeypatch.setenv("AUTONOMOUS_MICROSTRUCTURE_REQUIRE_DEPTH", "true")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_MAKER_ONLY", "false")
+    fake = _FakeKrakenSpotConnector()
+    fake.bid_qty = 0.0
+    fake.ask_qty = 0.0
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=fake)
+    out = svc.execute_intent(
+        OrderIntent(
+            symbol="XBTUSD",
+            side="buy",
+            target_notional=100.0,
+            why={"components": [{"edge_bps": 240.0, "cost_total_bps": 1.0}]},
+        )
+    )
+    assert out.status == "blocked"
+    assert out.reason == "microstructure_no_momentum_buy"
+
+
+def test_fee_aware_entry_requires_sell_floor_by_default(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_SIZING", "true")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_EDGE_BUFFER_BPS", "0")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_FEE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_EXIT_FEE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_PROFIT_GATE_SLIPPAGE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS", "120")
+    monkeypatch.delenv("AUTONOMOUS_FEE_AWARE_REQUIRE_SELL_FLOOR_FOR_ENTRY", raising=False)
+    monkeypatch.delenv("AUTONOMOUS_FEE_AWARE_ENTRY_MIN_EDGE_BPS", raising=False)
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=_FakeKrakenSpotConnector())
+    intent = OrderIntent(
+        symbol="XBTUSD",
+        side="buy",
+        target_notional=10.0,
+        why={"components": [{"edge_bps": 90.0, "cost_total_bps": 1.0}]},
+    )
+    ok, diag = svc._fee_aware_entry_allows(intent, spread_bps=1.0, slippage_bps=1.0)
+    assert ok is False
+    assert diag["entry_floor_bps"] >= 120.0
+
+
+def test_fee_aware_entry_can_relax_sell_floor_when_explicitly_configured(monkeypatch):
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_SIZING", "true")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_EDGE_BUFFER_BPS", "0")
+    monkeypatch.setenv("AUTONOMOUS_ENTRY_FEE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_EXIT_FEE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_PROFIT_GATE_SLIPPAGE_BPS", "1")
+    monkeypatch.setenv("AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS", "120")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_REQUIRE_SELL_FLOOR_FOR_ENTRY", "false")
+    monkeypatch.setenv("AUTONOMOUS_FEE_AWARE_ENTRY_MIN_EDGE_BPS", "3")
+    svc = LiveKrakenSpotService(_settings(dry_run=False), run_id="r1", connector=_FakeKrakenSpotConnector())
+    intent = OrderIntent(
+        symbol="XBTUSD",
+        side="buy",
+        target_notional=10.0,
+        why={"components": [{"edge_bps": 90.0, "cost_total_bps": 1.0}]},
+    )
+    ok, diag = svc._fee_aware_entry_allows(intent, spread_bps=1.0, slippage_bps=1.0)
+    assert diag["entry_floor_bps"] == 3.0
+    assert ok is True
 
 
 def test_exit_repricing_respects_min_time_between_reprices(monkeypatch):

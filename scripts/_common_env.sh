@@ -9,6 +9,30 @@ require_env() {
   fi
 }
 
+resolve_python_bin() {
+  local python_bin="${PYTHON_BIN:-}"
+  if [[ -n "${python_bin}" && -x "${python_bin}" ]]; then
+    printf '%s\n' "${python_bin}"
+    return 0
+  fi
+  if [[ -x ".venv/bin/python" ]]; then
+    printf '%s\n' ".venv/bin/python"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+  echo "No python interpreter available (expected .venv/bin/python or python3)." >&2
+  return 1
+}
+
 run_robot() {
-  PYTHONPATH=src python3 -m autonomous_investment_robot "$@"
+  local python_bin
+  python_bin="$(resolve_python_bin)"
+  PYTHONPATH=src "${python_bin}" -m autonomous_investment_robot "$@"
 }

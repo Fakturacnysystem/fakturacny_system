@@ -1,0 +1,869 @@
+#!/usr/bin/env python3
+import os
+import re
+import sys
+import math
+import time
+import tty
+import termios
+import select
+import shutil
+import subprocess
+from pathlib import Path
+from datetime import datetime
+from collections import deque
+
+REFRESH_SECONDS = 1.0
+TOTAL_PHASES = 25
+MAX_LOG_LINES = 200
+
+ROOT = Path.cwd()
+DOCS_REPORTS = ROOT / "docs" / "reports"
+UC_DIR = ROOT / "src" / "autonomous_investment_robot" / "services" / "universe_core"
+TESTS_DIR = ROOT / "tests"
+DOCS_DIR = ROOT / "docs"
+
+RUNS = [
+    ("Phase 9 execution hardening", "run_3e2d4a7c58604f31a639d1cec0bd4268", "SUCCEEDED"),
+    ("Phase 10–15 roadmap planning", "run_4d94ad30ba1c4e09a54a46959aa83265", "SUCCEEDED"),
+]
+
+# ANSI
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+
+BLACK = "\033[30m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+CYAN = "\033[36m"
+WHITE = "\033[37m"
+
+BRIGHT_BLACK = "\033[90m"
+BRIGHT_RED = "\033[91m"
+BRIGHT_GREEN = "\033[92m"
+BRIGHT_YELLOW = "\033[93m"
+BRIGHT_BLUE = "\033[94m"
+BRIGHT_MAGENTA = "\033[95m"
+BRIGHT_CYAN = "\033[96m"
+BRIGHT_WHITE = "\033[97m"
+
+ALT_ON = "\033[?1049h"
+ALT_OFF = "\033[?1049l"
+CURSOR_HIDE = "\033[?25l"
+CURSOR_SHOW = "\033[?25h"
+HOME = "\033[H"
+CLEAR = "\033[2J"
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+MATRIX = BRIGHT_GREEN
+MATRIX_SOFT = GREEN
+MATRIX_DIM = BRIGHT_BLACK
+ACCENT = BRIGHT_CYAN
+WARN = BRIGHT_YELLOW
+DANGER = BRIGHT_RED
+INFO = BRIGHT_MAGENTA
+TEXT = BRIGHT_WHITE
+
+
+def run(cmd: str) -> str:
+    try:
+        out = subprocess.check_output(
+            cmd,
+            shell=True,
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def visible_len(text: str) -> int:
+    return len(strip_ansi(text))
+
+
+def fit(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    plain = strip_ansi(text)
+    if len(plain) == width:
+        return text
+    if len(plain) < width:
+        return text + " " * (width - len(plain))
+
+    target = max(0, width - 1)
+    out = []
+    count = 0
+    i = 0
+    while i < len(text) and count < target:
+        if text[i] == "\033":
+            m = ANSI_RE.match(text, i)
+            if m:
+                out.append(m.group(0))
+                i = m.end()
+                continue
+        out.append(text[i])
+        count += 1
+        i += 1
+
+    out.append("…")
+    out.append(RESET)
+    return "".join(out)
+
+
+def hline(width: int, char: str = "─") -> str:
+    return char * max(0, width)
+
+
+def file_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def count_completed_phases():
+    if not DOCS_REPORTS.exists():
+        return 0
+    return len(list(DOCS_REPORTS.glob("PHASE_*_STRICT_COMPLETION_REPORT.md")))
+
+
+def latest_phase_number():
+    nums = []
+    if DOCS_REPORTS.exists():
+        for f in DOCS_REPORTS.glob("PHASE_*_STRICT_COMPLETION_REPORT.md"):
+            m = re.search(r"PHASE_(\d+)_", f.name)
+            if m:
+                nums.append(int(m.group(1)))
+    return max(nums) if nums else 0
+
+
+def infer_current_phase_progress():
+    latest = latest_phase_number()
+    current = latest + 1
+    score = 0
+
+    if current == 9:
+        if (UC_DIR / "execution_intel.py").exists():
+            score += 35
+        if (ROOT / "tests" / "test_universe_execution_phase9.py").exists():
+            score += 25
+        if (ROOT / "docs" / "universe_core_phase9_completion_report.md").exists():
+            score += 25
+        text = run(
+            "rg -n 'ExecutionStressIndex|DynamicOrderSlicer|LiquidityVacuumDetector|PanicFlattenProtocol' "
+            "src/autonomous_investment_robot/services/universe_core"
+        )
+        if text:
+            score += 15
+    elif current == 10:
+        if (ROOT / "docs" / "universe_core_phase10_completion_report.md").exists():
+            score = 100
+        else:
+            score = 10
+    else:
+        if (ROOT / f"docs/universe_core_phase{current}_completion_report.md").exists():
+            score = 100
+        else:
+            score = 0
+
+    return min(score, 100)
+
+
+def overall_progress():
+    completed = count_completed_phases()
+    curr = infer_current_phase_progress()
+    return round(((completed + curr / 100.0) / TOTAL_PHASES) * 100.0, 1)
+
+
+def top1_readiness():
+    completed = count_completed_phases()
+    if completed >= 15:
+        return 78
+    if completed >= 12:
+        return 65
+    if completed >= 9:
+        return 56
+    if completed >= 8:
+        return 48
+    return 30
+
+
+def git_branch():
+    return run("git branch --show-current") or "N/A"
+
+
+def last_commit():
+    return run("git log -1 --oneline") or "N/A"
+
+
+def recent_commits(limit: int = 6):
+    out = run(f"git log --oneline -{limit}")
+    return out.splitlines() if out else []
+
+
+def git_counts():
+    status = run("git status --short")
+    modified = 0
+    untracked = 0
+    staged = 0
+
+    if status:
+        for line in status.splitlines():
+            if line.startswith("?? "):
+                untracked += 1
+            else:
+                x = line[:2]
+                if x[0] not in (" ", "?"):
+                    staged += 1
+                if x[1] == "M":
+                    modified += 1
+    return modified, untracked, staged
+
+
+def latest_reports():
+    if not DOCS_REPORTS.exists():
+        return []
+    files = sorted(
+        DOCS_REPORTS.glob("PHASE_*_STRICT_COMPLETION_REPORT.md"),
+        key=lambda p: file_mtime(p),
+        reverse=True
+    )
+    return files[:8]
+
+
+def latest_report_tail(limit: int = 10):
+    files = latest_reports()
+    if not files:
+        return []
+    try:
+        lines = files[0].read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = [x.rstrip() for x in lines if x.strip()]
+        return lines[-limit:]
+    except Exception:
+        return []
+
+
+def universe_core_files(limit: int = 10):
+    if not UC_DIR.exists():
+        return []
+    return sorted([p.name for p in UC_DIR.glob("*.py")])[:limit]
+
+
+def pytest_status_hint():
+    cache = ROOT / ".pytest_cache" / "v" / "cache" / "lastfailed"
+    if cache.exists():
+        try:
+            size = cache.stat().st_size
+            if size > 5:
+                return f"{WARN}prior failures remembered{RESET}"
+            return f"{MATRIX}clean / no remembered failures{RESET}"
+        except Exception:
+            return f"{WARN}cache unreadable{RESET}"
+    return f"{MATRIX_DIM}cache unavailable{RESET}"
+
+
+def suggestions():
+    completed = count_completed_phases()
+    lines = [
+        "strict report + commit + tag + green full pytest",
+        "Universe Core additive / typed / replay-safe / rollback-safe",
+        "do not weaken hard safety doctrine or manual live gate",
+    ]
+    if completed < 9:
+        lines.append("focus: execution alpha / slippage resilience / fill quality")
+    elif completed < 10:
+        lines.append("focus: rollout governance / operator approval artifacts")
+    elif completed < 12:
+        lines.append("focus: market brain / causal context / divergence checks")
+    else:
+        lines.append("focus: future simulation / cross-reality fusion / survival doctrine")
+    lines.append("watch: shield escalations / fill quality / execution stress / replay determinism")
+    return lines
+
+
+def level_color(percent: float) -> str:
+    if percent >= 80:
+        return BRIGHT_GREEN
+    if percent >= 50:
+        return BRIGHT_CYAN
+    if percent >= 25:
+        return BRIGHT_YELLOW
+    return BRIGHT_RED
+
+
+def pulse_char(tick: int) -> str:
+    seq = "⠁⠂⠄⡀⢀⠠⠐⠈"
+    return seq[tick % len(seq)]
+
+
+def spinner(tick: int) -> str:
+    seq = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    return seq[tick % len(seq)]
+
+
+def sparkline(value: int, tick: int, width: int = 18) -> str:
+    bars = "▁▂▃▄▅▆▇█"
+    out = []
+    for i in range(width):
+        phase = (tick / 2.3) + i * 0.8
+        v = (math.sin(phase) + 1.0) / 2.0
+        idx = int(v * (len(bars) - 1))
+        if i < int(width * value / 100):
+            out.append(f"{MATRIX}{bars[idx]}{RESET}")
+        else:
+            out.append(f"{MATRIX_DIM}{bars[max(0, idx // 3)]}{RESET}")
+    return "".join(out)
+
+
+def progress_bar(percent: int, width: int = 28) -> str:
+    width = max(8, width)
+    filled = int(width * percent / 100)
+    empty = width - filled
+    color = level_color(percent)
+    head = "█" * max(0, filled - 1)
+    tip = "▉" if filled > 0 else ""
+    tail = "░" * empty
+    return f"{color}{head}{tip}{RESET}{MATRIX_DIM}{tail}{RESET} {color}{percent:>3}%{RESET}"
+
+
+def health_badge(label: str, value: int) -> str:
+    color = level_color(value)
+    return f"{color}●{RESET} {label}"
+
+
+def status_badge(label: str, ok: bool = True) -> str:
+    color = MATRIX if ok else DANGER
+    return f"{color}● {label}{RESET}"
+
+
+def make_box(title: str, lines, width: int):
+    inner = max(10, width - 2)
+    title_text = f" {title} "
+    top_fill = max(0, inner - len(strip_ansi(title_text)))
+    top = f"{MATRIX}┌{title_text}{'─' * top_fill}┐{RESET}"
+    bottom = f"{MATRIX}└{'─' * inner}┘{RESET}"
+    out = [top]
+    for line in lines:
+        out.append(f"{MATRIX}│{RESET}{fit(line, inner)}{MATRIX}│{RESET}")
+    out.append(bottom)
+    return out
+
+
+def find_tail_candidates():
+    candidates = []
+
+    for folder in (DOCS_REPORTS, DOCS_DIR, TESTS_DIR, UC_DIR, ROOT):
+        if not folder.exists():
+            continue
+
+        patterns = [
+            "*.log",
+            "*.txt",
+            "*.md",
+            "*.out",
+            "*.json",
+            "*.py",
+        ]
+        for pat in patterns:
+            for p in folder.rglob(pat):
+                if p.is_file():
+                    candidates.append(p)
+
+    seen = set()
+    unique = []
+    for p in candidates:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+
+    unique.sort(key=lambda p: file_mtime(p), reverse=True)
+    return unique
+
+
+def read_tail(path: Path, lines: int = 18):
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        content = [x.rstrip("\n") for x in content]
+        if not content:
+            return []
+        return content[-lines:]
+    except Exception:
+        return []
+
+
+class MatrixRain:
+    def __init__(self):
+        self.columns = []
+        self.last_cols = 0
+        self.charset = "01アイウエオカキクケコサシスセソABCDEFGHIJKLMNOPQRSTUVWXYZ<>[]{}+=-_|/\\"
+        self.rng_seed = int(time.time())
+
+    def rand(self):
+        self.rng_seed = (1103515245 * self.rng_seed + 12345) & 0x7FFFFFFF
+        return self.rng_seed
+
+    def reset(self, cols, rows):
+        self.last_cols = cols
+        self.columns = []
+        for _ in range(cols):
+            self.columns.append({
+                "head": self.rand() % max(1, rows),
+                "speed": 1 + (self.rand() % 3),
+                "length": 4 + (self.rand() % 14),
+                "offset": self.rand() % 100,
+            })
+
+    def update(self, cols, rows, tick):
+        if cols != self.last_cols or not self.columns:
+            self.reset(cols, rows)
+
+        for col in self.columns:
+            if (tick + col["offset"]) % col["speed"] == 0:
+                col["head"] = (col["head"] + 1) % max(1, rows)
+                if self.rand() % 120 == 0:
+                    col["length"] = 4 + (self.rand() % 18)
+
+    def line_overlay(self, row, cols):
+        chars = [" "] * cols
+        for x in range(min(cols, len(self.columns))):
+            col = self.columns[x]
+            head = col["head"]
+            length = col["length"]
+
+            for k in range(length):
+                y = head - k
+                if y < 0:
+                    y += 10000  # cheap wrap
+                if (y % 10000) % max(1, 1000) == row:
+                    rnd = self.rand() % len(self.charset)
+                    ch = self.charset[rnd]
+                    if k == 0:
+                        chars[x] = f"{BRIGHT_WHITE}{ch}{RESET}"
+                    elif k < 3:
+                        chars[x] = f"{BRIGHT_GREEN}{ch}{RESET}"
+                    else:
+                        chars[x] = f"{GREEN}{ch}{RESET}"
+        return "".join(chars)
+
+
+class DashboardState:
+    def __init__(self):
+        self.tick = 0
+        self.view_mode = 0
+        self.show_matrix = True
+        self.show_help = False
+        self.tail_index = 0
+        self.tail_candidates = []
+        self.tail_cache = deque(maxlen=MAX_LOG_LINES)
+        self.rain = MatrixRain()
+        self.last_tail_path = None
+
+    def next_view(self):
+        self.view_mode = (self.view_mode + 1) % 3
+
+    def prev_view(self):
+        self.view_mode = (self.view_mode - 1) % 3
+
+    def cycle_tail(self, step=1):
+        self.refresh_tail_candidates()
+        if not self.tail_candidates:
+            return
+        self.tail_index = (self.tail_index + step) % len(self.tail_candidates)
+
+    def refresh_tail_candidates(self):
+        self.tail_candidates = find_tail_candidates()
+
+    def current_tail_path(self):
+        self.refresh_tail_candidates()
+        if not self.tail_candidates:
+            return None
+        self.tail_index %= len(self.tail_candidates)
+        return self.tail_candidates[self.tail_index]
+
+    def tail_lines(self, limit=16):
+        path = self.current_tail_path()
+        if path is None:
+            self.last_tail_path = None
+            return [f"{MATRIX_DIM}no tail candidate files found{RESET}"]
+
+        if path != self.last_tail_path:
+            self.tail_cache.clear()
+            self.last_tail_path = path
+
+        lines = read_tail(path, limit)
+        self.tail_cache.clear()
+        self.tail_cache.extend(lines)
+        if not self.tail_cache:
+            return [f"{MATRIX_DIM}file is empty or unreadable{RESET}"]
+        return list(self.tail_cache)[-limit:]
+
+
+def matrix_header(cols: int, tick: int, state: DashboardState):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    pulse = pulse_char(tick)
+    spin = spinner(tick)
+
+    title = f"{BOLD}{MATRIX}UNIVERSE DASHBOARD :: MATRIX LIVE{RESET}"
+    subtitle = f"{MATRIX_DIM}live repo telemetry • cyber terminal • 1s refresh • fullscreen stable render{RESET}"
+
+    current_view = ["overview", "signals", "tails"][state.view_mode]
+    status = (
+        f"{MATRIX}{pulse}{RESET} "
+        f"{ACCENT}SYNC ONLINE{RESET}   "
+        f"{INFO}{spin}{RESET} "
+        f"{MATRIX}VIEW {current_view.upper()}{RESET}   "
+        f"{MATRIX}TIME {now}{RESET}"
+    )
+
+    divider = f"{MATRIX}{hline(cols)}{RESET}"
+    return [fit(title, cols), fit(subtitle, cols), fit(status, cols), divider]
+
+
+def matrix_footer(cols: int, state: DashboardState):
+    path = state.current_tail_path()
+    tail_name = path.name if path else "no-tail"
+    msg = (
+        f"{MATRIX_DIM}"
+        f"[TAB/n] next view  [b/p] prev view  [l] next tail file  [k] prev tail file  "
+        f"[m] matrix {'on' if state.show_matrix else 'off'}  [h] help  [q] quit"
+        f"{RESET}"
+    )
+    extra = f"{MATRIX}tail:{RESET} {tail_name}"
+    full = fit(msg, cols)
+    if visible_len(extra) + 1 < cols:
+        plain = strip_ansi(full)
+        space = cols - len(strip_ansi(extra))
+        if space > 0:
+            full = fit(msg, space) + extra
+    return full
+
+
+def health_lines(tick: int):
+    overall = int(overall_progress())
+    readiness = top1_readiness()
+    phasep = infer_current_phase_progress()
+
+    return [
+        f"{health_badge('OVERALL', overall)}       {progress_bar(overall, 20)}",
+        f"{health_badge('READINESS', readiness)}     {progress_bar(readiness, 20)}",
+        f"{health_badge('ACTIVE PHASE', phasep)}  {progress_bar(phasep, 20)}",
+        "",
+        f"overall signal      {sparkline(overall, tick, 22)}",
+        f"readiness wave      {sparkline(readiness, tick + 3, 22)}",
+        f"phase momentum      {sparkline(phasep, tick + 6, 22)}",
+    ]
+
+
+def build_left_panel(width: int, state: DashboardState):
+    completed = count_completed_phases()
+    latest = latest_phase_number()
+    current = latest + 1
+    overall = overall_progress()
+    readiness = top1_readiness()
+    curr_progress = infer_current_phase_progress()
+    modified, untracked, staged = git_counts()
+
+    repo_lines = [
+        f"{ACCENT}repo:{RESET} {ROOT}",
+        f"{ACCENT}branch:{RESET} {git_branch()}",
+        f"{ACCENT}last commit:{RESET} {last_commit()}",
+        "",
+        f"completed phases       : {MATRIX}{completed}{RESET} / {TOTAL_PHASES}",
+        f"latest completed phase : {MATRIX}{latest}{RESET}",
+        f"current active phase   : {ACCENT}{current}{RESET}",
+        f"overall completion     : {progress_bar(int(overall), 24)}",
+        f"top 1% readiness       : {progress_bar(readiness, 24)}",
+        f"phase heuristic        : {progress_bar(curr_progress, 24)}",
+    ]
+
+    health_repo_lines = [
+        f"modified tracked files : {WARN}{modified}{RESET}",
+        f"staged changes         : {ACCENT}{staged}{RESET}",
+        f"untracked files        : {WARN}{untracked}{RESET}",
+        f"pytest hint            : {pytest_status_hint()}",
+        "",
+    ] + health_lines(state.tick)
+
+    run_lines = []
+    for name, rid, result in RUNS:
+        ok = result.upper() == "SUCCEEDED"
+        run_lines.append(f"{status_badge(result, ok)}  {name}")
+        run_lines.append(f"{MATRIX_DIM}{rid}{RESET}")
+    run_lines += [
+        "",
+        f"{MATRIX_DIM}repository-driven view, ready for future live api bridge.{RESET}",
+    ]
+
+    files = universe_core_files()
+    file_lines = [f"{MATRIX}•{RESET} {x}" for x in files] if files else [f"{MATRIX_DIM}no files found{RESET}"]
+
+    out = []
+    if state.view_mode == 0:
+        out += make_box(f"{BOLD}SYSTEM STATUS{RESET}", repo_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}REPO HEALTH{RESET}", health_repo_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}CODEX RUNS{RESET}", run_lines, width)
+    elif state.view_mode == 1:
+        out += make_box(f"{BOLD}TACTICAL SIGNALS{RESET}", health_lines(state.tick), width)
+        out += [""]
+        out += make_box(f"{BOLD}REPO HEALTH{RESET}", health_repo_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}UNIVERSE CORE FILES{RESET}", file_lines, width)
+    else:
+        path = state.current_tail_path()
+        title = f"LIVE TAIL :: {path.name if path else 'NO FILE'}"
+        tail_lines = state.tail_lines(limit=18)
+        meta = []
+        if path:
+            meta = [
+                f"path: {path}",
+                f"modified: {datetime.fromtimestamp(file_mtime(path)).strftime('%Y-%m-%d %H:%M:%S')}",
+                "",
+            ]
+        out += make_box(f"{BOLD}{title}{RESET}", meta + tail_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}TACTICAL SIGNALS{RESET}", health_lines(state.tick), width)
+
+    return out
+
+
+def build_right_panel(width: int, state: DashboardState):
+    report_files = latest_reports()
+    report_lines = [f"{MATRIX}•{RESET} {p.name}" for p in report_files] if report_files else [f"{MATRIX_DIM}no strict reports found{RESET}"]
+
+    report_tail = latest_report_tail(10)
+    if not report_tail:
+        report_tail = [f"{MATRIX_DIM}no report tail available{RESET}"]
+
+    commits = recent_commits(8)
+    commit_lines = commits if commits else [f"{MATRIX_DIM}no commits found{RESET}"]
+
+    sugg = [f"{MATRIX}•{RESET} {x}" for x in suggestions()]
+
+    radar_lines = [
+        f"{fit('overall', 16)} {progress_bar(int(overall_progress()), 18)}",
+        f"{fit('readiness', 16)} {progress_bar(top1_readiness(), 18)}",
+        f"{fit('current phase', 16)} {progress_bar(infer_current_phase_progress(), 18)}",
+        "",
+        f"telemetry        {sparkline(int(overall_progress()), state.tick + 2, 18)}",
+        f"runtime drift    {sparkline(top1_readiness(), state.tick + 5, 18)}",
+        f"repo pressure    {sparkline(infer_current_phase_progress(), state.tick + 8, 18)}",
+    ]
+
+    tail_lines = state.tail_lines(limit=14)
+    tail_path = state.current_tail_path()
+    tail_title = f"TAIL PREVIEW :: {tail_path.name if tail_path else 'NO FILE'}"
+
+    out = []
+    if state.view_mode == 0:
+        out += make_box(f"{BOLD}LATEST STRICT REPORTS{RESET}", report_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}LATEST REPORT TAIL{RESET}", report_tail, width)
+        out += [""]
+        out += make_box(f"{BOLD}RECENT COMMITS{RESET}", commit_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}HIGH-VALUE IMPROVEMENTS{RESET}", sugg, width)
+    elif state.view_mode == 1:
+        out += make_box(f"{BOLD}TACTICAL RADAR{RESET}", radar_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}RECENT COMMITS{RESET}", commit_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}LATEST STRICT REPORTS{RESET}", report_lines, width)
+    else:
+        meta = []
+        if tail_path:
+            meta = [
+                f"path: {tail_path}",
+                "",
+            ]
+        out += make_box(f"{BOLD}{tail_title}{RESET}", meta + tail_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}RECENT COMMITS{RESET}", commit_lines, width)
+        out += [""]
+        out += make_box(f"{BOLD}LATEST STRICT REPORTS{RESET}", report_lines, width)
+
+    return out
+
+
+def overlay_text_on_matrix(base_lines, cols, state: DashboardState):
+    if not state.show_matrix:
+        return base_lines
+
+    rows = len(base_lines)
+    state.rain.update(cols, rows, state.tick)
+
+    out = []
+    for row_idx, line in enumerate(base_lines):
+        bg = state.rain.line_overlay(row_idx, cols)
+        fg_plain = strip_ansi(line)
+        if fg_plain.strip():
+            out.append(line)
+        else:
+            out.append(fit(bg, cols))
+    return out
+
+
+def build_help_overlay(cols: int, rows: int):
+    width = min(90, cols - 8)
+    lines = [
+        f"{BOLD}{MATRIX}KEYBOARD CONTROLS{RESET}",
+        "",
+        f"{ACCENT}TAB / n{RESET}   next view",
+        f"{ACCENT}b / p{RESET}     previous view",
+        f"{ACCENT}l{RESET}         next tail file",
+        f"{ACCENT}k{RESET}         previous tail file",
+        f"{ACCENT}m{RESET}         toggle matrix rain",
+        f"{ACCENT}h{RESET}         toggle this help",
+        f"{ACCENT}q{RESET}         quit",
+        "",
+        f"{MATRIX_DIM}views:{RESET} overview / signals / tails",
+    ]
+    box = make_box("HELP", lines, width)
+    pad_top = max(0, (rows - len(box)) // 2)
+    pad_left = max(0, (cols - width) // 2)
+
+    output = []
+    for _ in range(pad_top):
+        output.append("")
+    for line in box:
+        output.append(" " * pad_left + line)
+    return output
+
+
+def render(state: DashboardState) -> str:
+    cols, rows = shutil.get_terminal_size((140, 42))
+    cols = max(cols, 100)
+    rows = max(rows, 30)
+
+    gap = 2
+    left_width = max(50, (cols - gap) // 2)
+    right_width = max(40, cols - left_width - gap)
+
+    header = matrix_header(cols, state.tick, state)
+    left = build_left_panel(left_width, state)
+    right = build_right_panel(right_width, state)
+
+    content_height = max(len(left), len(right))
+    left += [""] * (content_height - len(left))
+    right += [""] * (content_height - len(right))
+
+    body = []
+    max_body_rows = rows - len(header) - 2
+    for i in range(min(content_height, max_body_rows)):
+        l = fit(left[i], left_width)
+        r = fit(right[i], right_width)
+        body.append(f"{l}{' ' * gap}{r}")
+
+    while len(body) < max_body_rows:
+        body.append("")
+
+    lines = header + body + [matrix_footer(cols, state)]
+    lines = [fit(x, cols) for x in lines[:rows]]
+
+    if len(lines) < rows:
+        lines += [""] * (rows - len(lines))
+
+    lines = overlay_text_on_matrix(lines, cols, state)
+
+    if state.show_help:
+        help_lines = build_help_overlay(cols, rows)
+        for i, line in enumerate(help_lines):
+            if i < rows and strip_ansi(line).strip():
+                lines[i] = fit(line, cols)
+
+    return "\n".join(lines[:rows])
+
+
+class RawTerminal:
+    def __enter__(self):
+        self.fd = sys.stdin.fileno()
+        self.old = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+
+
+def read_key():
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return None
+    try:
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            if select.select([sys.stdin], [], [], 0.001)[0]:
+                seq = sys.stdin.read(2)
+                return ch + seq
+        return ch
+    except Exception:
+        return None
+
+
+def handle_key(state: DashboardState, key: str):
+    if key in ("\t", "n"):
+        state.next_view()
+    elif key in ("b", "p"):
+        state.prev_view()
+    elif key == "l":
+        state.cycle_tail(1)
+    elif key == "k":
+        state.cycle_tail(-1)
+    elif key == "m":
+        state.show_matrix = not state.show_matrix
+    elif key == "h":
+        state.show_help = not state.show_help
+    elif key in ("q", "\x03"):
+        raise KeyboardInterrupt
+
+
+def main():
+    state = DashboardState()
+
+    sys.stdout.write(ALT_ON + CURSOR_HIDE + CLEAR + HOME)
+    sys.stdout.flush()
+
+    try:
+        with RawTerminal():
+            while True:
+                start = time.time()
+
+                while True:
+                    key = read_key()
+                    if key is None:
+                        break
+                    handle_key(state, key)
+
+                sys.stdout.write(HOME)
+                sys.stdout.write(render(state))
+                sys.stdout.flush()
+
+                state.tick += 1
+
+                elapsed = time.time() - start
+                sleep_for = max(0.02, REFRESH_SECONDS - elapsed)
+                time.sleep(sleep_for)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write(RESET + CURSOR_SHOW + ALT_OFF)
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()#!/usr/bin/env python3
+
+
+# sem vlož celý kód

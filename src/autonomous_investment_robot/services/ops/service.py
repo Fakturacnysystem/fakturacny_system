@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from autonomous_investment_robot.services.distributed import RedisAuditPublisher
 
 
 class OpsService:
@@ -12,6 +15,14 @@ class OpsService:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics: dict[str, Any] = {}
+        self._memory_trace_path = self.run_dir / "universe_memory_trace.jsonl"
+        self._memory_trace_max_rows = max(1, int(float(os.getenv("AUTONOMOUS_UNIVERSE_MEMORY_TRACE_MAX_ROWS", "4000") or "4000")))
+        self._audit_stream_publisher = RedisAuditPublisher.from_env(run_id=str(self.run_dir))
+        health = self._audit_stream_publisher.health().to_dict()
+        self.metrics["distributed_audit_stream_enabled"] = 1.0 if bool(health.get("enabled")) else 0.0
+        self.metrics["distributed_audit_stream_ok"] = 1.0 if bool(health.get("ok")) else 0.0
+        self.metrics["universe_memory_trace_rows"] = 0.0
+        self.metrics["universe_memory_trace_last_has_packet"] = 0.0
 
     def set_metric(self, name: str, value: Any) -> None:
         self.metrics[name] = value
@@ -29,6 +40,22 @@ class OpsService:
         p = self.run_dir / "audit.log"
         with p.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"event_type": event_type, "payload": payload}, sort_keys=True) + "\n")
+        symbol = str(payload.get("symbol", "") or "")
+        market_class = str(payload.get("market_class", "") or "")
+        if not symbol and isinstance(payload.get("decision"), dict):
+            decision = payload.get("decision", {})
+            if isinstance(decision, dict):
+                symbol = str(decision.get("symbol", "") or symbol)
+                market_class = str(decision.get("market_class", "") or market_class)
+        _ = self._audit_stream_publisher.publish(
+            event_type=event_type,
+            payload=payload,
+            symbol=symbol,
+            market_class=market_class,
+        )
+        if str(os.getenv("AUTONOMOUS_DISTRIBUTED_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}:
+            h = self._audit_stream_publisher.health()
+            self.metrics["distributed_audit_stream_ok"] = 1.0 if h.ok else 0.0
 
     def track_config(self, config_data: dict[str, Any]) -> str:
         serialized = json.dumps(config_data, sort_keys=True)
@@ -56,6 +83,51 @@ class OpsService:
             lines.append(f"{k} {val}")
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return str(p)
+
+    def record_universe_memory_trace(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        row = dict(payload or {})
+        ts = row.get("ts", 0.0)
+        try:
+            ts = float(ts)
+        except Exception:
+            ts = 0.0
+        trace = {
+            "ts": ts,
+            "symbol": str(row.get("symbol", "") or "").upper(),
+            "action": str(row.get("action", "none") or "none"),
+            "reason": str(row.get("reason", "") or ""),
+            "packet_id": str(row.get("packet_id", "") or ""),
+            "mission": str(row.get("mission", "") or ""),
+            "shield_mode": str(row.get("shield_mode", "") or ""),
+            "execution_abort": bool(row.get("execution_abort", False)),
+            "gated_by": list(row.get("gated_by", [])) if isinstance(row.get("gated_by", []), list) else [],
+            "bounded_retention_status": str(row.get("bounded_retention_status", "") or ""),
+            "bounded_retention_within_limit": bool(row.get("bounded_retention_within_limit", False)),
+            "errors_count": max(0, int(float(row.get("errors_count", 0) or 0))),
+            "world_state_source": str(row.get("world_state_source", "") or ""),
+            "world_state_available": bool(row.get("world_state_available", False)),
+            "world_state_graph_available": bool(row.get("world_state_graph_available", False)),
+            "world_state_safe_to_trade": bool(row.get("world_state_safe_to_trade", False)),
+            "world_state_stale_domains": (
+                [str(item) for item in row.get("world_state_stale_domains", []) if str(item)]
+                if isinstance(row.get("world_state_stale_domains", []), list)
+                else []
+            ),
+            "world_state_stale_critical_domains": (
+                [str(item) for item in row.get("world_state_stale_critical_domains", []) if str(item)]
+                if isinstance(row.get("world_state_stale_critical_domains", []), list)
+                else []
+            ),
+        }
+        with self._memory_trace_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(trace, sort_keys=True) + "\n")
+        lines = [line for line in self._memory_trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(lines) > self._memory_trace_max_rows:
+            lines = lines[-self._memory_trace_max_rows :]
+            self._memory_trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.metrics["universe_memory_trace_rows"] = float(len(lines))
+        self.metrics["universe_memory_trace_last_has_packet"] = 1.0 if bool(trace["packet_id"]) else 0.0
+        return trace
 
     def export_dashboard_snapshot(self) -> str:
         groups = {
@@ -136,6 +208,10 @@ class OpsService:
                 "decision_tick_last_reason",
                 "active_universe_count",
             ],
+            "universe_memory": [
+                "universe_memory_trace_rows",
+                "universe_memory_trace_last_has_packet",
+            ],
             "harmony": [
                 "harmony_order_cadence_s",
                 "harmony_effective_min_order_quote",
@@ -164,6 +240,15 @@ class OpsService:
                 "market_watch_realized_vol_10m",
                 "market_watch_confidence",
                 "spread_spike_active",
+            ],
+            "world_state": [
+                "world_state_available",
+                "world_state_graph_available",
+                "world_state_safe_to_trade",
+                "world_state_stale_domains_count",
+                "world_state_stale_critical_domains_count",
+                "world_state_freshness_max_s",
+                "world_state_market_stale_s",
             ],
         }
         payload = {

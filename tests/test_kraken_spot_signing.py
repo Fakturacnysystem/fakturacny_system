@@ -125,3 +125,49 @@ def test_verify_live_permissions_classifies_invalid_nonce() -> None:
     ok, reason = _Nonce().verify_live_permissions()
     assert ok is False
     assert reason.startswith("kraken_invalid_nonce:balance")
+
+
+def test_verify_live_permissions_allows_optional_open_orders_scope_failure() -> None:
+    class _OpenOrdersDenied(KrakenSpotConnector):
+        def __init__(self):
+            super().__init__(
+                KrakenSpotExecutionSettings(
+                    allow_unknown_permissions=False,
+                    require_open_orders_scope=False,
+                )
+            )
+            self._api_key = "k"
+            self._api_secret = "s"
+
+        def balance(self):
+            return {"ZUSD": "10"}
+
+        def open_orders(self):
+            raise RuntimeError("EGeneral:Permission denied")
+
+    ok, reason = _OpenOrdersDenied().verify_live_permissions()
+    assert ok is True
+    assert "permissions_verified_optional_scope_unavailable:open_orders:invalid_permissions" in reason
+
+
+def test_verify_live_permissions_requires_open_orders_scope_when_enabled() -> None:
+    class _OpenOrdersDeniedStrict(KrakenSpotConnector):
+        def __init__(self):
+            super().__init__(
+                KrakenSpotExecutionSettings(
+                    allow_unknown_permissions=False,
+                    require_open_orders_scope=True,
+                )
+            )
+            self._api_key = "k"
+            self._api_secret = "s"
+
+        def balance(self):
+            return {"ZUSD": "10"}
+
+        def open_orders(self):
+            raise RuntimeError("EGeneral:Permission denied")
+
+    ok, reason = _OpenOrdersDeniedStrict().verify_live_permissions()
+    assert ok is False
+    assert reason.startswith("kraken_permission_denied:open_orders")

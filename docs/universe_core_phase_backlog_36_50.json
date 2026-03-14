@@ -1,0 +1,702 @@
+{
+  "schema_version": "universe_core_phase_backlog_v1",
+  "generated_on": "2026-03-12",
+  "protocol_file": "docs/universe_core_autonomous_protocol_36_50.md",
+  "recommended_next_phase": null,
+  "baseline_truth": {
+    "implemented_additive_phases": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36
+    ],
+    "legacy_orchestrator_authority_path": "src/autonomous_investment_robot/core/orchestrator.py",
+    "manual_live_gate_requirements": [
+      "AUTONOMOUS_LIVE_GO=1",
+      "AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE exists",
+      "Universe Core rollout governance approval for live-candidate stage"
+    ],
+    "window_26_35_revalidation": {
+      "phase_focus_gate": "pytest -q tests/test_universe_program_window_26_35.py -k 'phase29 or phase32 or phase34'",
+      "window_gate": "pytest -q tests/test_universe_program_window_26_35.py",
+      "full_gate": "pytest -q",
+      "full_gate_result": "496 passed, 1 skipped"
+    }
+  },
+  "scoring_model": {
+    "formula": "score = impact + unblock_value + safety_value - effort_cost - blocker_risk",
+    "status_filter": [
+      "pending",
+      "active_hardening"
+    ],
+    "dependency_rule": "all phase dependencies must already be completed_additive"
+  },
+  "phases": [
+    {
+      "phase_number": 36,
+      "title": "Deterministic Intelligence Ledger Chain",
+      "status": "completed_additive",
+      "objective": "Create a deterministic, replay-safe hash-chained ledger over advanced intelligence outputs so future simulation and capital governance remain auditable across identical world inputs.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/intelligence_ledger.py",
+        "LedgerPhaseEntry",
+        "IntelligenceLedgerRecord",
+        "DeterministicIntelligenceLedger",
+        "UniverseMind phase36 integration in service.py"
+      ],
+      "dependencies": [
+        35
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 5,
+        "safety_value": 5,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "acceptance_criteria": [
+        "ledger identity is stable across identical world and intelligence payload inputs",
+        "ledger captures explicit veto lineage from phase32 and phase34",
+        "phase36 output is exported in advanced_intelligence and meta intelligence"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase36",
+        "pytest -q tests/test_universe_program_window_26_35.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "advisory only; cannot alter live execution authority",
+        "manual live gate semantics unchanged",
+        "bounded memory and deterministic hashing only"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 36",
+        "full pytest green after phase36 integration",
+        "backlog status updated to completed_additive only with test evidence"
+      ],
+      "next_phase_if_completed": 37
+    },
+    {
+      "phase_number": 37,
+      "title": "Scenario Portfolio Netting Engine",
+      "status": "completed_additive",
+      "objective": "Net future-simulation branch outcomes across symbols into a bounded portfolio stress envelope before capital recommendation steps.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/scenario_portfolio_netting.py",
+        "PortfolioStressEnvelope",
+        "NettedScenarioExposure",
+        "UniverseMind portfolio netting hook"
+      ],
+      "dependencies": [
+        36
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 4,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "netted envelope deterministic for same scenario tree set",
+        "exposure netting never exceeds existing risk caps",
+        "risk escalation reasons include portfolio netting evidence"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase37",
+        "pytest -q tests/test_orchestrator_risk_caps.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "no authority-path replacement",
+        "netting output recommendation-only",
+        "fail-closed if netting state unavailable"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 37",
+        "phase37 focused and full regression gates green",
+        "rollback notes include netting-module disable path"
+      ],
+      "next_phase_if_completed": 38
+    },
+    {
+      "phase_number": 38,
+      "title": "Capital Constraint Compiler",
+      "status": "completed_additive",
+      "objective": "Compile survival doctrine, risk caps, and execution limits into a single deterministic capital constraint contract used by downstream intelligence phases.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/capital_constraint_compiler.py",
+        "CompiledCapitalConstraints",
+        "ConstraintReason",
+        "UniverseMind phase38 constraint export"
+      ],
+      "dependencies": [
+        37
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 4,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "compiled constraints are deterministic from fixed inputs",
+        "safety veto in survival doctrine hard-clamps exposure in compiled contract",
+        "constraint contract is serializable and machine-readable"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase38",
+        "pytest -q tests/test_orchestrator_risk_caps.py tests/test_profit_gate.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "cannot weaken existing risk limits",
+        "cannot bypass profit-floor logic",
+        "must remain additive advisory"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 38",
+        "constraint contract enforced in tests for veto and normal modes",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 39
+    },
+    {
+      "phase_number": 39,
+      "title": "Global Market Brain Calibration and Drift Sentinel",
+      "status": "completed_additive",
+      "objective": "Add calibration and drift monitors for GlobalMarketBrain outputs so confidence and freshness are bounded and replay-stable.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/global_market_calibration.py",
+        "CalibrationState",
+        "DriftAlert",
+        "GlobalMarketBrain calibration adapter"
+      ],
+      "dependencies": [
+        38
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 4,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "drift scores deterministic on replay",
+        "stale data lowers confidence with explicit reason codes",
+        "calibration artifact exposed in ops payload"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase39",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase26",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "confidence can only decrease on missing critical inputs",
+        "no runtime dependence on external non-deterministic services"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 39",
+        "calibration drift tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 40
+    },
+    {
+      "phase_number": 40,
+      "title": "Cross-Reality Integrity Guard",
+      "status": "completed_additive",
+      "objective": "Harden cross-reality fusion with explicit integrity thresholds and fail-closed degradation contracts for high-uncertainty regimes.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/cross_reality_integrity_guard.py",
+        "IntegrityThresholdContract",
+        "IntegrityEscalationDecision",
+        "CrossRealitySignalFusion guard integration"
+      ],
+      "dependencies": [
+        39
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "integrity guard deterministically flags low-coverage states",
+        "guard escalation is exported with reason codes",
+        "survival doctrine consumes integrity escalation when available"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase40",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase30",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "must preserve advisory-only behavior",
+        "no silent override of hard safety stop"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 40",
+        "cross-reality degradation contract validated by tests",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 41
+    },
+    {
+      "phase_number": 41,
+      "title": "Personality Stability Governor",
+      "status": "completed_additive",
+      "objective": "Introduce bounded personality state transition governance to prevent unsafe oscillations under repeated stress cycles.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/personality_stability_governor.py",
+        "PersonalityTransitionBudget",
+        "StabilityViolation",
+        "AdaptivePersonalityEngine governor integration"
+      ],
+      "dependencies": [
+        40
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "transition budget deterministic for identical stress sequences",
+        "hard safety override still forces survival posture",
+        "stability violations surfaced in advanced intelligence"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase41",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase31",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "cannot allow transitions that weaken hard-stop semantics",
+        "bounded-memory hysteresis history"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 41",
+        "governor edge-case tests green",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 42
+    },
+    {
+      "phase_number": 42,
+      "title": "Committee Escalation Protocol",
+      "status": "completed_additive",
+      "objective": "Formalize committee disagreement escalation and operator-facing veto rationale bundles for institutional governance readiness.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/committee_escalation_protocol.py",
+        "EscalationTicket",
+        "VetoRationaleBundle",
+        "AutonomousFundBrain escalation integration"
+      ],
+      "dependencies": [
+        41
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "veto/disagreement escalation bundle is deterministic and machine-readable",
+        "safety veto always propagates into escalation ticket",
+        "ops snapshot includes escalation summary"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase42",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase34",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "no automatic live activation from committee output",
+        "manual operator gate remains required"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 42",
+        "escalation bundle tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 43
+    },
+    {
+      "phase_number": 43,
+      "title": "Institutional Gate Compiler",
+      "status": "completed_additive",
+      "objective": "Compile institutional readiness, ops governance, and committee veto status into a single deployment gate contract.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/institutional_gate_compiler.py",
+        "DeploymentGateContract",
+        "GateBlocker",
+        "InstitutionalReadinessEngine integration"
+      ],
+      "dependencies": [
+        42
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "deployment gate reflects veto/manual gate truth deterministically",
+        "gate blockers are explicit and machine-readable",
+        "rollout stage cannot advance when required controls are missing"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase43",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase35",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "cannot downgrade manual gate requirement",
+        "fail-closed on missing required evidence"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 43",
+        "deployment gate fail-closed tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 44
+    },
+    {
+      "phase_number": 44,
+      "title": "Macro-to-Micro Decision Bridge",
+      "status": "completed_additive",
+      "objective": "Bridge macro global-market context to micro execution posture through typed, deterministic contraction logic.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/macro_micro_decision_bridge.py",
+        "MacroMicroBridgeDecision",
+        "PostureContraction",
+        "Execution intelligence bridge integration"
+      ],
+      "dependencies": [
+        43
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 4,
+        "safety_value": 4,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "bridge decisions deterministic and serializable",
+        "high macro stress contracts micro risk/size posture",
+        "no bypass of existing shield/profit-floor checks"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase44",
+        "pytest -q tests/test_universe_execution_phase9.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "bridge is advisory in additive path",
+        "existing execution authority and risk guards remain unchanged"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 44",
+        "bridge behavior tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 45
+    },
+    {
+      "phase_number": 45,
+      "title": "Future Simulation Ensemble Ladder",
+      "status": "completed_additive",
+      "objective": "Extend deterministic future simulation to bounded multi-tree ensemble evaluation for robust tail-risk and edge confidence estimation.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/future_simulation_ensemble.py",
+        "EnsembleScenarioResult",
+        "EnsembleConfidenceContract",
+        "DeterministicFutureSimulationEngine ensemble integration"
+      ],
+      "dependencies": [
+        44
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 4,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "ensemble seeds deterministic across identical inputs",
+        "compute is bounded by explicit branch and tree limits",
+        "ensemble export remains machine-serializable for replay"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase45",
+        "pytest -q tests/test_universe_program_window_26_35.py -k phase29",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "bounded memory and compute mandatory",
+        "no non-deterministic random source usage"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 45",
+        "ensemble determinism and bounds tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 46
+    },
+    {
+      "phase_number": 46,
+      "title": "Causal Twin Coupling Layer",
+      "status": "completed_additive",
+      "objective": "Connect phase29/45 simulation outputs with causal market twin diagnostics to improve structural scenario credibility without introducing nondeterminism.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/causal_twin_bridge.py",
+        "CausalScenarioAlignment",
+        "TwinDivergenceSignal",
+        "bridge integration with services/autonomous_decision/causal_market_twin.py"
+      ],
+      "dependencies": [
+        45
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 3,
+        "safety_value": 4,
+        "effort_cost": 4,
+        "blocker_risk": 3
+      },
+      "acceptance_criteria": [
+        "alignment score deterministic from fixed twin/simulation payloads",
+        "divergence reasons are explicit and serializable",
+        "fallback behavior is conservative when twin inputs are stale"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase46",
+        "pytest -q tests/test_causal_market_twin_engine.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "fail-closed on stale or partial twin critical data",
+        "advisory-only influence on live behavior"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 46",
+        "causal alignment and stale-input tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 47
+    },
+    {
+      "phase_number": 47,
+      "title": "Distributed Deterministic Simulation Bridge",
+      "status": "completed_additive",
+      "objective": "Add deterministic sharded simulation contract support through distributed compute bridge while preserving replay identity and bounded execution.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/replay_distributed_bridge.py",
+        "DistributedSimulationContract",
+        "ShardReplayIdentity",
+        "integration with services/distributed/compute_bridge.py"
+      ],
+      "dependencies": [
+        46
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 3,
+        "safety_value": 4,
+        "effort_cost": 4,
+        "blocker_risk": 3
+      },
+      "acceptance_criteria": [
+        "same input contract yields same shard identities and aggregate output",
+        "distributed timeout/partial failure paths are explicit and conservative",
+        "replay metadata includes deterministic shard evidence"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase47",
+        "pytest -q tests/test_distributed_services.py tests/test_distributed_e2e.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "distributed bridge cannot change live execution authority",
+        "must remain safe under worker unavailability"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 47",
+        "deterministic distributed contract tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 48
+    },
+    {
+      "phase_number": 48,
+      "title": "Evidence Vault and Audit Replay Index",
+      "status": "completed_additive",
+      "objective": "Build a machine-readable evidence vault index linking decisions, simulations, vetoes, and ops artifacts for institutional audit replay.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/evidence_vault_index.py",
+        "EvidenceLedgerIndex",
+        "ReplayAuditPointer",
+        "integration with memory.py and ops.py artifacts"
+      ],
+      "dependencies": [
+        47
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "evidence index deterministically references packet and governance artifacts",
+        "missing artifacts are explicitly marked and fail readiness checks",
+        "index is serializable and bounded"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase48",
+        "pytest -q tests/test_ops_evidence_snapshot.py tests/test_runtime_audit.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "no hidden mutable state outside persisted artifacts",
+        "cannot mask missing safety evidence"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 48",
+        "evidence index integrity tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 49
+    },
+    {
+      "phase_number": 49,
+      "title": "Live Canary Governance Envelope",
+      "status": "completed_additive",
+      "objective": "Compose canary rollout governance envelope from readiness, survival, committee, and evidence signals with explicit manual gate lock.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/live_canary_envelope.py",
+        "CanaryGovernanceEnvelope",
+        "CanaryBlocker",
+        "UniverseOpsService canary envelope integration"
+      ],
+      "dependencies": [
+        48
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 2,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "canary envelope deterministically blocks when manual gate or veto conditions fail",
+        "envelope checklist is machine-readable and complete",
+        "rollout stage transitions remain fail-closed"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase49",
+        "pytest -q tests/test_safety_preflight.py tests/test_runtime_audit.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "manual live gate remains mandatory",
+        "no autonomous bypass to live-candidate"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 49",
+        "canary envelope and gate-lock tests pass",
+        "full suite green"
+      ],
+      "next_phase_if_completed": 50
+    },
+    {
+      "phase_number": 50,
+      "title": "Institutional Autonomous Capital Certification",
+      "status": "completed_additive",
+      "objective": "Produce a deterministic certification dossier for window 36-50 with residual-risk register, rollback packet, and readiness truth table.",
+      "required_modules_contracts": [
+        "src/autonomous_investment_robot/services/universe_core/phase50_certification.py",
+        "AutonomousCapitalCertification",
+        "ResidualRiskTruthTable",
+        "docs/reports/PHASE_50_STRICT_COMPLETION_REPORT.md"
+      ],
+      "dependencies": [
+        49
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 0,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "acceptance_criteria": [
+        "certification dossier is machine-readable and reproducible",
+        "residual risks and rollback controls are explicit",
+        "recommended_next_phase is null only when all window phases are complete"
+      ],
+      "test_validation_plan": [
+        "pytest -q tests/test_universe_program_window_36_50.py -k phase50",
+        "pytest -q tests/test_universe_program_window_36_50.py",
+        "pytest -q"
+      ],
+      "rollout_constraints": [
+        "cannot claim live readiness without manual gate + safety evidence",
+        "legacy authority path remains unchanged"
+      ],
+      "strict_completion_requirements": [
+        "strict report published for phase 50",
+        "window 36-50 truth dossier published",
+        "full suite green"
+      ],
+      "next_phase_if_completed": null
+    }
+  ]
+}

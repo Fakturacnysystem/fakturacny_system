@@ -227,9 +227,13 @@ class ShieldHealthEnvelope:
                     }
                 )
 
-        meta_available = bool(meta_payload) and (
-            "regime_cluster" in meta_payload or "strategy_weights" in meta_payload or "risk_scale" in meta_payload
-        )
+        explicit_meta_available = meta_payload.get("meta_available")
+        if isinstance(explicit_meta_available, bool):
+            meta_available = bool(explicit_meta_available)
+        else:
+            meta_available = bool(meta_payload) and (
+                "regime_cluster" in meta_payload or "strategy_weights" in meta_payload or "risk_scale" in meta_payload
+            )
         regime_confidence = _clamp(
             _safe_float(meta_payload.get("regime_confidence", world.market_state.regime_confidence), world.market_state.regime_confidence),
             0.0,

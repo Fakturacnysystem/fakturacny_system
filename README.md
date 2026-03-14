@@ -21,6 +21,9 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Live canary: `config.perps_intraday.live_canary.yaml`
 - Live full strict: `config.perps_intraday.live.yaml`
 
+## Architecture and Roadmap
+- UNIVERSE CORE execution map and truthful phase status: `docs/universe_core_program.md`
+
 ## Kraken setup (step-by-step, private bot model)
 1. Create Kraken API key:
 - Trading enabled.
@@ -198,22 +201,22 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
 
 ```bash
 # nonstop supervised live loop
-python3 -m cli.run --config config.kraken_spot.live_profit.yaml --nonstop
+./.venv/bin/python -m cli.run --config config.kraken_spot.live_profit.yaml --nonstop
 
 # status snapshot (orders, submissions, positions)
-python3 -m cli.status --config config.kraken_spot.live_profit.yaml
+./.venv/bin/python -m cli.status --config config.kraken_spot.live_profit.yaml
 
 # watchdog health (heartbeat + stall checks)
-python3 -m cli.health --config config.kraken_spot.live_profit.yaml
+./.venv/bin/python -m cli.health --config config.kraken_spot.live_profit.yaml
 
 # explicit 110% audit check (with safe repair actions, no forced loss-closes)
-python3 -m cli.audit110 --config config.kraken_spot.live_profit.yaml --once
+./.venv/bin/python -m cli.audit110 --config config.kraken_spot.live_profit.yaml --once
 
 # optional OpenAI-assisted self-improvement report (never sends orders, never edits code)
-python3 -m cli.self_improve --config config.kraken_spot.live_profit.yaml --last 24
+./.venv/bin/python -m cli.self_improve --config config.kraken_spot.live_profit.yaml --last 24
 
 # paper mode
-python3 -m cli.paper --config config.kraken_spot.paper.yaml
+./.venv/bin/python -m cli.paper --config config.kraken_spot.paper.yaml
 ```
 
 - Default live script uses watchdog now:

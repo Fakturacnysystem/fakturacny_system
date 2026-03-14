@@ -396,7 +396,10 @@ def test_orchestrator_profit_lock_skips_sell_before_execution(tmp_path, monkeypa
     profit_lock_blocked = any(
         row.get("event_type") == "live_exec"
         and row.get("payload", {}).get("status") == "skipped"
-        and "profit_lock" in row.get("payload", {}).get("reason", "")
+        and (
+            "profit_lock" in row.get("payload", {}).get("reason", "")
+            or row.get("payload", {}).get("reason", "") in {"tp_ladder_block", "tp_target_not_met"}
+        )
         for row in events
     )
     assert profit_lock_blocked, "Expected profit_lock event in audit log"

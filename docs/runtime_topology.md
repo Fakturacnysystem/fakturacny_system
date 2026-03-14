@@ -30,14 +30,29 @@ Compute node never submits live orders directly.
 Live node publishes compute tasks to:
 
 - `autobot.tasks.scan`
+- `autobot.tasks.forecast`
+- `autobot.tasks.optimize`
 
 Compute node publishes results to:
 
 - `autobot.results.rankings`
+- `autobot.results.signals`
 
 Both nodes can emit audit envelope events to:
 
 - `autobot.events.audit`
+
+Consumer groups:
+
+- `compute_node` consumes task streams.
+- `live_node` consumes result/audit streams.
+
+### Cross-Asset Class Normalization (Phase 20)
+
+- Live and local-compute ranking now normalize market-class aliases to canonical classes before scoring:
+  - `crypto_spot`, `crypto_perp`, `futures`, `xstock`, `xstock_etf`, `xstock_perp`, `xstock_etf_perp`, `fx`.
+- Universe Core cross-asset allocator applies deterministic class-aware scoring and class caps on canonical classes.
+- This normalization is additive and does not bypass existing risk/exposure gates in orchestrator/risk-engine paths.
 
 ### Postgres Mirror Sink
 
@@ -60,3 +75,15 @@ Current code now has extraction-ready boundaries for:
 - audit/mirror service
 
 These boundaries are contract-first and compatible with later process/container extraction.
+
+## Runtime Truth Criteria
+
+Presence of files or classes alone is insufficient. For distributed runtime proof, verify:
+
+- `runs/<run_dir>/distributed_runtime_diagnostics.json`
+  - `compute_bridge.backend == "redis_streams"`
+  - `postgres_mirror.enabled == true`
+- `runs/<run_dir>/audit.log` includes `distributed_compute_rankings`
+- `runs/<run_dir>/event_bus.jsonl` includes execution/decision topics
+
+If these are missing, classify the setup as partial/scaffolded even when docs and tests are present.

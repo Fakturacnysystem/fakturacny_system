@@ -8,8 +8,10 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY cli ./cli
+COPY scripts ./scripts
 COPY config*.yaml ./
 
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
+RUN chmod +x scripts/*.sh scripts/*.py || true
 
 CMD ["python", "-m", "cli.run", "--config", "config.kraken_spot.live_profit.yaml", "--nonstop"]

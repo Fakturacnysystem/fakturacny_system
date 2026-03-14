@@ -1,0 +1,3 @@
+========== HARD LAUNCH START 20260313_143043 ==========
+[1/8] kill old sessions/processes
+[2/8] validate required gate artifacts

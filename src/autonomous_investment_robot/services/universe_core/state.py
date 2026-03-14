@@ -513,6 +513,148 @@ class WorldStateSnapshot:
         }
 
 
+@dataclass(frozen=True)
+class WorldStateReadView:
+    symbol: str
+    source: str
+    as_of_time: float
+    world_state_available: bool
+    graph_available: bool
+    safe_to_trade: bool
+    freshness_s: dict[str, float]
+    stale_domains: list[str]
+    stale_critical_domains: list[str]
+    summary: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": str(self.symbol),
+            "source": str(self.source),
+            "as_of_time": float(self.as_of_time),
+            "world_state_available": bool(self.world_state_available),
+            "graph_available": bool(self.graph_available),
+            "safe_to_trade": bool(self.safe_to_trade),
+            "freshness_s": {str(k): float(v) for k, v in dict(self.freshness_s).items()},
+            "stale_domains": [str(item) for item in list(self.stale_domains)],
+            "stale_critical_domains": [str(item) for item in list(self.stale_critical_domains)],
+            "summary": dict(self.summary),
+        }
+
+
+class WorldStateReadAdapter:
+    """Read-only adapter exposing canonical world-state diagnostics for decision consumers."""
+
+    _CRITICAL_DOMAINS: tuple[str, ...] = (
+        "market_state",
+        "portfolio_state",
+        "execution_state",
+        "infra_state",
+        "risk_state",
+    )
+
+    def from_snapshot(
+        self,
+        snapshot: WorldStateSnapshot,
+        *,
+        symbol: str,
+        max_age_s: float = 30.0,
+        source: str = "world_state_graph",
+    ) -> WorldStateReadView:
+        freshness = snapshot.freshness_by_domain()
+        stale_domains = snapshot.stale_domains(max_age_s=max_age_s)
+        stale_critical = [domain for domain in stale_domains if domain in self._CRITICAL_DOMAINS]
+        safe_to_trade = bool(snapshot.safe_to_trade(max_age_s=max_age_s)) and not bool(stale_critical)
+        summary = snapshot.summary()
+        summary["graph_last_error"] = str(snapshot.metadata.last_error or "")
+        return WorldStateReadView(
+            symbol=str(symbol or snapshot.market_state.primary_symbol or "UNKNOWN"),
+            source=str(source),
+            as_of_time=float(snapshot.as_of_time),
+            world_state_available=bool(snapshot.metadata.graph_available),
+            graph_available=bool(snapshot.metadata.graph_available),
+            safe_to_trade=bool(safe_to_trade),
+            freshness_s={str(k): float(v) for k, v in freshness.items()},
+            stale_domains=[str(item) for item in stale_domains],
+            stale_critical_domains=[str(item) for item in stale_critical],
+            summary=summary,
+        )
+
+    def from_runtime_observation(
+        self,
+        *,
+        symbol: str,
+        as_of_time: float,
+        market_data_stale_s: float,
+        ws_healthy: bool,
+        drawdown_pct: float,
+        regime: str,
+        market_class: str,
+        max_age_s: float = 30.0,
+    ) -> WorldStateReadView:
+        stale_s = max(0.0, _safe_float(market_data_stale_s, 0.0))
+        threshold = max(0.0, float(max_age_s))
+        freshness = {
+            "market_state": stale_s,
+            "venue_state": stale_s,
+            "asset_state": stale_s,
+            "portfolio_state": 0.0,
+            "execution_state": 0.0,
+            "infra_state": 0.0,
+            "risk_state": 0.0,
+            "strategy_state": 0.0,
+        }
+        stale_domains = [domain for domain, age in freshness.items() if float(age) > threshold]
+        stale_critical = [domain for domain in stale_domains if domain in self._CRITICAL_DOMAINS]
+        graph_available = bool(ws_healthy)
+        world_state_available = bool(graph_available)
+        safe_to_trade = bool(graph_available) and (not stale_critical) and (_safe_float(drawdown_pct, 0.0) < 1.0)
+        summary = {
+            "world_state_available": bool(world_state_available),
+            "world_state_as_of": float(as_of_time),
+            "market": {
+                "primary_symbol": str(symbol),
+                "regime": str(regime or ""),
+                "market_class": str(market_class or "crypto_spot"),
+            },
+            "risk": {
+                "drawdown_pct": _safe_float(drawdown_pct, 0.0),
+            },
+            "safe_to_trade": bool(safe_to_trade),
+        }
+        return WorldStateReadView(
+            symbol=str(symbol),
+            source="runtime_observation",
+            as_of_time=float(as_of_time),
+            world_state_available=bool(world_state_available),
+            graph_available=bool(graph_available),
+            safe_to_trade=bool(safe_to_trade),
+            freshness_s=freshness,
+            stale_domains=[str(item) for item in stale_domains],
+            stale_critical_domains=[str(item) for item in stale_critical],
+            summary=summary,
+        )
+
+    def conservative_fallback(
+        self,
+        *,
+        symbol: str,
+        as_of_time: float,
+        reason: str,
+    ) -> WorldStateReadView:
+        return WorldStateReadView(
+            symbol=str(symbol),
+            source="conservative_fallback",
+            as_of_time=float(as_of_time),
+            world_state_available=False,
+            graph_available=False,
+            safe_to_trade=False,
+            freshness_s={},
+            stale_domains=["market_state", "risk_state", "execution_state"],
+            stale_critical_domains=["market_state", "risk_state", "execution_state"],
+            summary={"reason": str(reason or "world_state_unavailable")},
+        )
+
+
 class WorldStateGraph:
     """Replay-safe, continuously updated internal model of market + self state."""
 

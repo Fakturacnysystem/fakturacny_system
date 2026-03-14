@@ -2,12 +2,14 @@
 set -euo pipefail
 
 export AUTONOMOUS_GUARDS_MODE="${AUTONOMOUS_GUARDS_MODE:-fatal_only}"
+export AUTONOMOUS_REQUIRE_OPERATOR_LIVE_CONFIRMATION="${AUTONOMOUS_REQUIRE_OPERATOR_LIVE_CONFIRMATION:-1}"
+export AUTONOMOUS_LIVE_GO="${AUTONOMOUS_LIVE_GO:-0}"
 export AUTONOMOUS_ORDER_CADENCE_S="${AUTONOMOUS_ORDER_CADENCE_S:-9}"
 export AUTONOMOUS_MAX_ORDERS_PER_MIN="${AUTONOMOUS_MAX_ORDERS_PER_MIN:-10}"
 export AUTONOMOUS_USER_MIN_ORDER_QUOTE="${AUTONOMOUS_USER_MIN_ORDER_QUOTE:-2.0}"
 export AUTONOMOUS_TP_ONLY_MODE="${AUTONOMOUS_TP_ONLY_MODE:-1}"
 export AUTONOMOUS_MIN_TP_AFTER_COSTS="${AUTONOMOUS_MIN_TP_AFTER_COSTS:-1}"
-export AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS="${AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS:-120}"
+export AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS="${AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS:-30}"
 export AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS="${AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS:-false}"
 export AUTONOMOUS_MARKET_WATCH_EVERY_S="${AUTONOMOUS_MARKET_WATCH_EVERY_S:-10}"
 
@@ -15,10 +17,10 @@ _cadence_raw="${AUTONOMOUS_ORDER_CADENCE_S:-5}"
 _cadence_safe="$(LC_ALL=C awk -v c="${_cadence_raw}" 'BEGIN { x=(c+0); if (x < 3.0) x = 3.0; if (x > 60.0) x = 60.0; printf "%.6g", x }')"
 export AUTONOMOUS_ORDER_CADENCE_S="${_cadence_safe}"
 
-export AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS="${AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS:-120}"
-export AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS="${AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS:-200}"
-export AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS="${AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS:-120}"
-export AUTONOMOUS_MIN_TAKE_PROFIT_PCT="${AUTONOMOUS_MIN_TAKE_PROFIT_PCT:-1.2}"
+export AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS="${AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS:-30}"
+export AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS="${AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS:-30}"
+export AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS="${AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS:-30}"
+export AUTONOMOUS_MIN_TAKE_PROFIT_PCT="${AUTONOMOUS_MIN_TAKE_PROFIT_PCT:-0.3}"
 
 # Operator alias compatibility:
 # AUTONOMOUS_MAX_PARALLEL_TRADES controls live open-order concurrency if provided.
@@ -61,7 +63,7 @@ if [[ -z "${AUTONOMOUS_UNIVERSE_ALLOWLIST+x}" ]]; then
   export AUTONOMOUS_UNIVERSE_ALLOWLIST="${AUTONOMOUS_FALLBACK_SYMBOLS}"
 fi
 
-export AUTONOMOUS_PROFIT_TARGET_NET="${AUTONOMOUS_PROFIT_TARGET_NET:-0.012}"
+export AUTONOMOUS_PROFIT_TARGET_NET="${AUTONOMOUS_PROFIT_TARGET_NET:-0.003}"
 export AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S="${AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S:-5.0}"
 export AUTONOMOUS_RATE_LIMIT_COOLDOWN_S="${AUTONOMOUS_RATE_LIMIT_COOLDOWN_S:-${AUTONOMOUS_KRAKEN_RATE_LIMIT_COOLDOWN_S}}"
 export AUTONOMOUS_KRAKEN_TEMP_LOCKOUT_COOLDOWN_S="${AUTONOMOUS_KRAKEN_TEMP_LOCKOUT_COOLDOWN_S:-75.0}"
@@ -72,6 +74,9 @@ export AUTONOMOUS_TRADES_SYNC_MIN_INTERVAL_S="${AUTONOMOUS_TRADES_SYNC_MIN_INTER
 export AUTONOMOUS_KRAKEN_BALANCE_TTL_S="${AUTONOMOUS_KRAKEN_BALANCE_TTL_S:-30.0}"
 export AUTONOMOUS_KRAKEN_TRADES_TTL_S="${AUTONOMOUS_KRAKEN_TRADES_TTL_S:-45.0}"
 export AUTONOMOUS_KRAKEN_REQUIRE_OPEN_ORDERS_SCOPE="${AUTONOMOUS_KRAKEN_REQUIRE_OPEN_ORDERS_SCOPE:-false}"
+export AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_ENABLED="${AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_ENABLED:-true}"
+export AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_MAX_S="${AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_MAX_S:-900}"
+export AUTONOMOUS_PRIVATE_API_UNLOCK_RETRY_S="${AUTONOMOUS_PRIVATE_API_UNLOCK_RETRY_S:-30}"
 
 export AUTONOMOUS_EXIT_TIME_STOP_S="${AUTONOMOUS_EXIT_TIME_STOP_S:-3600}"
 export AUTONOMOUS_EXIT_TRAILING_DD_QUOTE="${AUTONOMOUS_EXIT_TRAILING_DD_QUOTE:-1.0}"
@@ -134,12 +139,21 @@ fi
 export AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE="${AUTONOMOUS_DISABLE_ADVISORY_ON_LIVE_NODE:-1}"
 
 export PYTHONUNBUFFERED=1
+PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "[run_kraken_spot_profit_full_throttle] Missing python runtime at ${PYTHON_BIN}. Create/activate .venv first." >&2
+  exit 2
+fi
 
 LIVE_CONFIG="config.kraken_spot.live_profit.yaml"
+PAPER_CONFIG="${AUTONOMOUS_PAPER_CONFIG:-config.kraken_spot.paper.yaml}"
+if [[ ! -f "${PAPER_CONFIG}" ]]; then
+  PAPER_CONFIG="${LIVE_CONFIG}"
+fi
 
 RUN_DIR="${AUTONOMOUS_RUN_DIR:-}"
 if [[ -z "${RUN_DIR}" ]]; then
-  RUN_DIR="$(python3 - "${LIVE_CONFIG}" <<'PY'
+  RUN_DIR="$("${PYTHON_BIN}" - "${LIVE_CONFIG}" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -176,6 +190,7 @@ PY
 )"
 fi
 export AUTONOMOUS_RUN_DIR="${RUN_DIR}"
+export AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE="${AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE:-ops/live_operator_confirmation.txt}"
 _kraken_cred_source="${AUTONOMOUS_CREDENTIAL_SOURCE:-}"
 if [[ -z "${_kraken_cred_source}" && -n "${KRAKEN_API_KEY:-}" && -n "${KRAKEN_API_SECRET:-}" ]]; then
   _kraken_cred_source="shell_env"
@@ -446,7 +461,7 @@ mkdir -p "${RUN_DIR}"
 AUTONOMOUS_CREDENTIAL_SOURCE="${_kraken_cred_source:-unresolved}" \
 AUTONOMOUS_CREDENTIAL_HAS_KEY="$([[ -n "${KRAKEN_API_KEY:-}" ]] && echo true || echo false)" \
 AUTONOMOUS_CREDENTIAL_HAS_SECRET="$([[ -n "${KRAKEN_API_SECRET:-}" ]] && echo true || echo false)" \
-python3 - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 from pathlib import Path
 import json
 import os
@@ -464,7 +479,7 @@ PY
 AUTONOMOUS_LLM_CREDENTIAL_SOURCE="${_llm_cred_source:-unresolved}" \
 AUTONOMOUS_LLM_HAS_GROQ_KEY="$([[ -n "${GROQ_API_KEY:-}" ]] && echo true || echo false)" \
 AUTONOMOUS_LLM_HAS_OPENAI_KEY="$([[ -n "${OPENAI_API_KEY:-}" ]] && echo true || echo false)" \
-python3 - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 from pathlib import Path
 import json
 import os
@@ -485,7 +500,8 @@ PY
 _ff_user_min="${AUTONOMOUS_USER_MIN_ORDER_QUOTE:-2.0}"
 _ff_quote_floor="${AUTONOMOUS_QUOTE_NOTIONAL_FLOOR:-${_ff_user_min}}"
 _ff_max_notional="${AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE:-0}"
-_ff_floor_enforced="$(LC_ALL=C awk -v a="${_ff_user_min}" -v b="${_ff_quote_floor}" 'BEGIN { x=(a+0); y=(b+0); if (y>x) x=y; if (x<2.0) x=2.0; printf "%.8f", x }')"
+_ff_floor_hard_min="${AUTONOMOUS_MIN_ORDER_HARD_FLOOR_QUOTE:-2.0}"
+_ff_floor_enforced="$(LC_ALL=C awk -v a="${_ff_user_min}" -v b="${_ff_quote_floor}" -v h="${_ff_floor_hard_min}" 'BEGIN { x=(a+0); y=(b+0); m=(h+0); if (m<0.0) m=0.0; if (y>x) x=y; if (x<m) x=m; printf "%.8f", x }')"
 _ff_max_default="${AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE_DEFAULT:-10.0}"
 _ff_max_enforced="$(
   LC_ALL=C awk -v m="${_ff_max_notional}" -v floor="${_ff_floor_enforced}" -v d="${_ff_max_default}" 'BEGIN {
@@ -502,17 +518,68 @@ export AUTONOMOUS_PROBE_NOTIONAL_QUOTE="${AUTONOMOUS_PROBE_NOTIONAL_QUOTE:-${_ff
 export AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE="${_ff_max_enforced}"
 export AUTONOMOUS_HEALTH_AUDIT110_ENABLED="${AUTONOMOUS_HEALTH_AUDIT110_ENABLED:-false}"
 
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
-  PYTHON_BIN=".venv/bin/python"
-fi
-if [[ -z "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="python3"
+if command -v pgrep >/dev/null 2>&1; then
+  if pgrep -f "python.*-m cli.run --config ${LIVE_CONFIG} --nonstop" >/dev/null 2>&1; then
+    echo "[run_kraken_spot_profit_full_throttle] Runner already active for ${LIVE_CONFIG}; skipping duplicate launch."
+    exit 0
+  fi
 fi
 
-if pgrep -f "python.*-m cli.run --config ${LIVE_CONFIG} --nonstop" >/dev/null 2>&1; then
-  echo "[run_kraken_spot_profit_full_throttle] Runner already active for ${LIVE_CONFIG}; skipping duplicate launch."
-  exit 0
+_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if _truthy "${AUTONOMOUS_REQUIRE_OPERATOR_LIVE_CONFIRMATION}"; then
+  if ! _truthy "${AUTONOMOUS_LIVE_GO}" || [[ ! -f "${AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE}" ]]; then
+    PAPER_RUN_DIR="$("${PYTHON_BIN}" - "${PAPER_CONFIG}" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+config_path = Path(sys.argv[1])
+default_run_dir = "runs/kraken_spot_paper"
+if not config_path.exists():
+    print(default_run_dir)
+    raise SystemExit(0)
+text = config_path.read_text(encoding="utf-8")
+data = {}
+try:
+    import yaml  # type: ignore
+
+    parsed = yaml.safe_load(text)
+    if isinstance(parsed, dict):
+        data = parsed
+except Exception:
+    pass
+if not data:
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            data = parsed
+    except Exception:
+        data = {}
+storage = data.get("storage", {}) if isinstance(data, dict) else {}
+run_dir = storage.get("run_dir") if isinstance(storage, dict) else None
+if isinstance(run_dir, str) and run_dir.strip():
+    print(run_dir.strip())
+else:
+    print(default_run_dir)
+PY
+)"
+    echo "[run_kraken_spot_profit_full_throttle] Manual live gate not satisfied."
+    echo "[run_kraken_spot_profit_full_throttle] Required for LIVE: AUTONOMOUS_LIVE_GO=1 and confirmation file at ${AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE}"
+    echo "[run_kraken_spot_profit_full_throttle] Starting PAPER mode by default (${PAPER_CONFIG}, run_dir=${PAPER_RUN_DIR})."
+    AUTONOMOUS_DYNAMIC_UNIVERSE=false \
+    AUTONOMOUS_DYNAMIC_UNIVERSE_ALL=false \
+    AUTONOMOUS_UNIVERSE_ALLOWLIST="${AUTONOMOUS_PAPER_UNIVERSE_ALLOWLIST:-XBTUSD}" \
+    AUTONOMOUS_RUN_DIR="${PAPER_RUN_DIR}" \
+    AUTONOMOUS_CONFIG_OVERRIDE_PATH="" \
+    PYTHONPATH=src "${PYTHON_BIN}" -m cli.run --config "${PAPER_CONFIG}" --paper --nonstop --max-restarts 0
+    exit $?
+  fi
 fi
 
 if [[ -z "${KRAKEN_API_KEY:-}" || -z "${KRAKEN_API_SECRET:-}" ]]; then
@@ -529,7 +596,7 @@ if [[ "${KRAKEN_API_SECRET}" == " "* || "${KRAKEN_API_SECRET}" == *" " ]]; then
   exit 2
 fi
 
-PERM_CHECK_RESULT="$(
+_perm_diag_probe() {
   PYTHONPATH=src "${PYTHON_BIN}" - <<'PY'
 import json
 import os
@@ -579,58 +646,70 @@ print(
     )
 )
 PY
-)" || true
+}
+
+_perm_diag_field() {
+  local _field="${1:-classification}"
+  PERM_JSON="${PERM_CHECK_RESULT}" PERM_FIELD="${_field}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+raw = str(os.getenv("PERM_JSON", "") or "").strip()
+field = str(os.getenv("PERM_FIELD", "classification") or "classification")
+default = {
+    "classification": "unknown_error",
+    "scope": "unknown",
+    "reason": "",
+}.get(field, "")
+value = default
+try:
+    payload = json.loads(raw) if raw else {}
+    value = str(payload.get(field, default) or default)
+except Exception:
+    value = "parse_error" if field != "reason" else "parse_error"
+print(value)
+PY
+}
+
+PERM_CHECK_RESULT="$(_perm_diag_probe)" || true
 
 mkdir -p "${RUN_DIR}"
 printf '%s\n' "${PERM_CHECK_RESULT}" > "${RUN_DIR}/live_preflight_script_diag.json"
 
-PERM_CLASS="$(
-  PERM_JSON="${PERM_CHECK_RESULT}" "${PYTHON_BIN}" - <<'PY'
-import json
-import os
+PERM_CLASS="$(_perm_diag_field classification)"
+PERM_SCOPE="$(_perm_diag_field scope)"
+PERM_REASON="$(_perm_diag_field reason)"
 
-raw = str(os.getenv("PERM_JSON", "") or "").strip()
-cls = "unknown_error"
-try:
-    payload = json.loads(raw) if raw else {}
-    cls = str(payload.get("classification", cls) or cls)
-except Exception:
-    cls = "parse_error"
-print(cls)
-PY
-)"
-
-PERM_SCOPE="$(
-  PERM_JSON="${PERM_CHECK_RESULT}" "${PYTHON_BIN}" - <<'PY'
-import json
-import os
-
-raw = str(os.getenv("PERM_JSON", "") or "").strip()
-scope = "unknown"
-try:
-    payload = json.loads(raw) if raw else {}
-    scope = str(payload.get("scope", scope) or scope)
-except Exception:
-    scope = "parse_error"
-print(scope)
-PY
-)"
-
-PERM_REASON="$(
-  PERM_JSON="${PERM_CHECK_RESULT}" "${PYTHON_BIN}" - <<'PY'
-import json
-import os
-
-raw = str(os.getenv("PERM_JSON", "") or "").strip()
-reason = ""
-try:
-    payload = json.loads(raw) if raw else {}
-    reason = str(payload.get("reason", "") or "")
-except Exception:
-    reason = "parse_error"
-print(reason)
-PY
-)"
+if _truthy "${AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_ENABLED}"; then
+  case "${PERM_CLASS}" in
+    temporary_lockout|rate_limit|network_unreachable|temporary_lockout_override|rate_limit_override|network_unreachable_override)
+      _wait_max_raw="${AUTONOMOUS_PRIVATE_API_UNLOCK_WAIT_MAX_S:-900}"
+      _wait_step_raw="${AUTONOMOUS_PRIVATE_API_UNLOCK_RETRY_S:-30}"
+      _wait_max="$(LC_ALL=C awk -v v="${_wait_max_raw}" 'BEGIN { x=(v+0); if (x < 0.0) x = 0.0; printf "%.0f", x }')"
+      _wait_step="$(LC_ALL=C awk -v v="${_wait_step_raw}" 'BEGIN { x=(v+0); if (x < 1.0) x = 1.0; printf "%.0f", x }')"
+      _wait_elapsed=0
+      while [[ "${_wait_elapsed}" -lt "${_wait_max}" ]]; do
+        echo "[run_kraken_spot_profit_full_throttle] Waiting for Kraken private API unlock (${PERM_CLASS}, scope=${PERM_SCOPE}); elapsed=${_wait_elapsed}s/${_wait_max}s..." >&2
+        sleep "${_wait_step}"
+        _wait_elapsed=$((_wait_elapsed + _wait_step))
+        PERM_CHECK_RESULT="$(_perm_diag_probe)" || true
+        printf '%s\n' "${PERM_CHECK_RESULT}" > "${RUN_DIR}/live_preflight_script_diag.json"
+        PERM_CLASS="$(_perm_diag_field classification)"
+        PERM_SCOPE="$(_perm_diag_field scope)"
+        PERM_REASON="$(_perm_diag_field reason)"
+        case "${PERM_CLASS}" in
+          temporary_lockout|rate_limit|network_unreachable|temporary_lockout_override|rate_limit_override|network_unreachable_override)
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+      ;;
+    *)
+      ;;
+  esac
+fi
 
 case "${PERM_CLASS}" in
   missing_credentials|invalid_credentials|invalid_permissions|invalid_nonce|kraken_auth_error|kraken_permission_denied)

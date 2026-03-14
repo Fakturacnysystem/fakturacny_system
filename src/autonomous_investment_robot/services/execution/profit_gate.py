@@ -20,7 +20,7 @@ class PositionLot:
 
 @dataclass
 class ProfitGateConfig:
-    min_net_profit_ratio: float = 0.02
+    min_net_profit_ratio: float = 0.003
     default_entry_fee_bps: float = 0.0
     default_exit_fee_bps: float = 0.0
     default_slippage_bps: float = 1.0
@@ -29,8 +29,8 @@ class ProfitGateConfig:
     accounting_method: AccountingMethod = "fifo"
 
     def __post_init__(self) -> None:
-        # Hard global floor: do not allow lowering below +2% net target.
-        self.min_net_profit_ratio = max(0.02, float(self.min_net_profit_ratio))
+        # Hard global floor: do not allow lowering below +0.30% net target.
+        self.min_net_profit_ratio = max(0.003, float(self.min_net_profit_ratio))
         method = str(self.accounting_method).strip().lower()
         self.accounting_method = "average" if method == "average" else "fifo"
 
@@ -169,7 +169,7 @@ class ProfitGate:
         accounting_method: AccountingMethod | None = None,
     ) -> tuple[float, float]:
         method = self.config.accounting_method if accounting_method is None else accounting_method
-        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.02, float(min_profit_ratio))
+        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.003, float(min_profit_ratio))
         matched, matched_qty = self._match_lots(lots, exit_qty, method)
         if matched_qty <= 0.0:
             return float("inf"), 0.0
@@ -209,7 +209,7 @@ class ProfitGate:
         accounting_method: AccountingMethod | None = None,
     ) -> tuple[float, float]:
         method = self.config.accounting_method if accounting_method is None else accounting_method
-        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.02, float(min_profit_ratio))
+        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.003, float(min_profit_ratio))
         matched, matched_qty = self._match_lots(lots, close_qty, method)
         if matched_qty <= 0.0:
             return 0.0, 0.0
@@ -378,7 +378,7 @@ class ProfitGate:
             accounting_method=accounting_method,
         )
         px = max(0.0, float(exit_price))
-        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.02, float(min_profit_ratio))
+        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.003, float(min_profit_ratio))
         if matched_qty <= 0.0 or not math.isfinite(required):
             return ProfitGateDecision(
                 allowed=False,
@@ -448,7 +448,7 @@ class ProfitGate:
             accounting_method=accounting_method,
         )
         px = max(0.0, float(exit_price))
-        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.02, float(min_profit_ratio))
+        target = self.config.min_net_profit_ratio if min_profit_ratio is None else max(0.003, float(min_profit_ratio))
         if matched_qty <= 0.0 or not math.isfinite(max_exit):
             return ProfitGateDecision(
                 allowed=False,

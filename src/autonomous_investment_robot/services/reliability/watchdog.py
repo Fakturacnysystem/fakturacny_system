@@ -99,6 +99,11 @@ class WatchdogSupervisor:
             ts = float(payload.get("last_progress_ts", payload.get("ts", 0.0)) or 0.0)
             if ts <= 0.0:
                 return float("inf")
+            # Guard startup against stale heartbeat files from previous child runs.
+            # If watchdog just started a new child and heartbeat timestamp predates it,
+            # treat heartbeat age from child_started_ts until first fresh heartbeat arrives.
+            if bool(self.state.running) and self.state.child_started_ts > 0.0 and ts < float(self.state.child_started_ts):
+                return max(0.0, now - float(self.state.child_started_ts))
             return max(0.0, now - ts)
         except Exception:
             return float("inf")
@@ -113,6 +118,24 @@ class WatchdogSupervisor:
         now = time.time() if now_ts is None else float(now_ts)
         age = self.heartbeat_age_s(now_ts=now)
         ok = True if not bool(self.config.enabled) else (not self.stalled(now_ts=now))
+        heartbeat_payload: dict[str, Any] = {}
+        if self.heartbeat_path.exists():
+            try:
+                raw = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    heartbeat_payload = raw
+            except Exception:
+                heartbeat_payload = {}
+        shield_reason_codes = heartbeat_payload.get("shield_reason_codes", [])
+        if not isinstance(shield_reason_codes, list):
+            shield_reason_codes = []
+        shield_context = {
+            "mode": str(heartbeat_payload.get("shield_mode", "") or ""),
+            "reason_codes": [str(code) for code in shield_reason_codes if str(code)],
+            "source": str(heartbeat_payload.get("shield_source", "") or ""),
+            "risk_safe_mode": bool(heartbeat_payload.get("risk_safe_mode", False)),
+            "risk_kill_switch": bool(heartbeat_payload.get("risk_kill_switch", False)),
+        }
         return {
             "ok": ok,
             "running": bool(self.state.running),
@@ -124,4 +147,5 @@ class WatchdogSupervisor:
             "stall_timeout_s": float(self.config.stall_timeout_s),
             "heartbeat_path": str(self.heartbeat_path),
             "state_path": str(self.state_path),
+            "shield_context": shield_context,
         }

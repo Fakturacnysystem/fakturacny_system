@@ -5,6 +5,11 @@ cd "$(dirname "$0")/.."
 
 : "${KRAKEN_API_KEY:?Set KRAKEN_API_KEY}"
 : "${KRAKEN_API_SECRET:?Set KRAKEN_API_SECRET}"
+PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "[run_kraken_spot_main] Missing python runtime at ${PYTHON_BIN}. Create/activate .venv first." >&2
+  exit 2
+fi
 
 LIVE_CONFIG="${AUTONOMOUS_LIVE_CONFIG:-config.kraken_spot.live_profit.yaml}"
 if [[ ! -f "${LIVE_CONFIG}" ]]; then
@@ -13,7 +18,7 @@ fi
 
 RUN_DIR="${AUTONOMOUS_RUN_DIR:-}"
 if [[ -z "${RUN_DIR}" ]]; then
-  RUN_DIR="$(python3 - "${LIVE_CONFIG}" <<'PY'
+  RUN_DIR="$("${PYTHON_BIN}" - "${LIVE_CONFIG}" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -66,4 +71,4 @@ export AUTONOMOUS_MIN_SECONDS_BETWEEN_ORDERS="${AUTONOMOUS_MIN_SECONDS_BETWEEN_O
 export PYTHONUNBUFFERED=1
 
 TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
-PYTHONPATH=src python3 -m cli.run --config "${LIVE_CONFIG}" --nonstop
+PYTHONPATH=src "${PYTHON_BIN}" -m cli.run --config "${LIVE_CONFIG}" --nonstop

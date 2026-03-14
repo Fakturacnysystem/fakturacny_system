@@ -5,6 +5,7 @@ from .health_audit_110 import (
     HealthAuditReport,
 )
 from .rate_budget import RateBudget, RateBudgetState
+from .runtime_cache import CacheStats, FeatureCache, SignalCache, TTLCache
 from .watchdog import (
     WatchdogConfig,
     WatchdogState,
@@ -19,6 +20,10 @@ __all__ = [
     "HealthAuditReport",
     "RateBudget",
     "RateBudgetState",
+    "TTLCache",
+    "CacheStats",
+    "FeatureCache",
+    "SignalCache",
     "WatchdogConfig",
     "WatchdogState",
     "WatchdogSupervisor",

@@ -1,0 +1,22 @@
+RUN_DIR: runs/kraken_ultra_profit_full_throttle                                 
+                                                                                
+--- LAST EVENTS ---                                                             
+{"attempts": 0, "event_id": "intent-141", "idempotency_key": "ADAEUR:buy:4.13564
+3:70", "payload": {"model_version": "baseline-prob-v3", "notional": 4.1356425401
+99999, "regime": "RANGE", "side": "buy", "step": 141, "symbol": "ADAEUR"}, "seq"
+: 115, "topic": "intent", "ts": "2026-03-08T23:31:19.109964+00:00"}             
+{"attempts": 0, "event_id": "intent-144", "idempotency_key": "ADAEUR:buy:4.13564
+3:72", "payload": {"model_version": "baseline-prob-v3", "notional": 4.1356425401
+99999, "regime": "RANGE", "side": "buy", "step": 144, "symbol": "ADAEUR"}, "seq"
+: 116, "topic": "intent", "ts": "2026-03-08T23:31:23.961663+00:00"}             
+{"attempts": 0, "event_id": "execution-144", "idempotency_key": "ADAEUR:buy:bloc
+ked:72", "payload": {"notional": 4.135642540199999, "reason": "insufficient_bala
+nce_block", "side": "buy", "status": "blocked", "step": 144, "symbol": "ADAEUR"}
+, "seq": 117, "topic": "execution", "ts": "2026-03-08T23:31:25.000863+00:00"}   
+{"attempts": 0, "event_id": "decision-global-29550212", "idempotency_key": "deci
+sion-global-29550212", "payload": {"balances": {"base_free": 0.0, "quote_free": 
+0.0015, "sellable_quote": 0.0}, "constraints": {"effective_min_notional_quote": 
+2.0, "exchange_min_notional_quote": 0.0, "price_precision": 8, "qty_precision": 
+8, "user_min_notional_quote": 2.0}, "decision": {"action": "sell", "brain_action
+": "skip", "brain_confidence": 0.3428107337737865, "brain_reason": "no_intent", 
+"brain_regime": "COMPRESSION", "brain_uncertainty_bps": 13.818079612662862, "coo

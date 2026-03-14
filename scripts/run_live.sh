@@ -25,12 +25,10 @@ echo "- Profit is NOT guaranteed."
 echo "- Sell/close invariant remains enforced by ProfitGate >= +2% net."
 echo "============================================================"
 
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
-  PYTHON_BIN=".venv/bin/python"
-fi
-if [[ -z "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="python3"
+PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "[run_live] Missing python runtime at ${PYTHON_BIN}. Create/activate .venv first." >&2
+  exit 2
 fi
 
 "${PYTHON_BIN}" -m cli.run --config "${CONFIG}" --nonstop

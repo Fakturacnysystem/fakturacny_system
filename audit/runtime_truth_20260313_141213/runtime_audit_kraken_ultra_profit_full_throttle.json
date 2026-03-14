@@ -1,0 +1,331 @@
+{
+  "artifact_paths": {
+    "audit_log": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/audit.log",
+    "dashboard_snapshot": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/dashboard_snapshot.json",
+    "event_bus": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/event_bus.jsonl",
+    "event_bus_fallback": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/universe_events/event_bus.jsonl",
+    "fills_events": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/events_fills.jsonl",
+    "governance_audit": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/governance_audit.jsonl",
+    "harmony_report": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/harmony_report.json",
+    "llm_diagnostics": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/llm_self_improvement_diagnostics.json",
+    "market_discovery": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/market_discovery.json",
+    "mastermind_status": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/mastermind_status.json",
+    "orders_events": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/events_orders.jsonl",
+    "universe_diagnostics": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/universe_diagnostics.json"
+  },
+  "blockers": {
+    "cooldown_active": {
+      "count": 10,
+      "last_occurrence_ts": 0.0,
+      "symbol": "SOLUSD"
+    },
+    "liquidity_filter": {
+      "count": 91,
+      "last_occurrence_ts": 0.0,
+      "symbol": "SOLUSD"
+    },
+    "min_order_block": {
+      "count": 1,
+      "last_occurrence_ts": 0.0,
+      "symbol": "SOLUSD"
+    }
+  },
+  "dashboard_metrics": {
+    "efficiency.cost_to_alpha_ratio": 0.00719369024853803,
+    "efficiency.tco_total_bps_rt": 27.571971180896906,
+    "execution.fill_rate": 0.5,
+    "execution.intents_total": 10.0,
+    "execution.orders_rejected_total": 0.0,
+    "execution.orders_submitted_total": 10.0,
+    "execution.reject_rate": 0.0
+  },
+  "event_bus_topics": {
+    "all_topics": {
+      "decision": 2646,
+      "execution": 354,
+      "risk": 6
+    },
+    "decision": 2646,
+    "execution": 354,
+    "market_data": 0,
+    "portfolio": 0,
+    "risk": 6,
+    "signal": 0,
+    "source_diagnostics": {
+      "paths_used": [
+        "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/event_bus.jsonl",
+        "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/universe_events/event_bus.jsonl"
+      ],
+      "sources": {
+        "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/event_bus.jsonl": {
+          "lines_considered": 3000,
+          "lines_seen": 3376,
+          "normalized_topics": {
+            "decision": 2646,
+            "execution": 354
+          },
+          "parsed_rows": 3000,
+          "raw_topics": {
+            "execution": 354,
+            "intent": 2646
+          },
+          "truncated_to_line_limit": true
+        },
+        "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle/universe_events/event_bus.jsonl": {
+          "lines_considered": 6,
+          "lines_seen": 6,
+          "normalized_topics": {
+            "risk": 6
+          },
+          "parsed_rows": 6,
+          "raw_topics": {
+            "universe": 6
+          },
+          "truncated_to_line_limit": false
+        }
+      }
+    }
+  },
+  "event_window": {
+    "loaded": 3000,
+    "requested": 3000,
+    "top_event_types": {
+      "capital_unlock_sell_unavailable": 84,
+      "decision_brain_tick": 418,
+      "decision_tick": 67,
+      "distributed_compute_rankings": 15,
+      "distributed_runtime_boot": 1,
+      "dust_floor_upsize": 10,
+      "entry_affordability_hold": 146,
+      "harmony_boot_report": 1,
+      "heartbeat": 193,
+      "live_exec": 225,
+      "market_watch_tick": 370,
+      "mastermind_select": 133,
+      "policy_violation_warn": 123,
+      "portfolio_topk_prefilter": 418,
+      "scheduler_probe": 61,
+      "scheduler_probe_skipped": 23,
+      "scheduler_probe_suppressed": 161,
+      "self_improvement_boot": 1,
+      "tp_thresholds": 123,
+      "tradable_scan": 417
+    },
+    "top_reasons": {
+      "capital_unlock_below_min_profit_floor": 84,
+      "dust_accumulate": 1,
+      "entry_insufficient_quote": 292,
+      "exits_only_mode": 11,
+      "liquidity_map": 91,
+      "no_edge_after_costs": 34,
+      "no_trade_zone": 50,
+      "probe_untradable_now": 23,
+      "profit_lock_sell_below_entry": 40,
+      "profit_lock_sell_below_min_profit": 206,
+      "rate_limit_cooldown": 10,
+      "rebalance_deadzone": 20,
+      "strategy_gated": 8,
+      "walk_forward_insufficient_samples": 1
+    }
+  },
+  "execution_presence": {
+    "execution_topic_present": true,
+    "live_exec_counts": {
+      "blocked": 225,
+      "killed": 0,
+      "rejected": 0,
+      "submitted": 0
+    }
+  },
+  "hard_invariants": {
+    "ok": true,
+    "profit_lock_guard_hits": {
+      "profit_lock_sell_below_entry": 40,
+      "profit_lock_sell_below_min_profit": 206
+    },
+    "profit_lock_sell_below_entry": 0,
+    "profit_lock_sell_below_min_profit": 0
+  },
+  "harmony": {
+    "effective_min_order_quote": 0.25,
+    "guards_mode": "fatal_only",
+    "hard_sell_floor_bps": 33.0,
+    "order_cadence_s": 3.0,
+    "sell_min_profit_bps": 53.0,
+    "sell_min_profit_ok": true,
+    "sell_target_profit_bps": 53.0
+  },
+  "mastermind": {
+    "conflicts": [],
+    "exists": true,
+    "guardrails": {
+      "insufficient_balance_events": 0.0,
+      "no_intent_events": 0.0,
+      "rate_limit_events": 10.0,
+      "reject_rate": 0.0
+    },
+    "health": {
+      "component": "runtime",
+      "status": "OK"
+    },
+    "overrides": {
+      "pause_buy": false,
+      "size_scale": 1.0
+    }
+  },
+  "optimization_recommendation": {
+    "parameter": "AUTONOMOUS_ORDER_CADENCE_S",
+    "safe_range": "3-10",
+    "why": "cooldown gate dominates intent throughput"
+  },
+  "order_evidence_consistency": {
+    "blocked_delta_abs": 225,
+    "killed_delta_abs": 0,
+    "rejected_delta_abs": 0,
+    "submitted_delta_abs": 0
+  },
+  "order_stats": {
+    "blocked_orders": 225,
+    "buy_submitted": 0,
+    "killed_orders": 0,
+    "rejected_orders": 0,
+    "sell_submitted": 0,
+    "submitted_orders": 0
+  },
+  "order_stats_source": "audit_log",
+  "order_stats_sources": {
+    "audit_log": {
+      "blocked_orders": 225,
+      "buy_submitted": 0,
+      "killed_orders": 0,
+      "rejected_orders": 0,
+      "sell_submitted": 0,
+      "submitted_orders": 0
+    },
+    "events_files": {
+      "blocked_orders": 0,
+      "buy_submitted": 0,
+      "fills_observed": 0,
+      "killed_orders": 0,
+      "orders_rows_observed": 0,
+      "rejected_orders": 0,
+      "sell_submitted": 0,
+      "submitted_orders": 0
+    }
+  },
+  "provider_diagnostics": {
+    "exists": true,
+    "llm_augment_enabled": false,
+    "llm_enabled": true,
+    "model": "openai/gpt-oss-120b",
+    "model_effective": "openai/gpt-oss-120b",
+    "model_fallback": "openai/gpt-oss-20b",
+    "provider": "groq",
+    "provider_health": {
+      "api_key_env": "GROQ_API_KEY",
+      "base_url": "https://api.groq.com/openai/v1",
+      "classification": "ok_local",
+      "enabled": true,
+      "key_present": true,
+      "model": "openai/gpt-oss-120b",
+      "model_fallback": "openai/gpt-oss-20b",
+      "ok": true,
+      "provider": "groq",
+      "reason": "",
+      "remote_checked": false
+    }
+  },
+  "rollback_dry_run": {
+    "artifact_id": "62c425569d19b1f98127ebb9878f0d3f2be38e7377e2fd5ea39f4d7c3d30cede",
+    "reason_codes": [],
+    "validated": true
+  },
+  "run_dir": "/Users/martinholik/Projects/fakturacny_system/runs/kraken_ultra_profit_full_throttle",
+  "system_state": "BLOCKED",
+  "xstocks": {
+    "detected_etf_symbols": [],
+    "detected_market_class_counts": {
+      "crypto_spot": 1179,
+      "xstock": 60
+    },
+    "detected_symbols": [
+      "ACXEUR",
+      "ACXUSD",
+      "ADXEUR",
+      "ADXUSD",
+      "ALCXEUR",
+      "ALCXUSD",
+      "AUDXUSD",
+      "AVAXEUR",
+      "AVAXUSD",
+      "BDXUSD",
+      "BSXEUR",
+      "BSXUSD",
+      "CFXEUR",
+      "CFXUSD",
+      "CHEXEUR",
+      "CHEXUSD",
+      "CVXEUR",
+      "CVXUSD",
+      "DYDXEUR",
+      "DYDXUSD",
+      "ELXEUR",
+      "ELXUSD",
+      "ESXEUR",
+      "ESXUSD",
+      "FLUXEUR",
+      "FLUXUSD",
+      "GMXEUR",
+      "GMXUSD",
+      "HDXEUR",
+      "HDXUSD",
+      "ICXEUR",
+      "ICXUSD",
+      "IDEXEUR",
+      "IDEXUSD",
+      "IMXEUR",
+      "IMXUSD",
+      "INXEUR",
+      "INXUSD",
+      "LCXEUR",
+      "LCXUSD",
+      "MYXEUR",
+      "MYXUSD",
+      "SHXEUR",
+      "SHXUSD",
+      "SNXEUR",
+      "SNXUSD",
+      "SPXEUR",
+      "SPXUSD",
+      "STXEUR",
+      "STXUSD",
+      "TRXEUR",
+      "TRXUSD",
+      "TXEUR",
+      "TXUSD",
+      "WMTXEUR",
+      "WMTXUSD",
+      "ZEXEUR",
+      "ZEXUSD",
+      "ZRXEUR",
+      "ZRXUSD"
+    ],
+    "discovery_exists": true,
+    "discovery_market_class_counts": {
+      "crypto_spot": 1397,
+      "xstock": 60
+    },
+    "eligible_market_class_counts": {
+      "crypto_spot": 50
+    },
+    "filter_reasons": {
+      "invalid_bid_ask": 2,
+      "market_class_disabled:xstock": 60,
+      "max_spread": 1,
+      "min_volume": 1104,
+      "missing_ticker": 22
+    },
+    "mixed_universe_mode": false,
+    "universe_diag_exists": true
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+import time
 
 from autonomous_investment_robot.config.settings import RiskLimits, UNSPECIFIED
 from autonomous_investment_robot.services.policy.service import OrderIntent
@@ -24,6 +25,10 @@ class RiskState:
     funding_budget_utilization: float = 0.0
     cooldown_steps_remaining: int = 0
     stable_steps: int = 0
+    shield_mode: str = ""
+    shield_reason_codes: list[str] = field(default_factory=list)
+    shield_source: str = ""
+    shield_updated_ts: float = 0.0
 
 
 @dataclass
@@ -125,6 +130,40 @@ class RiskEngineService:
         if self.state.cooldown_steps_remaining > 0:
             self.state.cooldown_steps_remaining -= 1
 
+    def apply_shield_telemetry(
+        self,
+        *,
+        mode: str,
+        reason_codes: list[str] | tuple[str, ...] | None = None,
+        source: str = "universe_shadow",
+        hard_stop_forced: bool = False,
+        no_trade_forced: bool = False,
+        now_ts: float | None = None,
+    ) -> None:
+        mode_norm = str(mode or "").strip().lower()
+        codes_raw = list(reason_codes or [])
+        codes = [str(code) for code in codes_raw if str(code)]
+        self.state.shield_mode = mode_norm
+        self.state.shield_reason_codes = codes[:16]
+        self.state.shield_source = str(source or "universe_shadow")
+        self.state.shield_updated_ts = float(time.time() if now_ts is None else now_ts)
+        if mode_norm == "hard_stop" or bool(hard_stop_forced):
+            self.state.kill_switch = True
+            self.state.safe_mode = True
+            self._enter_cooldown(10)
+        elif mode_norm == "observe_only" or bool(no_trade_forced):
+            self.state.safe_mode = True
+
+    def shield_telemetry_snapshot(self) -> dict[str, object]:
+        return {
+            "shield_mode": str(self.state.shield_mode),
+            "shield_reason_codes": list(self.state.shield_reason_codes),
+            "shield_source": str(self.state.shield_source),
+            "shield_updated_ts": float(self.state.shield_updated_ts),
+            "risk_safe_mode": bool(self.state.safe_mode),
+            "risk_kill_switch": bool(self.state.kill_switch),
+        }
+
     def _maybe_recover_from_dd_safe_mode(self) -> None:
         if self.state.kill_switch:
             return
@@ -221,6 +260,29 @@ class RiskEngineService:
         is_reduce_only: bool = False,
         side: str = "buy",
     ) -> RiskDecision:
+        if str(self.state.shield_mode).lower() == "hard_stop":
+            self.state.kill_switch = True
+            self.state.safe_mode = True
+            if is_reduce_only:
+                return RiskDecision(
+                    True,
+                    "shield_hard_stop_reduce_only",
+                    adjusted_notional=max(0.0, float(intent.target_notional)),
+                    details=self.shield_telemetry_snapshot(),
+                )
+            return RiskDecision(
+                False,
+                "shield_hard_stop",
+                flatten=True,
+                details=self.shield_telemetry_snapshot(),
+            )
+        if str(self.state.shield_mode).lower() == "observe_only" and not is_reduce_only:
+            return RiskDecision(
+                False,
+                "shield_observe_only",
+                flatten=False,
+                details=self.shield_telemetry_snapshot(),
+            )
         if self.state.weekly_stop and not is_reduce_only:
             return RiskDecision(False, "weekly_stop_safe_mode")
         if self.state.safe_mode:

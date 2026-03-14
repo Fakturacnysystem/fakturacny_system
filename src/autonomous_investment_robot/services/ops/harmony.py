@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -44,6 +45,11 @@ def _norm_guard_mode(value: Any, default: str = "strict") -> str:
     return txt
 
 
+def _stable_hash(payload: dict[str, Any]) -> str:
+    raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class HarmonyCollision:
     key: str
@@ -72,6 +78,9 @@ class ResolvedHarmonyConfig:
     spread_spike_edge_add_bps: float
     spread_spike_hold_s: float
     liquidity_map_enabled: bool
+    freeze_contract_version: str = "phase23_resolved_harmony_v1"
+    resolved_config_fingerprint: str = ""
+    hard_sell_floor_bps: float = 30.0
     collisions: list[HarmonyCollision] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -174,7 +183,17 @@ class HarmonyConfigResolver:
             exchange_min = max(0.0, float(exchange_min_quote_fallback))
         effective_min = max(exchange_min, user_min, legacy_min)
 
-        hard_floor_bps = 120.0
+        hard_floor_bps = max(
+            0.0,
+            _as_float(
+                self._pick(
+                    env,
+                    "AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS",
+                    self._pick(env, "AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", 30.0),
+                ),
+                30.0,
+            ),
+        )
         explicit_min_net_bps = max(
             0.0,
             _as_float(
@@ -186,7 +205,7 @@ class HarmonyConfigResolver:
                 hard_floor_bps,
             ),
         )
-        profit_target_net = max(0.0, _as_float(self._pick(env, "AUTONOMOUS_PROFIT_TARGET_NET", 0.02), 0.02))
+        profit_target_net = max(0.0, _as_float(self._pick(env, "AUTONOMOUS_PROFIT_TARGET_NET", 0.003), 0.003))
         modeled_floor = max(0.0, (2.0 * float(settings.execution.fee_bps)) + (2.0 * float(settings.execution.slippage_bps)))
         final_min_profit_bps = max(hard_floor_bps, explicit_min_net_bps, modeled_floor, profit_target_net * 10000.0)
         target_profit_bps = max(
@@ -227,7 +246,7 @@ class HarmonyConfigResolver:
         spread_spike_enabled = _as_bool(self._pick(env, "AUTONOMOUS_SPREAD_SPIKE_ENABLED", True), True)
         liquidity_map_enabled = _as_bool(self._pick(env, "AUTONOMOUS_LIQUIDITY_MAP_ENABLED", True), True)
 
-        return ResolvedHarmonyConfig(
+        resolved = ResolvedHarmonyConfig(
             order_cadence_s=float(cadence_s),
             guards_mode=guards_mode,
             user_min_order_quote=float(user_min),
@@ -250,8 +269,13 @@ class HarmonyConfigResolver:
             ),
             spread_spike_hold_s=max(1.0, _as_float(self._pick(env, "AUTONOMOUS_SPREAD_SPIKE_HOLD_S", 45.0), 45.0)),
             liquidity_map_enabled=bool(liquidity_map_enabled),
+            hard_sell_floor_bps=float(hard_floor_bps),
             collisions=collisions,
         )
+        fingerprint_payload = resolved.to_dict()
+        fingerprint_payload.pop("resolved_config_fingerprint", None)
+        resolved.resolved_config_fingerprint = _stable_hash(fingerprint_payload)
+        return resolved
 
     def write_report(self, run_dir: str, resolved: ResolvedHarmonyConfig) -> str:
         out = Path(run_dir) / "harmony_report.json"

@@ -13,6 +13,19 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_sqlalchemy_dsn(raw_dsn: str) -> str:
+    """Normalize DSN for SQLAlchemy using installed PostgreSQL driver."""
+    dsn = str(raw_dsn or "").strip()
+    if not dsn:
+        return ""
+    lower = dsn.lower()
+    if lower.startswith("postgres://"):
+        return "postgresql+psycopg://" + dsn[len("postgres://") :]
+    if lower.startswith("postgresql://") and not lower.startswith("postgresql+"):
+        return "postgresql+psycopg://" + dsn[len("postgresql://") :]
+    return dsn
+
+
 @dataclass(frozen=True)
 class PostgresMirrorHealth:
     enabled: bool
@@ -43,8 +56,9 @@ class PostgresMirrorSink:
         connect_timeout_s: float = 2.0,
     ) -> None:
         self.dsn = str(dsn or "").strip()
+        self.sqlalchemy_dsn = _normalize_sqlalchemy_dsn(self.dsn)
         self.run_id = str(run_id)
-        self.enabled = bool(enabled and self.dsn)
+        self.enabled = bool(enabled and self.sqlalchemy_dsn)
         self.connect_timeout_s = max(0.5, float(connect_timeout_s))
         self._health = PostgresMirrorHealth(
             enabled=self.enabled,
@@ -82,9 +96,9 @@ class PostgresMirrorSink:
     def _init(self) -> None:
         try:
             args: dict[str, Any] = {}
-            if self.dsn.startswith("postgresql"):
+            if self.sqlalchemy_dsn.startswith("postgresql"):
                 args["connect_args"] = {"connect_timeout": int(self.connect_timeout_s)}
-            self._engine = create_engine(self.dsn, future=True, pool_pre_ping=True, **args)
+            self._engine = create_engine(self.sqlalchemy_dsn, future=True, pool_pre_ping=True, **args)
             metadata = MetaData()
             self._table = Table(
                 "runtime_mirror_events",

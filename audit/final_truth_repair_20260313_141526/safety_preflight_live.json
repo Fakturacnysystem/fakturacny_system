@@ -1,0 +1,72 @@
+{
+  "ok": false,
+  "target_mode": "live",
+  "config": "/Users/martinholik/Projects/fakturacny_system/config.kraken_spot.live_profit.yaml",
+  "checks": [
+    {
+      "name": "config_exists",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "config": "/Users/martinholik/Projects/fakturacny_system/config.kraken_spot.live_profit.yaml"
+      }
+    },
+    {
+      "name": "required_docs",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "cloud_artifacts",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "settings_validation",
+      "ok": false,
+      "reason": "Live trading blocked until configured: ['kraken_spot_api_credentials', 'TESTNET_VALIDATED', 'AUTONOMOUS_LIVE_GO']",
+      "details": {
+        "target_mode": "live"
+      }
+    },
+    {
+      "name": "manual_live_gate",
+      "ok": false,
+      "reason": "manual_live_gate_not_satisfied",
+      "details": {
+        "live_go": false,
+        "confirmation_file_exists": true,
+        "confirmation_file": "/Users/martinholik/Projects/fakturacny_system/ops/live_operator_confirmation.txt"
+      }
+    },
+    {
+      "name": "manual_live_dual_control",
+      "ok": false,
+      "reason": "manual_live_dual_control_not_satisfied",
+      "details": {
+        "live_go": false,
+        "confirmation_file_exists": true,
+        "approval_file_exists": true,
+        "approval_artifact_ok": true,
+        "approval_reason": "ok",
+        "approval_file": "/Users/martinholik/Projects/fakturacny_system/ops/live_governance_approval.json"
+      }
+    }
+  ],
+  "rollback_dry_run": {
+    "validated": false,
+    "artifact_id": "5b8e6cab28f689fc1183f35418a0ceaa2d4b636e8676a6b5dbb06e1614d7bc59",
+    "reason_codes": [
+      "target_mode_not_paper_dry_run",
+      "check_failed:settings_validation",
+      "check_failed:manual_live_gate",
+      "check_failed:manual_live_dual_control"
+    ]
+  }
+}

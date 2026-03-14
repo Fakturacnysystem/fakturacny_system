@@ -1,0 +1,50 @@
+Inspect the repository first and continue strictly in autonomous protocol mode without interrupting any existing safety-preserving flow.
+
+OBJECTIVE:
+After implementation/test completion for the current phase window, execute the project in the safest repo-grounded way available, capture analyzable telemetry/artifacts, and prepare the system for post-run analysis and tuning. Do not weaken the manual live gate, hard safety doctrines, profit floor logic, exposure caps, risk limits, deterministic behavior, replay safety, rollback readiness, or auditability.
+
+REQUIRED BEHAVIOR:
+1. Confirm the latest completed phase/window state from repo docs/tests before doing anything.
+2. Do NOT replace or bypass the legacy orchestrator authority path.
+3. Do NOT enable unsafe live trading or bypass manual/live gates.
+4. Identify the safest repo-grounded execution mode available for end-to-end validation after the current implementation window. Prefer shadow/paper/replay/simulated execution modes if live authority would require manual approval.
+5. Run the highest-signal safe execution path available in the repo.
+6. Capture and persist analyzable artifacts/telemetry for later review, such as:
+   - run summaries
+   - audit outputs
+   - safety preflight outputs
+   - runtime audit outputs
+   - replay/evidence artifacts
+   - packet/meta/ops diagnostics if available
+7. Ensure artifacts are bounded, replay-safe, and auditable.
+8. Run appropriate repo-grounded audit/preflight/validation commands around the execution.
+9. If something cannot be run safely because of gating/manual controls, do not bypass it; instead run the strongest safe substitute and record the gating reason.
+10. End with a strict execution-and-telemetry report summarizing what was executed, what data was captured, what passed, what remains gated, and what the next tuning opportunities are.
+
+GLOBAL RULES:
+- Preserve all hard safety doctrines, profit floor logic, exposure caps, risk limits, deterministic behavior, replay safety, rollback readiness, auditability, and the manual live gate.
+- Do NOT rewrite or replace the legacy orchestrator authority path.
+- Keep all changes additive, modular, typed, production-oriented, bounded-memory, deterministic, replay-safe, rollback-safe, and auditable.
+- No fake completeness claims.
+- Prefer existing repo scripts/validation surfaces over inventing new execution paths.
+
+VALIDATION EXPECTATIONS:
+- Use repo-grounded scripts/tests/checks where appropriate, such as safety preflight, runtime audit, focused tests, full pytest, and safe execution paths already present.
+- Capture output locations and summarize what can be analyzed afterward.
+- If execution generates artifacts, persist them in repo-consistent locations and mention them in the final report.
+
+FINAL OUTPUT REQUIRED:
+Print STRICT EXECUTION / TELEMETRY REPORT with:
+1. inspection_findings
+2. completed_phase_baseline
+3. execution_mode_used
+4. commands_run
+5. artifacts_captured
+6. test_and_audit_results
+7. gating_or_safety_constraints_respected
+8. runtime_safety_status
+9. analysis_ready_data_summary
+10. recommended_tuning_targets
+11. next_safe_step
+
+Start with repository inspection.

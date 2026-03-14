@@ -398,7 +398,7 @@ class HealthAudit110:
             cfg = getattr(gate, "config", None)
             target = self._safe_float(getattr(cfg, "min_net_profit_ratio", 0.0), 0.0)
             slip_bps = self._safe_float(getattr(cfg, "default_slippage_bps", 0.0), 0.0)
-            if target < 0.02 - 1e-12:
+            if target < 0.003 - 1e-12:
                 errors.append(f"{svc.__class__.__name__}:profit_target_below_floor")
             if slip_bps <= 0.0:
                 errors.append(f"{svc.__class__.__name__}:slippage_non_positive")

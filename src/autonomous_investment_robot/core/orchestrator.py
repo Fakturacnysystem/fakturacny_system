@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import math
 import os
 import time
 from types import SimpleNamespace
@@ -130,6 +131,42 @@ AGGRESSIVE_HF_PROFILE_DEFAULTS: dict[str, str] = {
     "AUTONOMOUS_CAPITAL_REDIRECT_TOPK": "30",
 }
 
+ELEVEN_OUT_OF_TEN_PROFILE_DEFAULTS: dict[str, str] = {
+    "AUTONOMOUS_RUN_PROFILE": "ELEVEN_OUT_OF_TEN_MODE",
+    "AUTONOMOUS_TRADES_SYNC_MIN_INTERVAL_S": "60",
+    "AUTONOMOUS_KRAKEN_BALANCE_TTL_S": "30",
+    "AUTONOMOUS_KRAKEN_TRADES_TTL_S": "45",
+    "AUTONOMOUS_CONFIDENCE_THRESHOLD": "0.44",
+    "AUTONOMOUS_ORDER_CADENCE_S": "9",
+    "AUTONOMOUS_LIQUIDITY_NIGHT_EDGE_ADD_BPS": "1.5",
+    "AUTONOMOUS_RISK_PER_TRADE": "0.0025",
+    "AUTONOMOUS_MAX_PORTFOLIO_HEAT_RATIO": "0.0125",
+    "AUTONOMOUS_MAX_SYMBOL_EXPOSURE_RATIO": "0.0075",
+    "AUTONOMOUS_STORM_ENABLED": "1",
+    "AUTONOMOUS_STORM_TOP_N": "16",
+    "AUTONOMOUS_CONFIDENCE_THRESHOLD_CRYPTO": "0.52",
+    "AUTONOMOUS_CONFIDENCE_THRESHOLD_XSTOCK": "0.58",
+    "AUTONOMOUS_CONFIDENCE_THRESHOLD_XSTOCK_ETF": "0.60",
+    "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_CRYPTO": "92",
+    "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_XSTOCK": "74",
+    "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_XSTOCK_ETF": "68",
+    "AUTONOMOUS_REGIME_SIZE_MULT_BULL_TREND": "1.15",
+    "AUTONOMOUS_REGIME_SIZE_MULT_TREND": "1.10",
+    "AUTONOMOUS_REGIME_SIZE_MULT_RANGE": "0.95",
+    "AUTONOMOUS_REGIME_SIZE_MULT_CHOP": "0.80",
+    "AUTONOMOUS_REGIME_SIZE_MULT_PANIC": "0.45",
+    "AUTONOMOUS_REGIME_SIZE_MULT_HIGH_VOL": "0.60",
+    "AUTONOMOUS_REGIME_SIZE_MULT_LOW_LIQUIDITY": "0.55",
+    "AUTONOMOUS_OPPORTUNITY_DECAY_MAX_AGE_S": "45",
+    "AUTONOMOUS_OPPORTUNITY_DECAY_GUARD_THRESHOLD": "0.65",
+    "AUTONOMOUS_CROSS_MARKET_CONFIRMATION_ENABLED": "1",
+    "AUTONOMOUS_CROSS_MARKET_CONFIRMATION_MIN": "-0.35",
+    "AUTONOMOUS_XSTOCKS_SESSION_AWARE": "true",
+}
+
+DEFAULT_MIN_NET_PROFIT_BPS = 30.0
+DEFAULT_MIN_NET_PROFIT_RATIO = DEFAULT_MIN_NET_PROFIT_BPS / 10000.0
+
 
 def _compute_risk_notional_caps(
     *,
@@ -176,12 +213,96 @@ def _compute_risk_notional_caps(
     }
 
 
+def _capital_unlock_sell_plan(
+    *,
+    enabled: bool,
+    sell_profit_lock_require_cost_basis: bool,
+    bid_price: float,
+    avg_entry_price: float,
+    available_base_qty: float,
+    min_unlock_notional_quote: float,
+    shortfall_quote: float,
+    shortfall_cover_ratio: float,
+    required_exit_price: float,
+) -> dict[str, float | str | bool]:
+    """Build a safe SELL-notional plan to unlock quote capital on BUY shortfall.
+
+    The plan never weakens SELL invariants:
+    - requires inventory,
+    - respects min order floor,
+    - respects cost-basis requirement when enabled,
+    - requires current bid to satisfy provided `required_exit_price`.
+    """
+
+    if not bool(enabled):
+        return {"allowed": False, "reason": "capital_unlock_disabled"}
+
+    bid = max(0.0, float(bid_price))
+    if bid <= 0.0:
+        return {"allowed": False, "reason": "invalid_bid_price"}
+
+    qty = max(0.0, float(available_base_qty))
+    if qty <= 0.0:
+        return {"allowed": False, "reason": "no_sellable_inventory"}
+
+    avg_entry = max(0.0, float(avg_entry_price))
+    if bool(sell_profit_lock_require_cost_basis) and avg_entry <= 0.0:
+        return {"allowed": False, "reason": "missing_cost_basis"}
+
+    hard_exit = max(0.0, float(required_exit_price))
+    if hard_exit > 0.0 and (bid + 1e-12) < hard_exit:
+        return {
+            "allowed": False,
+            "reason": "capital_unlock_below_min_profit_floor",
+            "bid": float(bid),
+            "required_exit_price": float(hard_exit),
+        }
+
+    inventory_quote = qty * bid
+    min_notional = max(0.0, float(min_unlock_notional_quote))
+    if inventory_quote + 1e-9 < min_notional:
+        return {
+            "allowed": False,
+            "reason": "inventory_below_min_order",
+            "inventory_quote": float(inventory_quote),
+            "min_unlock_notional_quote": float(min_notional),
+        }
+
+    shortfall = max(0.0, float(shortfall_quote))
+    cover = max(1.0, float(shortfall_cover_ratio))
+    target_quote = min(inventory_quote, max(min_notional, shortfall * cover))
+    if target_quote + 1e-9 < min_notional:
+        return {
+            "allowed": False,
+            "reason": "capital_unlock_target_below_min_order",
+            "target_notional_quote": float(target_quote),
+            "min_unlock_notional_quote": float(min_notional),
+        }
+
+    return {
+        "allowed": True,
+        "reason": "capital_unlock_sell_candidate",
+        "target_notional_quote": float(target_quote),
+        "inventory_quote": float(inventory_quote),
+        "shortfall_quote": float(shortfall),
+        "min_unlock_notional_quote": float(min_notional),
+        "required_exit_price": float(hard_exit),
+    }
+
+
 class RobotOrchestrator:
     def __init__(self, settings: RobotSettings) -> None:
         self.settings = settings
-        if str(os.getenv("AUTONOMOUS_PROFILE", "") or "").strip().lower() == "aggressive_hf":
+        profile = str(os.getenv("AUTONOMOUS_PROFILE", "") or "").strip().lower()
+        if profile == "aggressive_hf":
             for key, value in AGGRESSIVE_HF_PROFILE_DEFAULTS.items():
                 os.environ.setdefault(key, value)
+        if profile in {"eleven_out_of_ten_mode", "eleven_out_of_ten", "eleven", "11_of_10"}:
+            for key, value in ELEVEN_OUT_OF_TEN_PROFILE_DEFAULTS.items():
+                os.environ.setdefault(key, value)
+        os.environ.setdefault("AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS", f"{DEFAULT_MIN_NET_PROFIT_BPS:g}")
+        os.environ.setdefault("AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS", f"{DEFAULT_MIN_NET_PROFIT_BPS:g}")
+        os.environ.setdefault("AUTONOMOUS_PROFIT_TARGET_NET", f"{DEFAULT_MIN_NET_PROFIT_RATIO:g}")
         self.ingestion = DataIngestionService()
         self.qa = DataQAService()
         self.raw = RawStoreService(settings.storage.run_dir)
@@ -213,6 +334,13 @@ class RobotOrchestrator:
         os.environ["AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS"] = f"{self.harmony_resolved.sell_min_profit_bps:g}"
         os.environ["AUTONOMOUS_SPOT_SELL_TARGET_PROFIT_BPS"] = f"{self.harmony_resolved.sell_target_profit_bps:g}"
         os.environ["AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS"] = f"{self.harmony_resolved.sell_min_profit_bps:g}"
+        resolved_hard_floor_bps = max(
+            DEFAULT_MIN_NET_PROFIT_BPS,
+            float(getattr(self.harmony_resolved, "hard_sell_floor_bps", DEFAULT_MIN_NET_PROFIT_BPS) or DEFAULT_MIN_NET_PROFIT_BPS),
+        )
+        os.environ["AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS"] = f"{resolved_hard_floor_bps:g}"
+        os.environ["AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS"] = f"{resolved_hard_floor_bps:g}"
+        os.environ["AUTONOMOUS_PROFIT_TARGET_NET"] = f"{max(DEFAULT_MIN_NET_PROFIT_RATIO, float(self.harmony_resolved.sell_min_profit_bps) / 10000.0):g}"
         os.environ["AUTONOMOUS_TP_ONLY_MODE"] = "1" if self.harmony_resolved.tp_only_mode else "0"
         os.environ["AUTONOMOUS_MAX_ORDERS_PER_MIN"] = str(self.harmony_resolved.max_orders_per_min)
         os.environ["AUTONOMOUS_MARKET_WATCH_EVERY_S"] = f"{self.harmony_resolved.market_watch_every_s:g}"
@@ -487,6 +615,238 @@ class RobotOrchestrator:
                             str(getattr(autonomous_cfg, "self_optimization_apply_every", 12)),
                         )
                         or str(getattr(autonomous_cfg, "self_optimization_apply_every", 12))
+                    )
+                ),
+            ),
+            market_class_confidence_thresholds={
+                "crypto_spot": max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_CONFIDENCE_THRESHOLD_CRYPTO",
+                                str(getattr(autonomous_cfg, "confidence_threshold_crypto", 0.52)),
+                            )
+                            or str(getattr(autonomous_cfg, "confidence_threshold_crypto", 0.52))
+                        ),
+                    ),
+                ),
+                "xstock": max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_CONFIDENCE_THRESHOLD_XSTOCK",
+                                str(getattr(autonomous_cfg, "confidence_threshold_xstock", 0.58)),
+                            )
+                            or str(getattr(autonomous_cfg, "confidence_threshold_xstock", 0.58))
+                        ),
+                    ),
+                ),
+                "xstock_etf": max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_CONFIDENCE_THRESHOLD_XSTOCK_ETF",
+                                str(getattr(autonomous_cfg, "confidence_threshold_xstock_etf", 0.60)),
+                            )
+                            or str(getattr(autonomous_cfg, "confidence_threshold_xstock_etf", 0.60))
+                        ),
+                    ),
+                ),
+            },
+            market_class_uncertainty_threshold_bps={
+                "crypto_spot": max(
+                    20.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_CRYPTO",
+                            str(getattr(autonomous_cfg, "uncertainty_threshold_bps_crypto", 92.0)),
+                        )
+                        or str(getattr(autonomous_cfg, "uncertainty_threshold_bps_crypto", 92.0))
+                    ),
+                ),
+                "xstock": max(
+                    20.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_XSTOCK",
+                            str(getattr(autonomous_cfg, "uncertainty_threshold_bps_xstock", 74.0)),
+                        )
+                        or str(getattr(autonomous_cfg, "uncertainty_threshold_bps_xstock", 74.0))
+                    ),
+                ),
+                "xstock_etf": max(
+                    20.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_UNCERTAINTY_THRESHOLD_BPS_XSTOCK_ETF",
+                            str(getattr(autonomous_cfg, "uncertainty_threshold_bps_xstock_etf", 68.0)),
+                        )
+                        or str(getattr(autonomous_cfg, "uncertainty_threshold_bps_xstock_etf", 68.0))
+                    ),
+                ),
+            },
+            regime_size_multipliers={
+                "BULL_TREND": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_BULL_TREND",
+                                str(getattr(autonomous_cfg, "regime_size_mult_bull_trend", 1.15)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_bull_trend", 1.15))
+                        ),
+                    ),
+                ),
+                "TREND": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_TREND",
+                                str(getattr(autonomous_cfg, "regime_size_mult_trend", 1.10)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_trend", 1.10))
+                        ),
+                    ),
+                ),
+                "RANGE": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_RANGE",
+                                str(getattr(autonomous_cfg, "regime_size_mult_range", 0.95)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_range", 0.95))
+                        ),
+                    ),
+                ),
+                "CHOP": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_CHOP",
+                                str(getattr(autonomous_cfg, "regime_size_mult_chop", 0.80)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_chop", 0.80))
+                        ),
+                    ),
+                ),
+                "PANIC": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_PANIC",
+                                str(getattr(autonomous_cfg, "regime_size_mult_panic", 0.45)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_panic", 0.45))
+                        ),
+                    ),
+                ),
+                "HIGH_VOL": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_HIGH_VOL",
+                                str(getattr(autonomous_cfg, "regime_size_mult_high_vol", 0.60)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_high_vol", 0.60))
+                        ),
+                    ),
+                ),
+                "LOW_LIQUIDITY": max(
+                    0.25,
+                    min(
+                        1.75,
+                        float(
+                            os.getenv(
+                                "AUTONOMOUS_REGIME_SIZE_MULT_LOW_LIQUIDITY",
+                                str(getattr(autonomous_cfg, "regime_size_mult_low_liquidity", 0.55)),
+                            )
+                            or str(getattr(autonomous_cfg, "regime_size_mult_low_liquidity", 0.55))
+                        ),
+                    ),
+                ),
+            },
+            opportunity_decay_max_age_s=max(
+                5.0,
+                float(
+                    os.getenv(
+                        "AUTONOMOUS_OPPORTUNITY_DECAY_MAX_AGE_S",
+                        str(getattr(autonomous_cfg, "opportunity_decay_max_age_s", 45.0)),
+                    )
+                    or str(getattr(autonomous_cfg, "opportunity_decay_max_age_s", 45.0))
+                ),
+            ),
+            opportunity_decay_guard_threshold=max(
+                0.1,
+                min(
+                    1.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_OPPORTUNITY_DECAY_GUARD_THRESHOLD",
+                            str(getattr(autonomous_cfg, "opportunity_decay_guard_threshold", 0.65)),
+                        )
+                        or str(getattr(autonomous_cfg, "opportunity_decay_guard_threshold", 0.65))
+                    ),
+                ),
+            ),
+            cross_market_confirmation_enabled=self._bool_env(
+                "AUTONOMOUS_CROSS_MARKET_CONFIRMATION_ENABLED",
+                bool(getattr(autonomous_cfg, "cross_market_confirmation_enabled", True)),
+            ),
+            cross_market_confirmation_min=max(
+                -1.0,
+                min(
+                    1.0,
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_CROSS_MARKET_CONFIRMATION_MIN",
+                            str(getattr(autonomous_cfg, "cross_market_confirmation_min", -0.35)),
+                        )
+                        or str(getattr(autonomous_cfg, "cross_market_confirmation_min", -0.35))
+                    ),
+                ),
+            ),
+            counterfactual_min_edge_bps=max(
+                0.0,
+                float(
+                    os.getenv(
+                        "AUTONOMOUS_COUNTERFACTUAL_MIN_EDGE_BPS",
+                        str(getattr(autonomous_cfg, "counterfactual_min_edge_bps", 1.0)),
+                    )
+                    or str(getattr(autonomous_cfg, "counterfactual_min_edge_bps", 1.0))
+                ),
+            ),
+            market_twin_include_advanced_scenarios=self._bool_env(
+                "AUTONOMOUS_MARKET_TWIN_INCLUDE_ADVANCED_SCENARIOS",
+                bool(getattr(autonomous_cfg, "market_twin_include_advanced_scenarios", True)),
+            ),
+            market_twin_max_snapshots=max(
+                32,
+                int(
+                    float(
+                        os.getenv(
+                            "AUTONOMOUS_MARKET_TWIN_MAX_SNAPSHOTS",
+                            str(getattr(autonomous_cfg, "market_twin_max_snapshots", 256)),
+                        )
+                        or str(getattr(autonomous_cfg, "market_twin_max_snapshots", 256))
                     )
                 ),
             ),
@@ -787,6 +1147,46 @@ class RobotOrchestrator:
         except Exception:
             pass
         self.latest_oos_gate_pass = True
+        self._universe_shadow_enabled = self._bool_env("AUTONOMOUS_UNIVERSE_SHADOW_ENABLED", False)
+        self._universe_shadow_fail_open = self._bool_env("AUTONOMOUS_UNIVERSE_SHADOW_FAIL_OPEN", True)
+        self._universe_shadow_every_n_steps = max(
+            1,
+            int(float(os.getenv("AUTONOMOUS_UNIVERSE_SHADOW_EVERY_N_STEPS", "1") or "1")),
+        )
+        self._universe_shadow_run_dir = os.path.join(self.settings.storage.run_dir, "universe_shadow")
+        self._universe_shadow_mind = None
+        self._universe_shadow_last_packet_id = ""
+        self._universe_shadow_last_error = ""
+        self._universe_execution_plan_bridge_enabled = self._bool_env(
+            "AUTONOMOUS_UNIVERSE_EXECUTION_PLAN_BRIDGE_ENABLED",
+            False,
+        )
+        self._universe_shield_bridge_enabled = self._bool_env(
+            "AUTONOMOUS_UNIVERSE_SHIELD_BRIDGE_ENABLED",
+            False,
+        )
+        self.ops.set_metric("universe_shadow_enabled", 1.0 if self._universe_shadow_enabled else 0.0)
+        self.ops.set_metric(
+            "universe_execution_plan_bridge_enabled",
+            1.0 if self._universe_execution_plan_bridge_enabled else 0.0,
+        )
+        self.ops.set_metric(
+            "universe_shield_bridge_enabled",
+            1.0 if self._universe_shield_bridge_enabled else 0.0,
+        )
+        self._universe_event_adapter_enabled = self._bool_env("AUTONOMOUS_UNIVERSE_EVENT_ADAPTER_ENABLED", True)
+        self._universe_event_adapter_fail_open = self._bool_env("AUTONOMOUS_UNIVERSE_EVENT_ADAPTER_FAIL_OPEN", True)
+        self._universe_event_adapter_run_dir = os.path.join(self.settings.storage.run_dir, "universe_events")
+        self._universe_event_adapter_fabric = None
+        self._universe_event_adapter_last_error = ""
+        self.ops.set_metric("universe_event_adapter_enabled", 1.0 if self._universe_event_adapter_enabled else 0.0)
+        self._world_state_read_adapter = None
+        try:
+            from autonomous_investment_robot.services.universe_core.state import WorldStateReadAdapter
+
+            self._world_state_read_adapter = WorldStateReadAdapter()
+        except Exception:
+            self._world_state_read_adapter = None
 
     def _missing_limits(self) -> bool:
         req = [
@@ -957,6 +1357,440 @@ class RobotOrchestrator:
                 out.append(sym)
         return out
 
+    def _recover_allowlist_with_operator_override(
+        self,
+        *,
+        allowlist: set[str] | None,
+        operator_override: list[str] | None,
+    ) -> list[str]:
+        if not allowlist:
+            return []
+        if not operator_override:
+            return []
+        recovered: list[str] = []
+        for symbol in operator_override:
+            sym = str(symbol or "").strip().upper()
+            if not sym:
+                continue
+            if sym in allowlist and sym not in recovered:
+                recovered.append(sym)
+        return recovered
+
+    def _ensure_universe_shadow_mind(self):
+        if not bool(getattr(self, "_universe_shadow_enabled", False)):
+            return None
+        cached = getattr(self, "_universe_shadow_mind", None)
+        if cached is not None:
+            return cached
+        run_dir = str(getattr(self, "_universe_shadow_run_dir", "") or "")
+        if not run_dir:
+            return None
+        try:
+            from autonomous_investment_robot.services.universe_core.service import UniverseMind
+
+            mind = UniverseMind(run_dir)
+            self._universe_shadow_mind = mind
+            self._universe_shadow_last_error = ""
+            return mind
+        except Exception as exc:
+            self._universe_shadow_last_error = f"shadow_boot_failed:{exc}"
+            try:
+                self.ops.audit_event(
+                    "universe_shadow_boot_error",
+                    {
+                        "error": str(exc),
+                        "run_dir": run_dir,
+                    },
+                )
+            except Exception:
+                pass
+            return None
+
+    def _emit_universe_shadow_cycle(
+        self,
+        *,
+        step: int,
+        venue: str,
+        intent: OrderIntent | None,
+        context_payload: dict[str, object],
+    ) -> dict[str, object]:
+        diagnostics: dict[str, object] = {
+            "enabled": bool(getattr(self, "_universe_shadow_enabled", False)),
+            "emitted": False,
+            "packet_id": "",
+            "error": "",
+            "authority": "legacy_orchestrator_only",
+        }
+        if not bool(diagnostics["enabled"]):
+            return diagnostics
+
+        every_n = max(1, int(getattr(self, "_universe_shadow_every_n_steps", 1) or 1))
+        if every_n > 1 and int(step) % every_n != 0:
+            diagnostics["error"] = "shadow_skipped_step_interval"
+            return diagnostics
+
+        shadow_mind = self._ensure_universe_shadow_mind()
+        if shadow_mind is None:
+            diagnostics["error"] = str(getattr(self, "_universe_shadow_last_error", "") or "shadow_mind_unavailable")
+            return diagnostics
+
+        symbol = str(context_payload.get("symbol", "") or "")
+        shadow_intent = intent
+        if shadow_intent is None:
+            shadow_intent = OrderIntent(
+                symbol=symbol,
+                side="flat",
+                target_notional=0.0,
+                why={"shadow_reason": "no_intent"},
+            )
+
+        shadow_context = SimpleNamespace(
+            symbol=symbol,
+            market_class=str(context_payload.get("market_class", "crypto_spot") or "crypto_spot"),
+            mid=float(context_payload.get("mid", 0.0) or 0.0),
+            spread_bps=float(context_payload.get("spread_bps", 0.0) or 0.0),
+            depth_notional=float(context_payload.get("depth_notional", 0.0) or 0.0),
+            features=dict(context_payload.get("features", {}) or {}),
+            market_watch=dict(context_payload.get("market_watch", {}) or {}),
+            quote_free=float(context_payload.get("quote_free", 0.0) or 0.0),
+            position_notional_quote=float(context_payload.get("position_notional_quote", 0.0) or 0.0),
+            signed_exposure_notional_quote=float(context_payload.get("signed_exposure_notional_quote", 0.0) or 0.0),
+            drawdown_pct=float(context_payload.get("drawdown_pct", 0.0) or 0.0),
+            latency_ms=float(context_payload.get("latency_ms", 0.0) or 0.0),
+            forecast_confidence=float(context_payload.get("forecast_confidence", 0.0) or 0.0),
+            forecast_sigma=float(context_payload.get("forecast_sigma", 0.0) or 0.0),
+        )
+
+        try:
+            shadow_mind.ingest_decision_context(
+                shadow_context,
+                venue=str(venue or "synthetic"),
+                source="orchestrator_shadow_adapter",
+            )
+            result = shadow_mind.run_cycle_from_intent(
+                shadow_intent,
+                venue=str(venue or "synthetic"),
+            )
+            packet = result.decision_packet
+            packet_id = str(getattr(packet, "cycle_id", "") or "")
+            mission_payload = dict(getattr(packet, "mission", {}) or {})
+            mission_reason_codes = mission_payload.get("reason_codes", [])
+            if not isinstance(mission_reason_codes, list):
+                mission_reason_codes = []
+            execution_plan = getattr(result, "execution_plan", None)
+            execution_meta = dict(getattr(execution_plan, "meta", {}) or {})
+            execution_advisory = dict(execution_meta.get("execution_advisory", {}) or {})
+            execution_intelligence = dict(execution_meta.get("execution_intelligence", {}) or {})
+            execution_abort = dict(execution_intelligence.get("abort", {}) or {})
+            execution_abort_reason_codes = execution_abort.get("reason_codes", [])
+            if not isinstance(execution_abort_reason_codes, list):
+                execution_abort_reason_codes = []
+            execution_advisory_reason_codes = execution_advisory.get("reason_codes", [])
+            if not isinstance(execution_advisory_reason_codes, list):
+                execution_advisory_reason_codes = []
+            packet_evaluation = dict(getattr(packet, "evaluation", {}) or {})
+            learning_summary = packet_evaluation.get("learning_summary", {})
+            if not isinstance(learning_summary, dict):
+                learning_summary = {}
+            bounded_retention = learning_summary.get("bounded_retention_health", {})
+            if not isinstance(bounded_retention, dict):
+                bounded_retention = {}
+            learning_errors = learning_summary.get("errors", [])
+            if not isinstance(learning_errors, list):
+                learning_errors = []
+            shield_reason_codes = getattr(result.shield, "reason_codes", [])
+            if not isinstance(shield_reason_codes, list):
+                shield_reason_codes = []
+            execution_plan_contract = {
+                "instrument": str(getattr(execution_plan, "instrument", "") or ""),
+                "side": str(getattr(execution_plan, "side", "") or ""),
+                "actionable": bool(getattr(execution_plan, "actionable", False)),
+                "target_notional_quote": float(getattr(execution_plan, "target_notional_quote", 0.0) or 0.0),
+                "order_type": str(getattr(execution_plan, "order_type", "") or ""),
+                "maker_taker": str(getattr(execution_plan, "maker_taker", "") or ""),
+                "urgency_tier": str(getattr(execution_plan, "urgency_tier", "") or ""),
+                "max_slippage_bps": float(getattr(execution_plan, "max_slippage_bps", 0.0) or 0.0),
+                "expected_net_edge_bps": float(getattr(execution_plan, "expected_net_edge_bps", 0.0) or 0.0),
+            }
+            diagnostics.update(
+                {
+                    "emitted": True,
+                    "packet_id": packet_id,
+                    "selected_strategy": str(getattr(packet, "selected_strategy", "") or ""),
+                    "plan_actionable": bool(getattr(result.execution_plan, "actionable", False)),
+                    "shield_mode": str(getattr(result.shield, "mode", "") or ""),
+                    "shield_reason_codes": [str(code) for code in shield_reason_codes if str(code)],
+                    "shield_no_trade_forced": bool(getattr(result.shield, "no_trade_forced", False)),
+                    "shield_hard_stop_forced": bool(getattr(result.shield, "hard_stop_forced", False)),
+                    "mission": str(mission_payload.get("mission", mission_payload.get("mission_type", "")) or ""),
+                    "mission_reason_codes": [str(code) for code in mission_reason_codes if str(code)],
+                    "mission_no_trade_preferred": bool(mission_payload.get("no_trade_preferred", False)),
+                    "mission_allow_new_risk": bool(mission_payload.get("allow_new_risk", True)),
+                    "mission_execution_posture_hint": str(mission_payload.get("execution_posture_hint", "") or ""),
+                    "execution_plan_contract": dict(execution_plan_contract),
+                    "execution_plan_abort": bool(execution_abort.get("should_abort", False)),
+                    "execution_plan_abort_reason_codes": [
+                        str(code) for code in execution_abort_reason_codes if str(code)
+                    ],
+                    "execution_plan_advisory_severity": str(execution_advisory.get("severity", "") or ""),
+                    "execution_plan_advisory_reason_codes": [
+                        str(code) for code in execution_advisory_reason_codes if str(code)
+                    ],
+                    "execution_plan_requires_manual_review": bool(
+                        execution_advisory.get("requires_manual_review", False)
+                    ),
+                    "learning_summary_status": str(bounded_retention.get("status", "") or ""),
+                    "learning_summary_bounded_within_limit": bool(bounded_retention.get("within_limit", False)),
+                    "learning_summary_errors_count": len([str(item) for item in learning_errors if str(item)]),
+                }
+            )
+            self._universe_shadow_last_packet_id = packet_id
+            self._universe_shadow_last_error = ""
+            self.ops.set_metric("universe_shadow_cycle_ok", 1.0)
+            self.ops.audit_event(
+                "universe_shadow_cycle",
+                {
+                    "step": int(step),
+                    "symbol": str(symbol),
+                    "packet_id": packet_id,
+                    "selected_strategy": str(diagnostics.get("selected_strategy", "")),
+                    "plan_actionable": bool(diagnostics.get("plan_actionable", False)),
+                    "shield_mode": str(diagnostics.get("shield_mode", "")),
+                    "shield_reason_codes": list(diagnostics.get("shield_reason_codes", [])),
+                    "shield_no_trade_forced": bool(diagnostics.get("shield_no_trade_forced", False)),
+                    "shield_hard_stop_forced": bool(diagnostics.get("shield_hard_stop_forced", False)),
+                    "intent_side": str(getattr(shadow_intent, "side", "flat") or "flat"),
+                    "intent_target_notional": float(getattr(shadow_intent, "target_notional", 0.0) or 0.0),
+                    "mission": str(diagnostics.get("mission", "")),
+                    "mission_reason_codes": list(diagnostics.get("mission_reason_codes", [])),
+                    "mission_no_trade_preferred": bool(diagnostics.get("mission_no_trade_preferred", False)),
+                    "mission_allow_new_risk": bool(diagnostics.get("mission_allow_new_risk", True)),
+                    "execution_plan_contract": dict(diagnostics.get("execution_plan_contract", {})),
+                    "execution_plan_abort": bool(diagnostics.get("execution_plan_abort", False)),
+                    "execution_plan_advisory_severity": str(
+                        diagnostics.get("execution_plan_advisory_severity", "")
+                    ),
+                    "learning_summary_status": str(diagnostics.get("learning_summary_status", "")),
+                    "learning_summary_bounded_within_limit": bool(
+                        diagnostics.get("learning_summary_bounded_within_limit", False)
+                    ),
+                    "authority": "legacy_orchestrator_only",
+                },
+            )
+            self._record_module_event(
+                module="universe_shadow_adapter",
+                action="emit_packet",
+                reason="ok",
+                symbol=str(symbol),
+                payload={
+                    "packet_id": packet_id,
+                    "selected_strategy": str(diagnostics.get("selected_strategy", "")),
+                    "plan_actionable": bool(diagnostics.get("plan_actionable", False)),
+                    "shield_mode": str(diagnostics.get("shield_mode", "")),
+                    "shield_reason_codes": list(diagnostics.get("shield_reason_codes", [])),
+                    "mission": str(diagnostics.get("mission", "")),
+                    "mission_reason_codes": list(diagnostics.get("mission_reason_codes", [])),
+                    "execution_plan_abort": bool(diagnostics.get("execution_plan_abort", False)),
+                    "execution_plan_advisory_severity": str(
+                        diagnostics.get("execution_plan_advisory_severity", "")
+                    ),
+                },
+            )
+            return diagnostics
+        except Exception as exc:
+            diagnostics["error"] = f"shadow_cycle_failed:{exc}"
+            self._universe_shadow_last_error = str(diagnostics["error"])
+            self.ops.set_metric("universe_shadow_cycle_ok", 0.0)
+            self.ops.audit_event(
+                "universe_shadow_cycle_error",
+                {
+                    "step": int(step),
+                    "symbol": str(symbol),
+                    "error": str(exc),
+                    "authority": "legacy_orchestrator_only",
+                },
+            )
+            self._record_module_event(
+                module="universe_shadow_adapter",
+                action="emit_packet",
+                reason="error",
+                symbol=str(symbol),
+                payload={"error": str(exc)},
+            )
+            if bool(getattr(self, "_universe_shadow_fail_open", True)):
+                return diagnostics
+            raise
+
+    def _ensure_universe_event_adapter_fabric(self):
+        if not bool(getattr(self, "_universe_event_adapter_enabled", False)):
+            return None
+        cached = getattr(self, "_universe_event_adapter_fabric", None)
+        if cached is not None:
+            return cached
+        run_dir = str(getattr(self, "_universe_event_adapter_run_dir", "") or "")
+        if not run_dir:
+            return None
+        try:
+            from autonomous_investment_robot.services.universe_core.events import EventFabric
+
+            fabric = EventFabric(run_dir)
+            self._universe_event_adapter_fabric = fabric
+            self._universe_event_adapter_last_error = ""
+            return fabric
+        except Exception as exc:
+            self._universe_event_adapter_last_error = f"event_adapter_boot_failed:{exc}"
+            try:
+                self.ops.audit_event(
+                    "universe_event_adapter_boot_error",
+                    {
+                        "error": str(exc),
+                        "run_dir": run_dir,
+                    },
+                )
+            except Exception:
+                pass
+            return None
+
+    def _append_legacy_event_and_mirror(
+        self,
+        *,
+        stream: str,
+        event: object,
+        adapter_source: str = "orchestrator_legacy_producer",
+    ) -> None:
+        self.event_store.append(stream, event)
+        if not bool(getattr(self, "_universe_event_adapter_enabled", False)):
+            return
+        fabric = self._ensure_universe_event_adapter_fabric()
+        if fabric is None:
+            self.ops.set_metric("universe_event_adapter_last_publish_ok", 0.0)
+            return
+        try:
+            published = fabric.ingest_legacy_event(
+                event,
+                source=str(adapter_source),
+                metadata={
+                    "legacy_stream": str(stream),
+                    "authority_path": "legacy_orchestrator",
+                },
+            )
+            published_ok = bool(published is not None)
+            self.ops.set_metric("universe_event_adapter_last_publish_ok", 1.0 if published_ok else 0.0)
+            self.ops.inc_metric("universe_event_adapter_published_total" if published_ok else "universe_event_adapter_rejected_total")
+            self._record_module_event(
+                module="universe_event_adapter",
+                action="publish",
+                reason="ok" if published_ok else "rejected",
+                symbol=str(getattr(event, "symbol", "") or ""),
+                payload={
+                    "legacy_stream": str(stream),
+                    "source": str(adapter_source),
+                    "event_type": str(getattr(event, "event_type", "") or ""),
+                    "event_id": str(getattr(event, "checksum", "") or ""),
+                    "published": bool(published_ok),
+                },
+            )
+        except Exception as exc:
+            self._universe_event_adapter_last_error = f"event_adapter_publish_failed:{exc}"
+            self.ops.set_metric("universe_event_adapter_last_publish_ok", 0.0)
+            self.ops.audit_event(
+                "universe_event_adapter_error",
+                {
+                    "stream": str(stream),
+                    "source": str(adapter_source),
+                    "error": str(exc),
+                },
+            )
+            self._record_module_event(
+                module="universe_event_adapter",
+                action="publish",
+                reason="error",
+                symbol=str(getattr(event, "symbol", "") or ""),
+                payload={
+                    "legacy_stream": str(stream),
+                    "source": str(adapter_source),
+                    "event_type": str(getattr(event, "event_type", "") or ""),
+                    "error": str(exc),
+                },
+            )
+            if bool(getattr(self, "_universe_event_adapter_fail_open", True)):
+                return
+            raise
+
+    def _world_state_read_view(
+        self,
+        *,
+        symbol: str,
+        now_ts: float,
+        market_data_stale_s: float,
+        ws_healthy: bool,
+        drawdown_pct: float,
+        regime: str,
+        market_class: str,
+    ) -> dict[str, object]:
+        adapter = getattr(self, "_world_state_read_adapter", None)
+        if adapter is None:
+            return {
+                "symbol": str(symbol),
+                "source": "adapter_unavailable",
+                "as_of_time": float(now_ts),
+                "world_state_available": False,
+                "graph_available": False,
+                "safe_to_trade": False,
+                "freshness_s": {"market_state": max(0.0, float(market_data_stale_s))},
+                "stale_domains": ["market_state", "risk_state", "execution_state"],
+                "stale_critical_domains": ["market_state", "risk_state", "execution_state"],
+                "summary": {
+                    "reason": "adapter_unavailable",
+                    "market_class": str(market_class),
+                    "regime": str(regime),
+                    "ws_healthy": bool(ws_healthy),
+                },
+            }
+        try:
+            view = adapter.from_runtime_observation(
+                symbol=str(symbol),
+                as_of_time=float(now_ts),
+                market_data_stale_s=max(0.0, float(market_data_stale_s)),
+                ws_healthy=bool(ws_healthy),
+                drawdown_pct=max(0.0, float(drawdown_pct)),
+                regime=str(regime),
+                market_class=str(market_class),
+                max_age_s=max(1.0, float(os.getenv("AUTONOMOUS_WORLD_STATE_MAX_AGE_S", "30") or "30")),
+            )
+            return view.to_dict()
+        except Exception as exc:
+            try:
+                self.ops.audit_event(
+                    "world_state_adapter_error",
+                    {
+                        "symbol": str(symbol),
+                        "error": str(exc),
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                fallback = adapter.conservative_fallback(
+                    symbol=str(symbol),
+                    as_of_time=float(now_ts),
+                    reason=f"adapter_error:{exc}",
+                )
+                return fallback.to_dict()
+            except Exception:
+                return {
+                    "symbol": str(symbol),
+                    "source": "adapter_error",
+                    "as_of_time": float(now_ts),
+                    "world_state_available": False,
+                    "graph_available": False,
+                    "safe_to_trade": False,
+                    "freshness_s": {},
+                    "stale_domains": ["market_state", "risk_state", "execution_state"],
+                    "stale_critical_domains": ["market_state", "risk_state", "execution_state"],
+                    "summary": {"reason": f"adapter_error:{exc}"},
+                }
+
     def _normalize_symbol(self, symbol: str) -> str:
         return str(symbol or "").strip().upper().replace("/", "")
 
@@ -1057,6 +1891,7 @@ class RobotOrchestrator:
         blocked_reasons: dict[str, int] = {}
         class_counts: dict[str, int] = {}
         quote_allowlist = self._universe_quote_allowlist()
+        universe_allowlist = self._universe_allowlist() or set()
         for sym in [self._normalize_symbol(s) for s in symbols if str(s).strip()]:
             market_class = self._market_class_for_symbol(sym)
             class_counts[market_class] = class_counts.get(market_class, 0) + 1
@@ -1065,6 +1900,11 @@ class RobotOrchestrator:
                 blocked_reasons[reason] = blocked_reasons.get(reason, 0) + 1
                 continue
             if market_class == "crypto_spot" and quote_allowlist:
+                # Explicit operator allowlist must not be silently overridden by
+                # quote allowlist defaults during dynamic-universe filtering.
+                if sym in universe_allowlist:
+                    allowed.append(sym)
+                    continue
                 quote = self._quote_for_symbol(sym)
                 if quote and quote not in quote_allowlist:
                     q_reason = f"quote_not_allowed:{quote}"
@@ -1079,6 +1919,7 @@ class RobotOrchestrator:
             "blocked_reasons": blocked_reasons,
             "mixed_universe_mode": self._coverage_flag("AUTONOMOUS_MIXED_UNIVERSE_MODE", False),
             "quote_allowlist": sorted(quote_allowlist) if quote_allowlist else [],
+            "universe_allowlist_active": bool(universe_allowlist),
         }
 
     def _write_runtime_health(self, *, status: str, reason: str = "", extra: dict[str, object] | None = None) -> None:
@@ -1091,6 +1932,12 @@ class RobotOrchestrator:
             "provider": self.settings.live_provider() if self.settings.execution.mode != "paper" else "paper_sim_provider",
             "run_dir": self.settings.storage.run_dir,
             "watchdog_state_path": self._watchdog_state_path,
+            "risk_safe_mode": bool(getattr(self.risk.state, "safe_mode", False)),
+            "risk_kill_switch": bool(getattr(self.risk.state, "kill_switch", False)),
+            "shield_mode": str(getattr(self.risk.state, "shield_mode", "") or ""),
+            "shield_reason_codes": list(getattr(self.risk.state, "shield_reason_codes", []) or []),
+            "shield_source": str(getattr(self.risk.state, "shield_source", "") or ""),
+            "shield_bridge_enabled": bool(getattr(self, "_universe_shield_bridge_enabled", False)),
         }
         if isinstance(extra, dict) and extra:
             payload.update(extra)
@@ -1371,6 +2218,29 @@ class RobotOrchestrator:
         portfolio_turnover_penalty = max(0.0, min(0.95, float(os.getenv("AUTONOMOUS_PORTFOLIO_TURNOVER_PENALTY", "0.35") or "0.35")))
         portfolio_cluster_cap = max(0.05, min(1.0, float(os.getenv("AUTONOMOUS_PORTFOLIO_CLUSTER_CAP", "0.65") or "0.65")))
         portfolio_affordability_buffer = max(1.0, float(os.getenv("AUTONOMOUS_PORTFOLIO_AFFORDABILITY_BUFFER", "1.05") or "1.05"))
+        portfolio_prefilter_max_spread_bps = max(
+            0.0,
+            float(
+                os.getenv(
+                    "AUTONOMOUS_PORTFOLIO_PREFILTER_MAX_SPREAD_BPS",
+                    os.getenv("AUTONOMOUS_UNIVERSE_MAX_SPREAD_BPS", "120"),
+                )
+                or os.getenv("AUTONOMOUS_UNIVERSE_MAX_SPREAD_BPS", "120")
+            ),
+        )
+        portfolio_rescue_scan_limit = max(
+            1,
+            int(float(os.getenv("AUTONOMOUS_PORTFOLIO_RESCUE_SCAN_LIMIT", "96") or "96")),
+        )
+        portfolio_prefilter_quote_check_limit = max(
+            0,
+            int(float(os.getenv("AUTONOMOUS_PORTFOLIO_PREFILTER_QUOTE_CHECK_LIMIT", "8") or "8")),
+        )
+        insufficient_balance_cooldown_ratio_floor = max(
+            0.0,
+            min(2.0, float(os.getenv("AUTONOMOUS_INSUFFICIENT_BALANCE_COOLDOWN_RATIO_FLOOR", "0.85") or "0.85")),
+        )
+        dust_floor_upsize_enabled = self._bool_env_profile("AUTONOMOUS_DUST_FLOOR_UPSIZE_ENABLED", False)
         portfolio_quote_reserve_raw = os.getenv(
             "AUTONOMOUS_PORTFOLIO_QUOTE_RESERVE_RATIO",
             os.getenv("AUTONOMOUS_QUOTE_RESERVE_RATIO", "0.985"),
@@ -1439,12 +2309,26 @@ class RobotOrchestrator:
         exit_take_profit_pct = max(0.0, float(os.getenv("AUTONOMOUS_EXIT_TAKE_PROFIT_PCT", "0.0") or "0.0"))
         exit_take_profit_full_close = self._bool_env("AUTONOMOUS_EXIT_TAKE_PROFIT_FULL_CLOSE", True)
         sell_profit_lock_enabled = self._bool_env("AUTONOMOUS_SPOT_SELL_PROFIT_LOCK", True)
+        sell_hard_floor_bps = max(
+            DEFAULT_MIN_NET_PROFIT_BPS,
+            float(
+                os.getenv(
+                    "AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS",
+                    os.getenv(
+                        "AUTONOMOUS_SPOT_SELL_HARD_FLOOR_BPS",
+                        f"{float(getattr(harmony, 'hard_sell_floor_bps', DEFAULT_MIN_NET_PROFIT_BPS) or DEFAULT_MIN_NET_PROFIT_BPS)}",
+                    ),
+                )
+                or f"{float(getattr(harmony, 'hard_sell_floor_bps', DEFAULT_MIN_NET_PROFIT_BPS) or DEFAULT_MIN_NET_PROFIT_BPS)}"
+            ),
+        )
         default_sell_profit_bps = max(
-            0.0,
+            sell_hard_floor_bps,
             (2.0 * float(self.settings.execution.fee_bps)) + (2.0 * float(self.settings.execution.slippage_bps)),
         )
         sell_profit_lock_min_bps = max(
-            float(getattr(harmony, "sell_min_profit_bps", 120.0) or 120.0),
+            sell_hard_floor_bps,
+            float(getattr(harmony, "sell_min_profit_bps", sell_hard_floor_bps) or sell_hard_floor_bps),
             float(
                 os.getenv(
                     "AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS",
@@ -1470,6 +2354,15 @@ class RobotOrchestrator:
         )
         sell_profit_lock_fatal_bypass = self._bool_env("AUTONOMOUS_SPOT_SELL_PROFIT_LOCK_FATAL_BYPASS", False)
         sell_profit_lock_require_cost_basis = self._bool_env("AUTONOMOUS_SPOT_SELL_REQUIRE_COST_BASIS", True)
+        capital_unlock_sell_enabled = self._bool_env("AUTONOMOUS_CAPITAL_UNLOCK_SELL_ENABLED", True)
+        capital_unlock_sell_cover_ratio = max(
+            1.0,
+            float(os.getenv("AUTONOMOUS_CAPITAL_UNLOCK_SELL_COVER_RATIO", "1.05") or "1.05"),
+        )
+        capital_unlock_sell_bypass_tp_target = self._bool_env(
+            "AUTONOMOUS_CAPITAL_UNLOCK_SELL_BYPASS_TP_TARGET",
+            True,
+        )
         alert_reject_rate = max(0.0, min(1.0, float(os.getenv("AUTONOMOUS_ALERT_REJECT_RATE", "0.8") or "0.8")))
         alert_shortfall_bps = max(0.0, float(os.getenv("AUTONOMOUS_ALERT_SHORTFALL_BPS", "15.0") or "15.0"))
         alert_cooldown_steps = max(1, int(os.getenv("AUTONOMOUS_ALERT_COOLDOWN_STEPS", "30") or "30"))
@@ -1507,9 +2400,9 @@ class RobotOrchestrator:
             float(
                 os.getenv(
                     "AUTONOMOUS_MIN_TAKE_PROFIT_PCT",
-                    f"{max(1.2, float(getattr(harmony, 'sell_min_profit_bps', 120.0) or 120.0) / 100.0):g}",
+                    f"{max((sell_hard_floor_bps / 100.0), float(getattr(harmony, 'sell_min_profit_bps', sell_hard_floor_bps) or sell_hard_floor_bps) / 100.0):g}",
                 )
-                or "1.2"
+                or f"{(sell_hard_floor_bps / 100.0):g}"
             ),
         )
         min_tp_after_costs = self._bool_env("AUTONOMOUS_MIN_TP_AFTER_COSTS", True)
@@ -1523,9 +2416,10 @@ class RobotOrchestrator:
             or "0:200,600:150,1200:100,1800:70,2400:50,3600:35"
         ).strip()
         tp_greedy_mode = self._bool_env("AUTONOMOUS_TP_GREEDY_MODE", True)
-        tp_greedy_net_bps_up = max(120, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_UP", "280") or "280")))
-        tp_greedy_net_bps_mid = max(120, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_MID", "220") or "220")))
-        tp_greedy_net_bps_down = max(120, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_DOWN", "150") or "150")))
+        tp_floor_bps = max(0, int(math.ceil(float(sell_hard_floor_bps))))
+        tp_greedy_net_bps_up = max(tp_floor_bps, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_UP", "280") or "280")))
+        tp_greedy_net_bps_mid = max(tp_floor_bps, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_MID", "220") or "220")))
+        tp_greedy_net_bps_down = max(tp_floor_bps, int(float(os.getenv("AUTONOMOUS_TP_GREEDY_NET_BPS_DOWN", "150") or "150")))
         freeze_buy_when_unrealized_pct = float(
             os.getenv("AUTONOMOUS_FREEZE_BUY_WHEN_UNREALIZED_PCT", "-1.0") or "-1.0"
         )
@@ -2019,6 +2913,14 @@ class RobotOrchestrator:
         symbol_scores: dict[str, float] = {s: 0.0 for s in symbol_candidates}
         portfolio_weights: dict[str, float] = {s: 0.0 for s in symbol_candidates}
         portfolio_weights[symbol] = 1.0
+        last_tradable_scan_diag: dict[str, object] = {
+            "scan_symbols": 0,
+            "tradable_symbols": 0,
+            "hard_cap_incompatible": 0,
+            "insufficient_balance": 0,
+            "quarantined": 0,
+            "cooldown_filtered": 0,
+        }
         distributed_symbol_scores: dict[str, float] = {}
         last_distributed_rank_ts = 0.0
         last_distributed_rank_source = "local"
@@ -2211,8 +3113,90 @@ class RobotOrchestrator:
                     pass
             return ("", 0.0)
 
+        quote_usd_mid_cache: dict[str, float] = {}
+
+        def _quote_for_pair(sym: str) -> str:
+            quote = self._quote_for_symbol(sym)
+            if quote:
+                return self._normalize_asset(quote)
+            spot_live = getattr(live, "spot_service", None)
+            guard_owner = spot_live if spot_live is not None else live
+            if hasattr(guard_owner, "min_guard"):
+                try:
+                    meta = guard_owner.min_guard.pair_meta(sym)  # type: ignore[attr-defined]
+                    quote_meta = self._normalize_asset(str(meta.get("quote", "") or ""))
+                    if quote_meta:
+                        return quote_meta
+                except Exception:
+                    pass
+            return ""
+
+        def _is_fiat_like_quote(quote_ccy: str) -> bool:
+            return str(quote_ccy or "").upper() in {"USD", "USDT", "USDC", "EUR", "GBP", "CHF", "CAD", "AUD"}
+
+        def _quote_to_usd_mid(quote_ccy: str) -> float:
+            quote_norm = self._normalize_asset(quote_ccy)
+            if not quote_norm:
+                return 0.0
+            if quote_norm in quote_usd_mid_cache:
+                return float(quote_usd_mid_cache.get(quote_norm, 0.0) or 0.0)
+            if quote_norm in {"USD", "USDT", "USDC"}:
+                quote_usd_mid_cache[quote_norm] = 1.0
+                return 1.0
+            pair_candidates = [
+                f"{'XBT' if quote_norm in {'BTC', 'XBT'} else quote_norm}USD",
+                f"{'XBT' if quote_norm in {'BTC', 'XBT'} else quote_norm}USDT",
+                f"{'XBT' if quote_norm in {'BTC', 'XBT'} else quote_norm}USDC",
+            ]
+            for candidate in pair_candidates:
+                bid_px = 0.0
+                ask_px = 0.0
+                try:
+                    if hasattr(live, "market_snapshot"):
+                        snap = live.market_snapshot(candidate, max_age_s=max(0.5, poll_s * 1.5))
+                        bid_px = float(snap.get("bid", 0.0) or 0.0)
+                        ask_px = float(snap.get("ask", 0.0) or 0.0)
+                    elif hasattr(live, "connector") and hasattr(live.connector, "ticker"):
+                        tick = live.connector.ticker(candidate)  # type: ignore[attr-defined]
+                        row = tick.get(candidate) if isinstance(tick, dict) else None
+                        if not row and isinstance(tick, dict) and tick:
+                            row = next(iter(tick.values()))
+                        if isinstance(row, dict):
+                            bid_raw = row.get("b", 0)
+                            ask_raw = row.get("a", 0)
+                            bid_px = float(bid_raw[0] if isinstance(bid_raw, list) and bid_raw else bid_raw or 0.0)
+                            ask_px = float(ask_raw[0] if isinstance(ask_raw, list) and ask_raw else ask_raw or 0.0)
+                except Exception:
+                    bid_px = 0.0
+                    ask_px = 0.0
+                if bid_px > 0.0 and ask_px > 0.0:
+                    mid = (bid_px + ask_px) / 2.0
+                    quote_usd_mid_cache[quote_norm] = float(mid)
+                    return float(mid)
+            quote_usd_mid_cache[quote_norm] = 0.0
+            return 0.0
+
+        def _symbol_quote_floor(sym: str) -> float:
+            base_floor_quote = max(quote_notional_floor, min_order_notional_quote_live, rebalance_deadzone_floor)
+            quote_ccy = _quote_for_pair(sym)
+            if not quote_ccy or _is_fiat_like_quote(quote_ccy):
+                return float(base_floor_quote)
+            explicit_per_quote = max(
+                0.0,
+                self._float_env_profile(
+                    f"AUTONOMOUS_QUOTE_NOTIONAL_FLOOR_{quote_ccy.upper()}",
+                    0.0,
+                ),
+            )
+            quote_to_usd = _quote_to_usd_mid(quote_ccy)
+            converted_floor = 0.0
+            if quote_to_usd > 0.0:
+                converted_floor = float(base_floor_quote) / max(quote_to_usd, 1e-9)
+            return max(explicit_per_quote, converted_floor)
+
         def _required_entry_quote_for_pair(sym: str, ask_px: float) -> float:
-            required = max(quote_notional_floor, min_order_notional_quote_live, rebalance_deadzone_floor)
+            base_required = _symbol_quote_floor(sym)
+            required = float(base_required)
             spot_live = getattr(live, "spot_service", None)
             guard_owner = spot_live if spot_live is not None else live
             if hasattr(guard_owner, "min_guard"):
@@ -2226,7 +3210,115 @@ class RobotOrchestrator:
                         required = max(required, costmin)
                 except Exception:
                     pass
-            return max(quote_notional_floor, required)
+            return max(base_required, required)
+
+        def _entry_affordability_ctx(
+            sym: str,
+            *,
+            ask_px: float,
+            reserve_ratio: float,
+            notional_target: float = 0.0,
+        ) -> dict[str, float | str | bool]:
+            quote_ccy, free_quote = _available_quote_for_pair(sym)
+            free_quote_f = max(0.0, float(free_quote))
+            reserve = max(0.0, min(1.0, float(reserve_ratio)))
+            usable_quote = free_quote_f * reserve
+            required_quote = _required_entry_quote_for_pair(sym, ask_px)
+            if notional_target > 0.0:
+                required_quote = max(required_quote, float(notional_target))
+            hard_cap_quote = max(0.0, float(os.getenv("AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE", "0") or "0"))
+            hard_cap_ok = hard_cap_quote <= 0.0 or required_quote <= (hard_cap_quote * 1.0005)
+            affordability = usable_quote / max(required_quote, 1e-9)
+            return {
+                "quote_ccy": str(quote_ccy),
+                "free_quote": float(free_quote_f),
+                "usable_quote": float(usable_quote),
+                "required_quote": float(required_quote),
+                "reserve_ratio": float(reserve),
+                "hard_cap_quote": float(hard_cap_quote),
+                "hard_cap_ok": bool(hard_cap_ok),
+                "affordability": float(affordability),
+            }
+
+        def _best_effort_bid_ask(sym: str) -> tuple[float, float, float]:
+            bid_px = 0.0
+            ask_px = 0.0
+            try:
+                if self.settings.live_provider() == "kraken_spot" and hasattr(live, "market_snapshot"):
+                    snap_quote = live.market_snapshot(sym, max_age_s=max(0.5, poll_s * 1.5))
+                    bid_px = float(snap_quote.get("bid", 0.0) or 0.0)
+                    ask_px = float(snap_quote.get("ask", 0.0) or 0.0)
+                elif self.settings.live_provider() == "kraken_spot":
+                    ticker_quote = live.connector.ticker(sym)  # type: ignore[attr-defined]
+                    row_quote = ticker_quote.get(sym) if isinstance(ticker_quote, dict) else None
+                    if not row_quote and isinstance(ticker_quote, dict) and ticker_quote:
+                        row_quote = next(iter(ticker_quote.values()))
+                    if isinstance(row_quote, dict):
+                        bid_raw = row_quote.get("b", 0)
+                        ask_raw = row_quote.get("a", 0)
+                        bid_px = float(bid_raw[0] if isinstance(bid_raw, list) and bid_raw else bid_raw or 0.0)
+                        ask_px = float(ask_raw[0] if isinstance(ask_raw, list) and ask_raw else ask_raw or 0.0)
+            except Exception:
+                bid_px = 0.0
+                ask_px = 0.0
+            spread_bps_local = float("inf")
+            if bid_px > 0.0 and ask_px > 0.0:
+                mid_px = (bid_px + ask_px) / 2.0
+                spread_bps_local = ((ask_px - bid_px) / max(mid_px, 1e-9)) * 10000.0
+            return bid_px, ask_px, spread_bps_local
+
+        def _classify_no_intent_reason(
+            *,
+            sym: str,
+            ask_px: float,
+            exposure_quote: float,
+            policy_debug: dict[str, object],
+        ) -> tuple[str, dict[str, object]]:
+            reason = str(policy_debug.get("reason", "") or "").strip().lower()
+            if reason in {"entry_insufficient_quote", "insufficient_balance_precheck"}:
+                return (
+                    "entry_insufficient_quote",
+                    {
+                        "policy_reason": reason,
+                        "required_quote": float(policy_debug.get("required_quote", 0.0) or 0.0),
+                        "usable_quote": float(policy_debug.get("usable_quote", 0.0) or 0.0),
+                        "affordability": float(policy_debug.get("affordability", 0.0) or 0.0),
+                    },
+                )
+            if reason == "min_order_floor_skip":
+                return (
+                    "entry_min_order_floor",
+                    {
+                        "policy_reason": reason,
+                        "min_order_floor": float(policy_debug.get("min_order_floor", 0.0) or 0.0),
+                        "target_notional": float(policy_debug.get("target_notional", 0.0) or 0.0),
+                    },
+                )
+            if reason in {"forecast_confidence_below_threshold", "confidence_guard"}:
+                return (
+                    "confidence_guard",
+                    {
+                        "policy_reason": reason,
+                        "fc_confidence": float(policy_debug.get("fc_confidence", 0.0) or 0.0),
+                        "confidence_threshold": float(policy_debug.get("confidence_threshold", 0.0) or 0.0),
+                    },
+                )
+            if reason in {"combined_zero", "edge_le_cost", "dynamic_edge_floor"}:
+                return ("no_edge_after_costs", {"policy_reason": reason})
+            if reason in {"no_strategies", "meta_gate_regime", "meta_gate_liquidity"}:
+                return ("strategy_gated", {"policy_reason": reason})
+            flat_threshold = _required_entry_quote_for_pair(sym, max(0.0, float(ask_px)))
+            if abs(float(exposure_quote)) <= flat_threshold:
+                afford = _entry_affordability_ctx(
+                    sym,
+                    ask_px=max(0.0, float(ask_px)),
+                    reserve_ratio=portfolio_quote_reserve_ratio,
+                )
+                if not bool(afford.get("hard_cap_ok", True)):
+                    return "entry_hard_cap_incompatible", {"affordability": afford, "policy_reason": reason}
+                if float(afford.get("affordability", 0.0) or 0.0) < float(portfolio_affordability_buffer):
+                    return "entry_insufficient_quote", {"affordability": afford, "policy_reason": reason}
+            return "no_intent", {"policy_reason": reason}
 
         def _is_pair_quarantined_for_entry(sym: str) -> bool:
             if hasattr(live, "_is_pair_quarantined"):
@@ -2245,6 +3337,20 @@ class RobotOrchestrator:
         def _submit_safe_probe_from_audit(reason: str, *, from_extra: bool = False, audit110: bool = False) -> bool:
             nonlocal failed_probe_streak, block_new_entries_until_health_ok, block_new_entries_until_ts, extra_probe_backoff_until_ts
             now_probe = time.time()
+            rl_until_probe = float(getattr(live, "rate_limit_cooldown_until_s", 0.0) or 0.0)
+            if now_probe < rl_until_probe:
+                remaining = max(0.0, rl_until_probe - now_probe)
+                extra_probe_backoff_until_ts = max(extra_probe_backoff_until_ts, rl_until_probe)
+                self.ops.inc_metric("scheduler_probe_rate_limited_total")
+                self.ops.audit_event(
+                    "scheduler_probe_skipped",
+                    {
+                        "reason": "rate_limit_cooldown",
+                        "cooldown_remaining_s": remaining,
+                    },
+                )
+                submission_scheduler.record_submission(now_ts=now_probe, filled=False)
+                return False
 
             probe_symbol = symbol
             best_probe_score = float("-inf")
@@ -2297,18 +3403,28 @@ class RobotOrchestrator:
                     except Exception:
                         pass
             probe_notional = max(
-                quote_notional_floor,
-                min_order_notional_quote_live,
-                rebalance_deadzone_floor,
+                _required_entry_quote_for_pair(probe_symbol, 0.0),
                 probe_notional_quote,
                 float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0),
             )
-            probe_required_quote = max(quote_notional_floor, _required_entry_quote_for_pair(probe_symbol, 0.0))
+            probe_required_quote = _required_entry_quote_for_pair(probe_symbol, 0.0)
+            probe_affordability_ctx = _entry_affordability_ctx(
+                probe_symbol,
+                ask_px=0.0,
+                reserve_ratio=probe_free_quote_ratio,
+                notional_target=probe_notional,
+            )
             try:
                 if hasattr(live, "market_snapshot"):
                     snap_probe = live.market_snapshot(probe_symbol, max_age_s=max(0.5, poll_s * 1.5))
                     ask_probe = float(snap_probe.get("ask", 0.0) or 0.0)
-                    probe_required_quote = max(quote_notional_floor, _required_entry_quote_for_pair(probe_symbol, ask_probe))
+                    probe_required_quote = _required_entry_quote_for_pair(probe_symbol, ask_probe)
+                    probe_affordability_ctx = _entry_affordability_ctx(
+                        probe_symbol,
+                        ask_px=ask_probe,
+                        reserve_ratio=probe_free_quote_ratio,
+                        notional_target=probe_notional,
+                    )
             except Exception:
                 pass
             probe_notional = max(probe_notional, probe_required_quote)
@@ -2316,12 +3432,44 @@ class RobotOrchestrator:
                 _qccy, free_quote = _available_quote_for_pair(probe_symbol)
                 free_quote_f = max(0.0, float(free_quote))
                 if free_quote_f > 0.0:
-                    probe_notional = min(probe_notional, max(quote_notional_floor, free_quote_f * probe_free_quote_ratio))
+                    probe_notional = min(
+                        probe_notional,
+                        max(probe_required_quote, free_quote_f * probe_free_quote_ratio),
+                    )
                     if free_quote_f >= probe_required_quote:
                         probe_notional = max(probe_notional, probe_required_quote)
-                    probe_notional = max(quote_notional_floor, probe_notional)
+                    probe_notional = max(probe_required_quote, probe_notional)
             except Exception:
                 pass
+            probe_affordability_ctx = _entry_affordability_ctx(
+                probe_symbol,
+                ask_px=0.0,
+                reserve_ratio=probe_free_quote_ratio,
+                notional_target=probe_notional,
+            )
+            if (
+                (not bool(probe_affordability_ctx.get("hard_cap_ok", True)))
+                or float(probe_affordability_ctx.get("affordability", 0.0) or 0.0) < 1.0
+            ):
+                insufficient_balance_cooldown_until_by_symbol[str(probe_symbol).upper()] = max(
+                    float(insufficient_balance_cooldown_until_by_symbol.get(str(probe_symbol).upper(), 0.0) or 0.0),
+                    now_probe + insufficient_balance_cooldown_s,
+                )
+                self.ops.inc_metric("scheduler_probe_affordability_block_total")
+                self.ops.audit_event(
+                    "scheduler_probe_skipped",
+                    {
+                        "reason": "probe_untradable_now",
+                        "symbol": probe_symbol,
+                        "probe_notional": float(probe_notional),
+                        "affordability": float(probe_affordability_ctx.get("affordability", 0.0) or 0.0),
+                        "hard_cap_ok": bool(probe_affordability_ctx.get("hard_cap_ok", True)),
+                        "required_quote": float(probe_affordability_ctx.get("required_quote", 0.0) or 0.0),
+                        "usable_quote": float(probe_affordability_ctx.get("usable_quote", 0.0) or 0.0),
+                    },
+                )
+                submission_scheduler.record_submission(now_ts=now_probe, filled=False)
+                return False
             strategy_name = "audit110_scheduler_probe" if audit110 else ("extra_scheduler_probe" if from_extra else "scheduler_probe")
             probe_why = {
                 "scheduler_probe": True,
@@ -2672,6 +3820,40 @@ class RobotOrchestrator:
             )
             if isinstance(decision_extra, dict) and decision_extra:
                 evidence["decision"].update({k: v for k, v in decision_extra.items() if k not in {"action", "reason"}})
+            trace_payload = {
+                "ts": float(now_ts_local),
+                "symbol": str(symbol),
+                "action": str(action),
+                "reason": str(reason),
+                "packet_id": str((decision_extra or {}).get("universe_shadow_packet_id", "") or ""),
+                "mission": str((decision_extra or {}).get("mission_bridge_mission", "") or ""),
+                "shield_mode": str((decision_extra or {}).get("shield_bridge_mode", "") or ""),
+                "execution_abort": bool((decision_extra or {}).get("execution_plan_bridge_abort", False)),
+                "gated_by": list(gated),
+                "bounded_retention_status": str((decision_extra or {}).get("learning_summary_status", "") or ""),
+                "bounded_retention_within_limit": bool(
+                    (decision_extra or {}).get("learning_summary_bounded_within_limit", False)
+                ),
+                "errors_count": int((decision_extra or {}).get("learning_summary_errors_count", 0) or 0),
+                "world_state_source": str((decision_extra or {}).get("world_state_source", "") or ""),
+                "world_state_available": bool((decision_extra or {}).get("world_state_available", False)),
+                "world_state_graph_available": bool((decision_extra or {}).get("world_state_graph_available", False)),
+                "world_state_safe_to_trade": bool((decision_extra or {}).get("world_state_safe_to_trade", False)),
+                "world_state_stale_domains": (
+                    [str(item) for item in (decision_extra or {}).get("world_state_stale_domains", []) if str(item)]
+                    if isinstance((decision_extra or {}).get("world_state_stale_domains", []), list)
+                    else []
+                ),
+                "world_state_stale_critical_domains": (
+                    [str(item) for item in (decision_extra or {}).get("world_state_stale_critical_domains", []) if str(item)]
+                    if isinstance((decision_extra or {}).get("world_state_stale_critical_domains", []), list)
+                    else []
+                ),
+            }
+            try:
+                self.ops.record_universe_memory_trace(trace_payload)
+            except Exception:
+                pass
             self.ops.audit_event("decision_tick", evidence)
             self._mirror_runtime_event(category="decision", payload=evidence)
             bucket = int(now_ts_local // max(1.0, decision_tick_s))
@@ -2984,6 +4166,19 @@ class RobotOrchestrator:
                 portfolio_best_score = float(best_score)
                 optimizer_candidates: dict[str, dict[str, float | str]] = {}
                 affordable_symbols: set[str] = set()
+                best_shortfall_symbol = str(symbol)
+                best_shortfall_gap_quote = float("inf")
+                best_shortfall_required_quote = 0.0
+                best_shortfall_usable_quote = 0.0
+                best_shortfall_affordability = float("-inf")
+                tradable_scan_diag = {
+                    "scan_symbols": 0,
+                    "tradable_symbols": 0,
+                    "hard_cap_incompatible": 0,
+                    "insufficient_balance": 0,
+                    "quarantined": 0,
+                    "cooldown_filtered": 0,
+                }
                 ranked_universe = sorted(
                     symbol_candidates,
                     key=lambda s: float(distributed_symbol_scores.get(s, symbol_scores.get(s, 0.0))),
@@ -2999,7 +4194,83 @@ class RobotOrchestrator:
                         continue
                     dedup_top.append(s)
                     seen_top.add(s)
-                candidate_pool = dedup_top if dedup_top else list(symbol_candidates)
+                candidate_pool_prefiltered: list[str] = []
+                prefilter_counts = {
+                    "cooldown_filtered": 0,
+                    "quarantined": 0,
+                    "hard_cap_incompatible": 0,
+                    "affordability_filtered": 0,
+                    "spread_filtered": 0,
+                    "missing_quote": 0,
+                    "affordability_rescue": 0,
+                }
+                prefilter_quote_checks = 0
+                for s in dedup_top:
+                    s_key = str(s).upper()
+                    ib_until = float(insufficient_balance_cooldown_until_by_symbol.get(s_key, 0.0) or 0.0)
+                    if now_ts < ib_until:
+                        prefilter_counts["cooldown_filtered"] += 1
+                        continue
+                    if _is_pair_quarantined_for_entry(s):
+                        prefilter_counts["quarantined"] += 1
+                        continue
+                    pre_ask = 0.0
+                    if prefilter_quote_checks < portfolio_prefilter_quote_check_limit:
+                        _pre_bid, pre_ask, pre_spread_bps = _best_effort_bid_ask(s)
+                        prefilter_quote_checks += 1
+                        if pre_ask <= 0.0:
+                            prefilter_counts["missing_quote"] += 1
+                            continue
+                        if (
+                            portfolio_prefilter_max_spread_bps > 0.0
+                            and math.isfinite(pre_spread_bps)
+                            and pre_spread_bps > portfolio_prefilter_max_spread_bps
+                        ):
+                            prefilter_counts["spread_filtered"] += 1
+                            continue
+                    pre_ctx = _entry_affordability_ctx(
+                        s,
+                        ask_px=pre_ask,
+                        reserve_ratio=portfolio_quote_reserve_ratio,
+                    )
+                    if not bool(pre_ctx.get("hard_cap_ok", True)):
+                        prefilter_counts["hard_cap_incompatible"] += 1
+                        continue
+                    if float(pre_ctx.get("affordability", 0.0) or 0.0) < float(portfolio_affordability_buffer):
+                        prefilter_counts["affordability_filtered"] += 1
+                        continue
+                    candidate_pool_prefiltered.append(s)
+                if not candidate_pool_prefiltered:
+                    rescue_target = max(1, min(runtime_symbol_topk, len(ranked_universe)))
+                    rescue_scanned = 0
+                    for s in ranked_universe:
+                        if rescue_scanned >= portfolio_rescue_scan_limit:
+                            break
+                        rescue_scanned += 1
+                        s_key = str(s).upper()
+                        ib_until = float(insufficient_balance_cooldown_until_by_symbol.get(s_key, 0.0) or 0.0)
+                        if now_ts < ib_until:
+                            continue
+                        if _is_pair_quarantined_for_entry(s):
+                            continue
+                        rescue_ctx = _entry_affordability_ctx(
+                            s,
+                            ask_px=0.0,
+                            reserve_ratio=portfolio_quote_reserve_ratio,
+                        )
+                        if not bool(rescue_ctx.get("hard_cap_ok", True)):
+                            continue
+                        if float(rescue_ctx.get("affordability", 0.0) or 0.0) < float(portfolio_affordability_buffer):
+                            continue
+                        candidate_pool_prefiltered.append(s)
+                        prefilter_counts["affordability_rescue"] += 1
+                        if len(candidate_pool_prefiltered) >= rescue_target:
+                            break
+                candidate_pool = (
+                    candidate_pool_prefiltered
+                    if candidate_pool_prefiltered
+                    else (dedup_top if dedup_top else list(symbol_candidates))
+                )
                 scan_batch = min(len(candidate_pool), max(1, portfolio_scan_batch))
                 if len(candidate_pool) <= scan_batch:
                     scan_symbols = list(candidate_pool)
@@ -3012,7 +4283,21 @@ class RobotOrchestrator:
                 self.ops.set_metric("portfolio_scan_symbols", float(len(scan_symbols)))
                 self.ops.set_metric("portfolio_universe_size", float(len(symbol_candidates)))
                 self.ops.set_metric("portfolio_topk_size", float(len(candidate_pool)))
+                self.ops.set_metric(
+                    "portfolio_topk_prefiltered_symbols",
+                    float(len(candidate_pool_prefiltered)),
+                )
+                self.ops.audit_event(
+                    "portfolio_topk_prefilter",
+                    {
+                        "input_topk": len(dedup_top),
+                        "output_topk": len(candidate_pool),
+                        "prefiltered": len(candidate_pool_prefiltered),
+                        **prefilter_counts,
+                    },
+                )
                 for sym in scan_symbols:
+                    tradable_scan_diag["scan_symbols"] += 1
                     try:
                         if self.settings.live_provider() == "kraken_spot" and hasattr(live, "market_snapshot"):
                             snap_sym = live.market_snapshot(sym, max_age_s=max(0.5, poll_s * 1.5))
@@ -3058,17 +4343,65 @@ class RobotOrchestrator:
                         rh[:] = rh[-64:]
                         mean_sym = sum(ph) / len(ph)
                         rv_sym = 0.0 if mean_sym <= 0 else ((sum((p - mean_sym) ** 2 for p in ph) / len(ph)) ** 0.5) / mean_sym
-                        _quote_ccy_sym, quote_free_sym = _available_quote_for_pair(sym)
-                        quote_free_sym_f = max(0.0, float(quote_free_sym))
-                        required_entry_quote = _required_entry_quote_for_pair(sym, sask)
-                        affordable_entry = (quote_free_sym_f * portfolio_quote_reserve_ratio) >= (
-                            required_entry_quote * portfolio_affordability_buffer
+                        afford_ctx = _entry_affordability_ctx(
+                            sym,
+                            ask_px=sask,
+                            reserve_ratio=portfolio_quote_reserve_ratio,
                         )
-                        affordability_bonus = min(8.0, quote_free_sym_f / max(required_entry_quote, 1e-9))
+                        required_entry_quote = float(afford_ctx.get("required_quote", 0.0) or 0.0)
+                        usable_quote = float(afford_ctx.get("usable_quote", 0.0) or 0.0)
+                        affordability_ratio = float(afford_ctx.get("affordability", 0.0) or 0.0)
+                        hard_cap_ok = bool(afford_ctx.get("hard_cap_ok", True))
+                        sym_key_runtime = str(sym).upper()
+                        cooldown_filtered = now_ts < float(
+                            insufficient_balance_cooldown_until_by_symbol.get(sym_key_runtime, 0.0) or 0.0
+                        )
+                        quarantined_entry = _is_pair_quarantined_for_entry(sym)
+                        affordable_entry = (
+                            affordability_ratio >= float(portfolio_affordability_buffer)
+                            and hard_cap_ok
+                            and (not cooldown_filtered)
+                            and (not quarantined_entry)
+                        )
+                        affordability_bonus = min(8.0, max(0.0, affordability_ratio))
                         affordability_penalty = 0.0
                         if not affordable_entry:
-                            shortfall_ratio = max(0.0, (required_entry_quote - quote_free_sym_f) / max(required_entry_quote, 1e-9))
+                            shortfall_ratio = max(0.0, 1.0 - affordability_ratio)
                             affordability_penalty = min(220.0, 120.0 + shortfall_ratio * 120.0)
+                            if not hard_cap_ok:
+                                affordability_penalty += 120.0
+                                tradable_scan_diag["hard_cap_incompatible"] += 1
+                            if cooldown_filtered:
+                                affordability_penalty += 60.0
+                                tradable_scan_diag["cooldown_filtered"] += 1
+                            if quarantined_entry:
+                                affordability_penalty += 80.0
+                                tradable_scan_diag["quarantined"] += 1
+                            if affordability_ratio < float(portfolio_affordability_buffer):
+                                tradable_scan_diag["insufficient_balance"] += 1
+                        else:
+                            tradable_scan_diag["tradable_symbols"] += 1
+                        shortfall_gap_quote = max(0.0, required_entry_quote - usable_quote)
+                        # When no symbol is currently affordable, keep track of the closest one.
+                        # This avoids sticking to a high-min-notional symbol indefinitely.
+                        if (
+                            not affordable_entry
+                            and hard_cap_ok
+                            and (not cooldown_filtered)
+                            and (not quarantined_entry)
+                            and (
+                                shortfall_gap_quote < best_shortfall_gap_quote - 1e-9
+                                or (
+                                    abs(shortfall_gap_quote - best_shortfall_gap_quote) <= 1e-9
+                                    and affordability_ratio > best_shortfall_affordability
+                                )
+                            )
+                        ):
+                            best_shortfall_symbol = str(sym)
+                            best_shortfall_gap_quote = float(shortfall_gap_quote)
+                            best_shortfall_required_quote = float(required_entry_quote)
+                            best_shortfall_usable_quote = float(usable_quote)
+                            best_shortfall_affordability = float(affordability_ratio)
                         score = self._portfolio_symbol_score(
                             ret_1=ret_1_sym,
                             ret_3=ret_3_sym,
@@ -3093,6 +4426,9 @@ class RobotOrchestrator:
                                 "depth_notional": sdepth,
                                 "liquidity_score": max(0.2, min(2.0, (sdepth ** 0.5) / 250.0)),
                                 "cluster": cluster,
+                                "affordability_ratio": affordability_ratio,
+                                "required_entry_quote": required_entry_quote,
+                                "usable_quote": usable_quote,
                             }
                         symbol_scores[sym] = score
                         if score > best_score and (affordable_entry or sym == symbol):
@@ -3100,6 +4436,32 @@ class RobotOrchestrator:
                             best_symbol = sym
                     except Exception as exc:
                         self.ops.audit_event("portfolio_score_error", {"symbol": sym, "error": str(exc)})
+
+                last_tradable_scan_diag = dict(tradable_scan_diag)
+                if math.isfinite(best_shortfall_gap_quote):
+                    last_tradable_scan_diag["best_shortfall_symbol"] = str(best_shortfall_symbol)
+                    last_tradable_scan_diag["best_shortfall_gap_quote"] = float(best_shortfall_gap_quote)
+                    last_tradable_scan_diag["best_shortfall_required_quote"] = float(best_shortfall_required_quote)
+                    last_tradable_scan_diag["best_shortfall_usable_quote"] = float(best_shortfall_usable_quote)
+                self.ops.set_metric("tradable_scan_symbols", float(tradable_scan_diag.get("scan_symbols", 0)))
+                self.ops.set_metric("tradable_symbols", float(tradable_scan_diag.get("tradable_symbols", 0)))
+                self.ops.set_metric(
+                    "tradable_hard_cap_incompatible",
+                    float(tradable_scan_diag.get("hard_cap_incompatible", 0)),
+                )
+                self.ops.set_metric(
+                    "tradable_insufficient_balance",
+                    float(tradable_scan_diag.get("insufficient_balance", 0)),
+                )
+                self.ops.audit_event(
+                    "tradable_scan",
+                    {
+                        **last_tradable_scan_diag,
+                        "symbol": symbol,
+                        "candidate_pool": len(candidate_pool),
+                        "runtime_symbol_topk": int(runtime_symbol_topk),
+                    },
+                )
 
                 if optimizer_candidates:
                     corr = self._correlation_matrix({k: return_histories.get(k, []) for k in optimizer_candidates})
@@ -3165,6 +4527,31 @@ class RobotOrchestrator:
                                 "reason": "forced_affordable_symbol",
                             },
                         )
+                elif (
+                    symbol not in affordable_symbols
+                    and (not affordable_symbols)
+                    and best_shortfall_symbol
+                    and best_shortfall_symbol != symbol
+                    and math.isfinite(best_shortfall_gap_quote)
+                    and abs(exposure_notional) <= switch_only_when_flat_notional
+                ):
+                    prev_symbol = symbol
+                    symbol = str(best_shortfall_symbol)
+                    last_mid = None
+                    self.ops.audit_event(
+                        "portfolio_switch",
+                        {
+                            "from_symbol": prev_symbol,
+                            "to_symbol": symbol,
+                            "from_score": current_score,
+                            "to_score": float(symbol_scores.get(symbol, current_score)),
+                            "steps": steps,
+                            "reason": "forced_best_shortfall_symbol",
+                            "best_shortfall_gap_quote": float(best_shortfall_gap_quote),
+                            "best_shortfall_required_quote": float(best_shortfall_required_quote),
+                            "best_shortfall_usable_quote": float(best_shortfall_usable_quote),
+                        },
+                    )
                 portfolio_current_score = float(symbol_scores.get(symbol, current_score))
                 portfolio_best_score = float(best_score)
 
@@ -3536,6 +4923,18 @@ class RobotOrchestrator:
             self.ops.set_metric("treasury_throttle", treasury_decision.throttle_scale)
             self.ops.set_metric("treasury_reserve_ratio", treasury_decision.reserve_ratio)
             self.ops.set_metric("treasury_margin_buffer", treasury_decision.margin_buffer)
+            min_trade_notional_quote_live = float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0)
+            entry_required_floor_quote = max(
+                _required_entry_quote_for_pair(symbol, max(0.0, float(ask))),
+                min_trade_notional_quote_live,
+            )
+            entry_usable_quote = max(0.0, float(quote_free)) * float(portfolio_quote_reserve_ratio)
+            entry_affordability_ratio = entry_usable_quote / max(entry_required_floor_quote, 1e-9)
+            entry_capital_blocked = entry_affordability_ratio < float(portfolio_affordability_buffer)
+            self.ops.set_metric("entry_required_floor_quote", float(entry_required_floor_quote))
+            self.ops.set_metric("entry_usable_quote", float(entry_usable_quote))
+            self.ops.set_metric("entry_affordability_ratio", float(entry_affordability_ratio))
+            self.ops.set_metric("entry_capital_blocked", 1.0 if entry_capital_blocked else 0.0)
 
             if exposure_notional > 1e-9:
                 if position_open_ts is None:
@@ -3735,6 +5134,59 @@ class RobotOrchestrator:
                         market_session_state = str(live.session_state_for_symbol(symbol, ts=now_ts) or market_session_state)
                     except Exception:
                         market_session_state = "session_unknown"
+            market_data_stale_s = max(0.0, now_ts - float(getattr(selected_quote, "ts", now_ts) or now_ts))
+            world_state_read_view = self._world_state_read_view(
+                symbol=symbol,
+                now_ts=now_ts,
+                market_data_stale_s=market_data_stale_s,
+                ws_healthy=ws_healthy,
+                drawdown_pct=drawdown_abs,
+                regime=str(fc.regime),
+                market_class=str(symbol_market_class),
+            )
+            world_state_freshness_raw = world_state_read_view.get("freshness_s", {})
+            world_state_freshness: dict[str, float] = {}
+            if isinstance(world_state_freshness_raw, dict):
+                for key, value in world_state_freshness_raw.items():
+                    try:
+                        world_state_freshness[str(key)] = max(0.0, float(value))
+                    except Exception:
+                        continue
+            stale_domains_raw = world_state_read_view.get("stale_domains", [])
+            stale_critical_raw = world_state_read_view.get("stale_critical_domains", [])
+            world_state_stale_domains = (
+                [str(item) for item in stale_domains_raw if str(item)]
+                if isinstance(stale_domains_raw, list)
+                else []
+            )
+            world_state_stale_critical_domains = (
+                [str(item) for item in stale_critical_raw if str(item)]
+                if isinstance(stale_critical_raw, list)
+                else []
+            )
+            self.ops.set_metric(
+                "world_state_available",
+                1.0 if bool(world_state_read_view.get("world_state_available", False)) else 0.0,
+            )
+            self.ops.set_metric(
+                "world_state_graph_available",
+                1.0 if bool(world_state_read_view.get("graph_available", False)) else 0.0,
+            )
+            self.ops.set_metric(
+                "world_state_safe_to_trade",
+                1.0 if bool(world_state_read_view.get("safe_to_trade", False)) else 0.0,
+            )
+            self.ops.set_metric("world_state_stale_domains_count", float(len(world_state_stale_domains)))
+            self.ops.set_metric("world_state_stale_critical_domains_count", float(len(world_state_stale_critical_domains)))
+            self.ops.set_metric(
+                "world_state_freshness_max_s",
+                max(world_state_freshness.values()) if world_state_freshness else 0.0,
+            )
+            self.ops.set_metric(
+                "world_state_market_stale_s",
+                float(world_state_freshness.get("market_state", 0.0) or 0.0),
+            )
+            brain_diag_snapshot = {}
             try:
                 brain_decision = self.autonomous_decision_engine.run_decision_algorithm(
                     DecisionContext(
@@ -3797,9 +5249,17 @@ class RobotOrchestrator:
                         modeled_cost_floor_bps=float(modeled_cost_floor_bps),
                         sell_min_profit_bps=float(sell_profit_lock_min_bps),
                         sell_target_profit_bps=float(sell_profit_lock_target_bps),
+                        signal_age_s=float(features.get("signal_age_s", 0.0) or 0.0),
+                        world_state_adapter=dict(world_state_read_view),
                     )
                 )
                 brain_decision_snapshot = brain_decision.to_dict()
+                brain_diag_snapshot = dict((brain_decision_snapshot.get("diagnostics", {}) or {}))
+                market_twin_diag = {}
+                try:
+                    market_twin_diag = dict((brain_diag_snapshot.get("market_twin", {}) or {}))
+                except Exception:
+                    market_twin_diag = {}
                 self.ops.set_metric("decision_brain_confidence", float(brain_decision.confidence))
                 self.ops.set_metric("decision_brain_uncertainty_bps", float(brain_decision.uncertainty_bps))
                 self.ops.set_metric("decision_brain_drift_score", float(brain_decision.drift_score))
@@ -3818,11 +5278,26 @@ class RobotOrchestrator:
                         "market_class": str(symbol_market_class),
                         "market_session": str(market_session_state),
                         "risk_flags": list(brain_decision.risk_flags),
+                        "market_twin_best_action": str(market_twin_diag.get("best_action", "")),
+                        "market_twin_best_scenario_id": str(market_twin_diag.get("best_scenario_id", "")),
+                        "market_twin_primary_driver": str(market_twin_diag.get("primary_driver", "")),
+                        "market_twin_causal_confidence": float(market_twin_diag.get("causal_confidence", 0.0) or 0.0),
+                        "world_state_source": str((brain_diag_snapshot.get("world_state_source", "") or "")),
+                        "world_state_available": float(
+                            (brain_diag_snapshot.get("world_state_available", 0.0) or 0.0)
+                        ),
+                        "world_state_graph_available": float(
+                            (brain_diag_snapshot.get("world_state_graph_available", 0.0) or 0.0)
+                        ),
+                        "world_state_safe_to_trade": float(
+                            (brain_diag_snapshot.get("world_state_safe_to_trade", 0.0) or 0.0)
+                        ),
                     },
                 )
             except Exception as exc:
                 brain_decision = None
                 brain_decision_snapshot = {"error": str(exc)}
+                brain_diag_snapshot = {}
                 self.ops.audit_event("decision_brain_error", {"symbol": symbol, "error": str(exc)})
 
             if bool(getattr(mastermind_runtime_state, "invariant_breach", False)):
@@ -3845,6 +5320,55 @@ class RobotOrchestrator:
                 }
 
             intent = self.policy.make_intent(fc, features, self.settings.execution.fee_bps, self.settings.execution.slippage_bps)
+            if intent is not None and str(intent.side).lower() == "buy":
+                min_entry_quote = _required_entry_quote_for_pair(symbol, max(0.0, float(ask)))
+                target_notional = max(0.0, float(intent.target_notional))
+                if 0.0 < target_notional < min_entry_quote:
+                    floor_afford_ctx = _entry_affordability_ctx(
+                        symbol,
+                        ask_px=max(0.0, float(ask)),
+                        reserve_ratio=portfolio_quote_reserve_ratio,
+                        notional_target=float(min_entry_quote),
+                    )
+                    floor_affordability = float(floor_afford_ctx.get("affordability", 0.0) or 0.0)
+                    floor_hard_cap_ok = bool(floor_afford_ctx.get("hard_cap_ok", True))
+                    if floor_hard_cap_ok and floor_affordability >= float(portfolio_affordability_buffer):
+                        floor_why = dict(intent.why or {})
+                        floor_why["min_order_floor_upsize"] = {
+                            "from_notional": float(target_notional),
+                            "to_notional": float(min_entry_quote),
+                            "required_quote": float(floor_afford_ctx.get("required_quote", 0.0) or 0.0),
+                            "usable_quote": float(floor_afford_ctx.get("usable_quote", 0.0) or 0.0),
+                            "affordability": float(floor_affordability),
+                        }
+                        intent = OrderIntent(
+                            symbol=intent.symbol,
+                            side=intent.side,
+                            target_notional=float(min_entry_quote),
+                            why=floor_why,
+                        )
+                        self.ops.audit_event(
+                            "buy_min_order_upsize",
+                            {
+                                "symbol": symbol,
+                                "from_notional": float(target_notional),
+                                "to_notional": float(min_entry_quote),
+                                "affordability": float(floor_affordability),
+                            },
+                        )
+                    else:
+                        if self.policy.last_no_intent_debug is None:
+                            self.policy.last_no_intent_debug = {}
+                        self.policy.last_no_intent_debug = {
+                            **dict(getattr(self.policy, "last_no_intent_debug", {}) or {}),
+                            "reason": "entry_min_order_floor",
+                            "target_notional": float(target_notional),
+                            "min_order_floor": float(min_entry_quote),
+                            "required_quote": float(floor_afford_ctx.get("required_quote", 0.0) or 0.0),
+                            "usable_quote": float(floor_afford_ctx.get("usable_quote", 0.0) or 0.0),
+                            "affordability": float(floor_affordability),
+                        }
+                        intent = None
             if brain_decision is not None:
                 if decision_brain_enforce and intent is not None and str(intent.side).lower() == "buy":
                     intent.target_notional = max(
@@ -3902,6 +5426,163 @@ class RobotOrchestrator:
                         },
                     )
                     intent = None
+
+            if (
+                intent is not None
+                and str(intent.side).lower() == "buy"
+                and entry_capital_blocked
+            ):
+                if self.policy.last_no_intent_debug is None:
+                    self.policy.last_no_intent_debug = {}
+                self.policy.last_no_intent_debug = {
+                    **dict(getattr(self.policy, "last_no_intent_debug", {}) or {}),
+                    "reason": "entry_insufficient_quote",
+                    "required_quote": float(entry_required_floor_quote),
+                    "usable_quote": float(entry_usable_quote),
+                    "affordability": float(entry_affordability_ratio),
+                }
+                self.ops.audit_event(
+                    "entry_affordability_hold",
+                    {
+                        "symbol": symbol,
+                        "required_quote": float(entry_required_floor_quote),
+                        "usable_quote": float(entry_usable_quote),
+                        "affordability": float(entry_affordability_ratio),
+                    },
+                )
+                intent = None
+
+            base_free_unlock = float((live_state or {}).get("base_free", (live_state or {}).get("position_qty", 0.0)) or 0.0)
+            inventory_notional_unlock = max(
+                float(exposure_notional),
+                max(0.0, float(base_free_unlock)) * max(0.0, float(bid)),
+            )
+            if (
+                intent is None
+                and entry_capital_blocked
+                and capital_unlock_sell_enabled
+                and inventory_notional_unlock > 1e-9
+            ):
+                unlock_shortfall_quote = max(0.0, float(entry_required_floor_quote - entry_usable_quote))
+                avg_entry_unlock = float((live_state or {}).get("avg_entry_price", 0.0) or 0.0)
+                constraints_unlock = _constraint_snapshot_for(str(symbol), max(0.0, float(bid)))
+                exchange_min_unlock = float(constraints_unlock.get("min_notional_quote", 0.0) or 0.0)
+                min_trade_unlock = float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0)
+                min_unlock_notional_quote = max(
+                    0.0,
+                    min_trade_unlock,
+                    exchange_min_unlock,
+                )
+                required_exit_price_unlock = 0.0
+                target_sell_price_unlock = 0.0
+                if avg_entry_unlock > 0.0 and bid > 0.0:
+                    modeled_tco_unlock_bps = max(
+                        0.0,
+                        (2.0 * float(self.settings.execution.fee_bps))
+                        + float(self.settings.execution.slippage_bps)
+                        + max(0.0, spread_bps),
+                    )
+                    sym_state_unlock = position_state.get(str(symbol).upper(), {})
+                    hold_s_unlock = max(
+                        0.0,
+                        max(
+                            float((live_state or {}).get("position_age_s", 0.0) or 0.0),
+                            max(0.0, now_ts - float(sym_state_unlock.get("open_ts", 0.0) or 0.0))
+                            if float(sym_state_unlock.get("open_ts", 0.0) or 0.0) > 0.0
+                            else 0.0,
+                        ),
+                    )
+                    tp_unlock = compute_effective_sell_thresholds_bps(
+                        hold_s=int(hold_s_unlock),
+                        modeled_cost_bps=float(modeled_tco_unlock_bps if min_tp_after_costs else 0.0),
+                        entry_price=float(avg_entry_unlock),
+                        bid=float(bid),
+                        market_watch=TPScheduleMarketState(
+                            regime_hint=str(market_watch_state.regime_hint),
+                            confidence=float(market_watch_state.confidence),
+                            spread_spike=bool(spread_state.active),
+                        ),
+                        hard_min_net_bps=int(max(120.0, sell_profit_lock_min_bps)),
+                        schedule_str=tp_schedule_str,
+                        greedy_mode=bool(tp_greedy_mode),
+                        greedy_up_net_bps=int(tp_greedy_net_bps_up),
+                        greedy_mid_net_bps=int(tp_greedy_net_bps_mid),
+                        greedy_down_net_bps=int(tp_greedy_net_bps_down),
+                    )
+                    required_exit_price_unlock = float(
+                        avg_entry_unlock * (1.0 + (float(tp_unlock["hard_min_gross_bps"]) / 10000.0))
+                    )
+                    target_sell_price_unlock = float(
+                        avg_entry_unlock * (1.0 + (float(tp_unlock["effective_target_gross_bps"]) / 10000.0))
+                    )
+                unlock_plan = _capital_unlock_sell_plan(
+                    enabled=True,
+                    sell_profit_lock_require_cost_basis=bool(sell_profit_lock_require_cost_basis),
+                    bid_price=float(bid),
+                    avg_entry_price=float(avg_entry_unlock),
+                    available_base_qty=float(base_free_unlock),
+                    min_unlock_notional_quote=float(min_unlock_notional_quote),
+                    shortfall_quote=float(unlock_shortfall_quote),
+                    shortfall_cover_ratio=float(capital_unlock_sell_cover_ratio),
+                    required_exit_price=float(required_exit_price_unlock),
+                )
+                if bool(unlock_plan.get("allowed", False)):
+                    unlock_notional_quote = min(
+                        float(inventory_notional_unlock),
+                        float(unlock_plan.get("target_notional_quote", 0.0) or 0.0),
+                    )
+                    unlock_why = {
+                        "capital_unlock_sell": {
+                            "trigger": "no_intent_entry_capital_blocked",
+                            "reason": str(unlock_plan.get("reason", "capital_unlock_sell_candidate")),
+                            "required_quote": float(entry_required_floor_quote),
+                            "usable_quote": float(entry_usable_quote),
+                            "shortfall_quote": float(unlock_shortfall_quote),
+                            "unlock_notional_quote": float(unlock_notional_quote),
+                            "allow_target_bypass": bool(capital_unlock_sell_bypass_tp_target),
+                            "required_exit_price": float(required_exit_price_unlock),
+                            "target_sell_price": float(target_sell_price_unlock),
+                        }
+                    }
+                    intent = OrderIntent(
+                        symbol=str(symbol),
+                        side="sell",
+                        target_notional=float(unlock_notional_quote),
+                        why=unlock_why,
+                    )
+                    self.ops.inc_metric("capital_unlock_sell_from_no_intent_total")
+                    self.ops.audit_event(
+                        "capital_unlock_sell_from_no_intent",
+                        {
+                            "symbol": symbol,
+                            "notional": float(unlock_notional_quote),
+                            "inventory_notional_quote": float(inventory_notional_unlock),
+                            "required_quote": float(entry_required_floor_quote),
+                            "usable_quote": float(entry_usable_quote),
+                            "shortfall_quote": float(unlock_shortfall_quote),
+                            "available_base_qty": float(base_free_unlock),
+                            "avg_entry_price": float(avg_entry_unlock),
+                            "required_exit_price": float(required_exit_price_unlock),
+                            "target_sell_price": float(target_sell_price_unlock),
+                            "exchange_min_notional_quote": float(exchange_min_unlock),
+                        },
+                    )
+                else:
+                    self.ops.audit_event(
+                        "capital_unlock_sell_unavailable",
+                        {
+                            "symbol": symbol,
+                            "trigger": "no_intent_entry_capital_blocked",
+                            "reason": str(unlock_plan.get("reason", "capital_unlock_unavailable")),
+                            "inventory_notional_quote": float(inventory_notional_unlock),
+                            "required_quote": float(entry_required_floor_quote),
+                            "usable_quote": float(entry_usable_quote),
+                            "shortfall_quote": float(unlock_shortfall_quote),
+                            "available_base_qty": float(base_free_unlock),
+                            "avg_entry_price": float(avg_entry_unlock),
+                            "exchange_min_notional_quote": float(exchange_min_unlock),
+                        },
+                    )
 
             forced_exit_reason = ""
             forced_exit_notional = 0.0
@@ -3982,6 +5663,177 @@ class RobotOrchestrator:
                     )
                     self.stuck_governor.note_validation_underperformance(symbol)
                     intent = None
+            universe_shadow_diag = self._emit_universe_shadow_cycle(
+                step=steps,
+                venue=str(getattr(selected_quote, "venue", primary_venue) or primary_venue),
+                intent=intent,
+                context_payload={
+                    "symbol": symbol,
+                    "market_class": symbol_market_class,
+                    "mid": float(mid),
+                    "spread_bps": float(spread_bps),
+                    "depth_notional": float(depth_notional),
+                    "features": dict(features),
+                    "market_watch": {
+                        "trend_30s_bps": float(market_watch_state.trend_30s_bps),
+                        "trend_2m_bps": float(market_watch_state.trend_2m_bps),
+                        "trend_10m_bps": float(market_watch_state.trend_10m_bps),
+                        "realized_vol_2m": float(market_watch_state.realized_vol_2m),
+                        "realized_vol_10m": float(market_watch_state.realized_vol_10m),
+                        "confidence": float(market_watch_state.confidence),
+                    },
+                    "quote_free": float(quote_free),
+                    "position_notional_quote": float(abs(exposure_notional)),
+                    "signed_exposure_notional_quote": float(signed_exposure_notional),
+                    "drawdown_pct": float(drawdown_abs),
+                    "latency_ms": float(getattr(selected_quote, "latency_ms", 0.0) or 0.0),
+                    "forecast_confidence": float(fc.confidence),
+                    "forecast_sigma": float(fc.sigma),
+                },
+            )
+            mission_reason_codes = universe_shadow_diag.get("mission_reason_codes", [])
+            if not isinstance(mission_reason_codes, list):
+                mission_reason_codes = []
+            mission_bridge_payload = {
+                "mission": str(universe_shadow_diag.get("mission", "") or ""),
+                "reason_codes": [str(code) for code in mission_reason_codes if str(code)],
+                "no_trade_preferred": bool(universe_shadow_diag.get("mission_no_trade_preferred", False)),
+                "allow_new_risk": bool(universe_shadow_diag.get("mission_allow_new_risk", True)),
+                "execution_posture_hint": str(universe_shadow_diag.get("mission_execution_posture_hint", "") or ""),
+            }
+            execution_plan_abort_reason_codes = universe_shadow_diag.get("execution_plan_abort_reason_codes", [])
+            if not isinstance(execution_plan_abort_reason_codes, list):
+                execution_plan_abort_reason_codes = []
+            execution_plan_advisory_reason_codes = universe_shadow_diag.get("execution_plan_advisory_reason_codes", [])
+            if not isinstance(execution_plan_advisory_reason_codes, list):
+                execution_plan_advisory_reason_codes = []
+            execution_plan_bridge_payload = {
+                "contract": dict(universe_shadow_diag.get("execution_plan_contract", {}) or {}),
+                "abort": bool(universe_shadow_diag.get("execution_plan_abort", False)),
+                "abort_reason_codes": [str(code) for code in execution_plan_abort_reason_codes if str(code)],
+                "advisory_severity": str(universe_shadow_diag.get("execution_plan_advisory_severity", "") or ""),
+                "advisory_reason_codes": [str(code) for code in execution_plan_advisory_reason_codes if str(code)],
+                "requires_manual_review": bool(
+                    universe_shadow_diag.get("execution_plan_requires_manual_review", False)
+                ),
+                "source": "universe_shadow_execution_plan",
+                "authority": "advisory_non_authoritative",
+            }
+            shield_reason_codes = universe_shadow_diag.get("shield_reason_codes", [])
+            if not isinstance(shield_reason_codes, list):
+                shield_reason_codes = []
+            if bool(self._universe_shield_bridge_enabled):
+                shield_mode = str(universe_shadow_diag.get("shield_mode", "") or "")
+                self.risk.apply_shield_telemetry(
+                    mode=shield_mode,
+                    reason_codes=[str(code) for code in shield_reason_codes if str(code)],
+                    source="universe_shadow_cycle",
+                    hard_stop_forced=bool(universe_shadow_diag.get("shield_hard_stop_forced", False)),
+                    no_trade_forced=bool(universe_shadow_diag.get("shield_no_trade_forced", False)),
+                    now_ts=float(now_ts),
+                )
+                self.ops.set_metric(
+                    "shield_bridge_hard_stop",
+                    1.0 if str(shield_mode).lower() == "hard_stop" else 0.0,
+                )
+                self.ops.set_metric(
+                    "shield_bridge_observe_only",
+                    1.0 if str(shield_mode).lower() == "observe_only" else 0.0,
+                )
+                if shield_mode:
+                    self.ops.audit_event(
+                        "shield_bridge",
+                        {
+                            "symbol": symbol,
+                            "shield_mode": shield_mode,
+                            "shield_reason_codes": [str(code) for code in shield_reason_codes if str(code)],
+                            "shield_no_trade_forced": bool(universe_shadow_diag.get("shield_no_trade_forced", False)),
+                            "shield_hard_stop_forced": bool(universe_shadow_diag.get("shield_hard_stop_forced", False)),
+                            "authority": "advisory_non_authoritative",
+                        },
+                    )
+            self.ops.set_metric(
+                "mission_bridge_no_trade_preferred",
+                1.0 if bool(mission_bridge_payload["no_trade_preferred"]) else 0.0,
+            )
+            self.ops.set_metric(
+                "mission_bridge_allow_new_risk",
+                1.0 if bool(mission_bridge_payload["allow_new_risk"]) else 0.0,
+            )
+            if str(mission_bridge_payload["mission"]) or mission_bridge_payload["reason_codes"]:
+                self.ops.audit_event(
+                    "mission_bridge",
+                    {
+                        "symbol": symbol,
+                        "mission": str(mission_bridge_payload["mission"]),
+                        "reason_codes": list(mission_bridge_payload["reason_codes"]),
+                        "no_trade_preferred": bool(mission_bridge_payload["no_trade_preferred"]),
+                        "allow_new_risk": bool(mission_bridge_payload["allow_new_risk"]),
+                        "execution_posture_hint": str(mission_bridge_payload["execution_posture_hint"]),
+                        "authority": "advisory_non_authoritative",
+                    },
+                )
+            if bool(self._universe_execution_plan_bridge_enabled):
+                self.ops.set_metric(
+                    "execution_plan_bridge_abort",
+                    1.0 if bool(execution_plan_bridge_payload["abort"]) else 0.0,
+                )
+                self.ops.set_metric(
+                    "execution_plan_bridge_expected_net_edge_bps",
+                    float(execution_plan_bridge_payload["contract"].get("expected_net_edge_bps", 0.0) or 0.0),
+                )
+                if execution_plan_bridge_payload["contract"]:
+                    self.ops.audit_event(
+                        "execution_plan_bridge",
+                        {
+                            "symbol": symbol,
+                            "contract": dict(execution_plan_bridge_payload["contract"]),
+                            "abort": bool(execution_plan_bridge_payload["abort"]),
+                            "abort_reason_codes": list(execution_plan_bridge_payload["abort_reason_codes"]),
+                            "advisory_severity": str(execution_plan_bridge_payload["advisory_severity"]),
+                            "advisory_reason_codes": list(execution_plan_bridge_payload["advisory_reason_codes"]),
+                            "requires_manual_review": bool(execution_plan_bridge_payload["requires_manual_review"]),
+                            "authority": "advisory_non_authoritative",
+                        },
+                    )
+            if intent is not None and isinstance(intent.why, dict):
+                intent.why["mission_bridge"] = dict(mission_bridge_payload)
+                if bool(self._universe_execution_plan_bridge_enabled):
+                    intent.why["execution_plan_bridge"] = dict(execution_plan_bridge_payload)
+            execution_plan_bridge_block_reason = ""
+            execution_plan_expected_net_edge = float(
+                execution_plan_bridge_payload["contract"].get("expected_net_edge_bps", 0.0) or 0.0
+            )
+            if (
+                bool(self._universe_execution_plan_bridge_enabled)
+                and intent is not None
+                and str(getattr(intent, "side", "")).lower() == "buy"
+            ):
+                if bool(execution_plan_bridge_payload["abort"]):
+                    execution_plan_bridge_block_reason = "execution_plan_abort"
+                elif execution_plan_expected_net_edge <= 0.0:
+                    execution_plan_bridge_block_reason = "execution_plan_non_positive_edge"
+                elif str(execution_plan_bridge_payload["advisory_severity"]).strip().lower() == "critical":
+                    execution_plan_bridge_block_reason = "execution_plan_critical_advisory"
+            if execution_plan_bridge_block_reason:
+                self.ops.audit_event(
+                    "live_exec",
+                    {
+                        "status": "skipped",
+                        "reason": execution_plan_bridge_block_reason,
+                        "symbol": intent.symbol,
+                        "side": intent.side,
+                        "notional": float(intent.target_notional),
+                        "execution_plan_bridge": dict(execution_plan_bridge_payload),
+                    },
+                )
+                _update_live_kpis()
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                if max_steps and steps >= max_steps:
+                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                time.sleep(poll_s)
+                continue
             # Freeze buy intent early when position is underwater to avoid turning
             # a blocked buy into a synthetic sell-only rebalance path.
             if intent is not None and str(intent.side).lower() == "buy":
@@ -4097,10 +5949,20 @@ class RobotOrchestrator:
             )
             if liquidity_map_is_restrictive:
                 gated_by_decision.append(f"liquidity_map_{liquidity_decision.session}")
+            no_intent_debug_preview = dict(getattr(self.policy, "last_no_intent_debug", {}) or {})
+            no_intent_reason_preview = "no_intent"
+            no_intent_context_preview: dict[str, object] = {}
+            if intent is None:
+                no_intent_reason_preview, no_intent_context_preview = _classify_no_intent_reason(
+                    sym=symbol,
+                    ask_px=ask,
+                    exposure_quote=signed_exposure_notional,
+                    policy_debug=no_intent_debug_preview,
+                )
             _emit_decision_tick(
                 now_ts_local=now_ts,
                 action="none" if intent is None else str(intent.side).lower(),
-                reason="no_intent" if intent is None else "intent_generated",
+                reason=no_intent_reason_preview if intent is None else "intent_generated",
                 notional_quote=0.0 if intent is None else float(intent.target_notional),
                 gated_by=gated_by_decision,
                 market_payload={
@@ -4140,15 +6002,115 @@ class RobotOrchestrator:
                     "brain_uncertainty_bps": float(brain_decision_snapshot.get("uncertainty_bps", 0.0) or 0.0),
                     "brain_confidence": float(brain_decision_snapshot.get("confidence", 0.0) or 0.0),
                     "brain_regime": str(brain_decision_snapshot.get("regime", "")),
+                    "universe_shadow_enabled": bool(universe_shadow_diag.get("enabled", False)),
+                    "universe_shadow_emitted": bool(universe_shadow_diag.get("emitted", False)),
+                    "universe_shadow_packet_id": str(universe_shadow_diag.get("packet_id", "")),
+                    "universe_shadow_error": str(universe_shadow_diag.get("error", "")),
+                    "learning_summary_status": str(universe_shadow_diag.get("learning_summary_status", "")),
+                    "learning_summary_bounded_within_limit": bool(
+                        universe_shadow_diag.get("learning_summary_bounded_within_limit", False)
+                    ),
+                    "learning_summary_errors_count": int(
+                        universe_shadow_diag.get("learning_summary_errors_count", 0) or 0
+                    ),
+                    "shield_bridge_mode": str(universe_shadow_diag.get("shield_mode", "")),
+                    "shield_bridge_reason_codes": list(universe_shadow_diag.get("shield_reason_codes", [])),
+                    "shield_bridge_hard_stop_forced": bool(universe_shadow_diag.get("shield_hard_stop_forced", False)),
+                    "shield_bridge_no_trade_forced": bool(universe_shadow_diag.get("shield_no_trade_forced", False)),
+                    "mission_bridge_mission": str(mission_bridge_payload.get("mission", "")),
+                    "mission_bridge_reason_codes": list(mission_bridge_payload.get("reason_codes", [])),
+                    "mission_bridge_no_trade_preferred": bool(mission_bridge_payload.get("no_trade_preferred", False)),
+                    "mission_bridge_allow_new_risk": bool(mission_bridge_payload.get("allow_new_risk", True)),
+                    "execution_plan_bridge_abort": bool(execution_plan_bridge_payload.get("abort", False)),
+                    "execution_plan_bridge_advisory_severity": str(
+                        execution_plan_bridge_payload.get("advisory_severity", "")
+                    ),
+                    "execution_plan_bridge_expected_net_edge_bps": float(
+                        execution_plan_bridge_payload.get("contract", {}).get("expected_net_edge_bps", 0.0) or 0.0
+                    ),
+                    "world_state_source": str(brain_diag_snapshot.get("world_state_source", world_state_read_view.get("source", "")) or ""),
+                    "world_state_available": bool(
+                        bool(brain_diag_snapshot.get("world_state_available", 0.0))
+                        if brain_diag_snapshot
+                        else bool(world_state_read_view.get("world_state_available", False))
+                    ),
+                    "world_state_graph_available": bool(
+                        bool(brain_diag_snapshot.get("world_state_graph_available", 0.0))
+                        if brain_diag_snapshot
+                        else bool(world_state_read_view.get("graph_available", False))
+                    ),
+                    "world_state_safe_to_trade": bool(
+                        bool(brain_diag_snapshot.get("world_state_safe_to_trade", 0.0))
+                        if brain_diag_snapshot
+                        else bool(world_state_read_view.get("safe_to_trade", False))
+                    ),
+                    "world_state_stale_domains": list(world_state_stale_domains),
+                    "world_state_stale_critical_domains": list(world_state_stale_critical_domains),
                 },
             )
 
+            rl_until = float(getattr(live, "rate_limit_cooldown_until_s", 0.0) or 0.0)
+            rl_remaining = max(0.0, rl_until - now_ts)
+            if rl_remaining > 1e-9 and (intent is None or str(intent.side).lower() == "buy"):
+                self.ops.inc_metric("rate_limit_cooldown_hold_total")
+                self.ops.audit_event(
+                    "heartbeat",
+                    {
+                        "symbol": symbol,
+                        "mid": mid,
+                        "spread_bps": spread_bps,
+                        "equity": equity,
+                        "reason": "rate_limit_cooldown_hold",
+                        "cooldown_remaining_s": rl_remaining,
+                    },
+                )
+                _update_live_kpis()
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                if max_steps and steps >= max_steps:
+                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                time.sleep(poll_s)
+                continue
+
             if intent is None:
-                no_intent_events_total += 1.0
-                self.ops.inc_metric("decision_skip_no_intent_total")
-                no_intent_debug = dict(getattr(self.policy, "last_no_intent_debug", {}) or {})
-                should_force_submit = submission_scheduler.should_submit(now_ts=now_ts)
-                should_extra_submit = (not should_force_submit) and _extra_probe_allowed(now_ts)
+                no_intent_debug = dict(no_intent_debug_preview)
+                no_intent_reason = str(no_intent_reason_preview)
+                if no_intent_reason == "no_intent":
+                    no_intent_events_total += 1.0
+                    self.ops.inc_metric("decision_skip_no_intent_total")
+                else:
+                    self.ops.inc_metric("decision_skip_untradable_total")
+                probe_suppressed = no_intent_reason in {
+                    "entry_insufficient_quote",
+                    "entry_hard_cap_incompatible",
+                    "entry_min_order_floor",
+                }
+                tradable_symbols_now = int(last_tradable_scan_diag.get("tradable_symbols", 0) or 0)
+                if (
+                    not probe_suppressed
+                    and tradable_symbols_now <= 0
+                    and abs(float(signed_exposure_notional))
+                    <= _required_entry_quote_for_pair(symbol, max(0.0, float(ask)))
+                ):
+                    probe_suppressed = True
+                    no_intent_context_preview = {
+                        **dict(no_intent_context_preview),
+                        "policy_reason": str(no_intent_context_preview.get("policy_reason", no_intent_reason or "no_intent")),
+                        "tradable_symbols": int(tradable_symbols_now),
+                    }
+                if probe_suppressed:
+                    self.ops.inc_metric("scheduler_probe_suppressed_untradable_total")
+                    self.ops.audit_event(
+                        "scheduler_probe_suppressed",
+                        {
+                            "symbol": symbol,
+                            "reason": no_intent_reason,
+                            "tradable_symbols": int(tradable_symbols_now),
+                            "tradable_context": dict(no_intent_context_preview),
+                        },
+                    )
+                should_force_submit = False if probe_suppressed else submission_scheduler.should_submit(now_ts=now_ts)
+                should_extra_submit = False if probe_suppressed else ((not should_force_submit) and _extra_probe_allowed(now_ts))
                 if should_force_submit or should_extra_submit:
                     _submit_safe_probe_from_audit(
                         "no_intent_keepalive_submission" if should_force_submit else "extra_activity_submission",
@@ -4161,11 +6123,14 @@ class RobotOrchestrator:
                         "mid": mid,
                         "spread_bps": spread_bps,
                         "equity": equity,
-                        "reason": "no_intent",
+                        "reason": no_intent_reason,
                         "regime": fc.regime,
                         "liq_regime": fc.liquidity_regime,
                         "fc_confidence": fc.confidence,
                         "policy_debug": no_intent_debug,
+                        "tradable_context": no_intent_context_preview,
+                        "tradable_scan_diag": dict(last_tradable_scan_diag),
+                        "probe_suppressed": bool(probe_suppressed),
                     },
                 )
                 _update_live_kpis()
@@ -4220,7 +6185,7 @@ class RobotOrchestrator:
                 desired_signed = max(0.0, current_signed - max(0.0, float(forced_exit_notional)))
             delta_signed = desired_signed - current_signed
             min_rebalance_notional = max(
-                rebalance_deadzone_floor,
+                _required_entry_quote_for_pair(symbol, max(0.0, float(ask))) * rebalance_deadzone_factor,
                 float((live_state or {}).get("min_trade_notional_quote", 0.0)) * rebalance_deadzone_factor,
             )
             if abs(delta_signed) < min_rebalance_notional:
@@ -4389,7 +6354,7 @@ class RobotOrchestrator:
             if rebalance_side == "buy" and (toxicity_throttle_active or now_ts < toxicity_freeze_until_ts):
                 rebalance_notional *= toxicity_throttle_scale
                 self.ops.set_metric("toxicity_throttle", 1.0)
-                if rebalance_notional <= max(rebalance_deadzone_floor, quote_notional_floor):
+                if rebalance_notional <= _required_entry_quote_for_pair(symbol, max(0.0, float(ask))):
                     toxicity_freeze_events += 1.0
                     self.ops.audit_event(
                         "heartbeat",
@@ -4413,7 +6378,7 @@ class RobotOrchestrator:
             risk_caps: dict[str, float] = {}
             if rebalance_side == "buy":
                 risk_equity_quote = max(
-                    quote_notional_floor,
+                    _required_entry_quote_for_pair(symbol, max(0.0, float(ask))),
                     float(quote_free) + max(0.0, float(current_signed)),
                     float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0),
                 )
@@ -4472,7 +6437,10 @@ class RobotOrchestrator:
             if growth_mode and rebalance_side == "buy" and now_ts < volstop_cooldown_until_ts:
                 rebalance_notional *= volstop_throttle_scale
             min_trade_notional_quote = float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0)
-            if rebalance_side == "sell" and abs(current_signed) < max(min_trade_notional_quote, rebalance_deadzone_floor):
+            if rebalance_side == "sell" and abs(current_signed) < max(
+                min_trade_notional_quote,
+                _required_entry_quote_for_pair(symbol, max(0.0, float(ask))),
+            ):
                 self.ops.inc_metric("inventory_below_min_order_total")
                 self.ops.audit_event(
                     "heartbeat",
@@ -4503,43 +6471,119 @@ class RobotOrchestrator:
                     return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
                 time.sleep(poll_s)
                 continue
-            min_required_quote = max(min_order_notional_quote_live, min_trade_notional_quote, rebalance_deadzone_floor)
+            min_required_quote = max(
+                min_trade_notional_quote,
+                _required_entry_quote_for_pair(symbol, ask) if rebalance_side == "buy" else 0.0,
+            )
             pending_dust_to_clear = 0.0
             dust_now = _dust_for(symbol, rebalance_side)
             if rebalance_notional + dust_now < min_required_quote:
-                _set_dust(symbol, rebalance_side, dust_now + rebalance_notional)
-                self.ops.inc_metric("dust_accumulate_total")
-                self.ops.audit_event(
-                    "dust_accumulate",
-                    {
-                        "symbol": symbol,
-                        "mid": mid,
-                        "spread_bps": spread_bps,
-                        "equity": equity,
-                        "side": rebalance_side,
-                        "rebalance_notional": rebalance_notional,
-                        "amount_quote": rebalance_notional,
-                        "total_quote": dust_now + rebalance_notional,
-                        "min_required_quote": min_required_quote,
-                    },
-                )
-                self.ops.audit_event(
-                    "live_exec",
-                    {
-                        "status": "skipped",
-                        "reason": "dust_accumulate",
-                        "symbol": symbol,
-                        "side": rebalance_side,
-                        "notional": rebalance_notional,
-                    },
-                )
-                _update_live_kpis()
-                self.ops.export_prometheus()
-                self.ops.export_dashboard_snapshot()
-                if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
-                time.sleep(poll_s)
-                continue
+                if rebalance_side == "buy" and dust_floor_upsize_enabled:
+                    floor_afford_ctx = _entry_affordability_ctx(
+                        symbol,
+                        ask_px=max(0.0, float(ask)),
+                        reserve_ratio=portfolio_quote_reserve_ratio,
+                        notional_target=float(min_required_quote),
+                    )
+                    floor_affordability = float(floor_afford_ctx.get("affordability", 0.0) or 0.0)
+                    floor_hard_cap_ok = bool(floor_afford_ctx.get("hard_cap_ok", True))
+                    risk_cap_values = [
+                        float(risk_caps.get("risk_trade_notional_cap", 0.0) or 0.0),
+                        float(risk_caps.get("portfolio_heat_remaining_notional_cap", 0.0) or 0.0),
+                        float(risk_caps.get("symbol_heat_remaining_notional_cap", 0.0) or 0.0),
+                    ]
+                    positive_risk_caps = [v for v in risk_cap_values if v > 0.0]
+                    risk_cap_limit = min(positive_risk_caps) if positive_risk_caps else 0.0
+                    within_risk_cap = risk_cap_limit <= 0.0 or float(min_required_quote) <= (risk_cap_limit + 1e-9)
+                    within_order_cap = hard_order_cap_quote <= 0.0 or float(min_required_quote) <= (hard_order_cap_quote + 1e-9)
+                    if (
+                        floor_hard_cap_ok
+                        and floor_affordability >= float(portfolio_affordability_buffer)
+                        and within_risk_cap
+                        and within_order_cap
+                    ):
+                        floor_from_notional = float(dust_now + rebalance_notional)
+                        rebalance_notional = float(min_required_quote)
+                        self.ops.audit_event(
+                            "dust_floor_upsize",
+                            {
+                                "symbol": symbol,
+                                "side": rebalance_side,
+                                "from_notional": float(floor_from_notional),
+                                "to_notional": float(rebalance_notional),
+                                "min_required_quote": float(min_required_quote),
+                                "affordability": float(floor_affordability),
+                                "risk_cap_limit": float(risk_cap_limit),
+                            },
+                        )
+                    else:
+                        _set_dust(symbol, rebalance_side, dust_now + rebalance_notional)
+                        self.ops.inc_metric("dust_accumulate_total")
+                        self.ops.audit_event(
+                            "dust_accumulate",
+                            {
+                                "symbol": symbol,
+                                "mid": mid,
+                                "spread_bps": spread_bps,
+                                "equity": equity,
+                                "side": rebalance_side,
+                                "rebalance_notional": rebalance_notional,
+                                "amount_quote": rebalance_notional,
+                                "total_quote": dust_now + rebalance_notional,
+                                "min_required_quote": min_required_quote,
+                            },
+                        )
+                        self.ops.audit_event(
+                            "live_exec",
+                            {
+                                "status": "skipped",
+                                "reason": "dust_accumulate",
+                                "symbol": symbol,
+                                "side": rebalance_side,
+                                "notional": rebalance_notional,
+                            },
+                        )
+                        _update_live_kpis()
+                        self.ops.export_prometheus()
+                        self.ops.export_dashboard_snapshot()
+                        if max_steps and steps >= max_steps:
+                            return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                        time.sleep(poll_s)
+                        continue
+                else:
+                    _set_dust(symbol, rebalance_side, dust_now + rebalance_notional)
+                    self.ops.inc_metric("dust_accumulate_total")
+                    self.ops.audit_event(
+                        "dust_accumulate",
+                        {
+                            "symbol": symbol,
+                            "mid": mid,
+                            "spread_bps": spread_bps,
+                            "equity": equity,
+                            "side": rebalance_side,
+                            "rebalance_notional": rebalance_notional,
+                            "amount_quote": rebalance_notional,
+                            "total_quote": dust_now + rebalance_notional,
+                            "min_required_quote": min_required_quote,
+                        },
+                    )
+                    self.ops.audit_event(
+                        "live_exec",
+                        {
+                            "status": "skipped",
+                            "reason": "dust_accumulate",
+                            "symbol": symbol,
+                            "side": rebalance_side,
+                            "notional": rebalance_notional,
+                        },
+                    )
+                    _update_live_kpis()
+                    self.ops.export_prometheus()
+                    self.ops.export_dashboard_snapshot()
+                    if max_steps and steps >= max_steps:
+                        return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    time.sleep(poll_s)
+                    continue
             if dust_now > 0.0:
                 rebalance_notional += dust_now
                 pending_dust_to_clear = dust_now
@@ -4706,6 +6750,34 @@ class RobotOrchestrator:
                     "guards_mode": guards_mode,
                     "original_allowed": False,
                 }
+                non_bypassable_risk_reasons = {
+                    "shield_hard_stop",
+                    "shield_observe_only",
+                }
+                if str(decision.reason) in non_bypassable_risk_reasons:
+                    self.ops.inc_metric("orders_rejected_total")
+                    orders_rejected += 1.0
+                    self.ops.audit_event("risk_reject", risk_payload)
+                    if decision.flatten and hasattr(live, "flatten_all_positions"):
+                        try:
+                            closed, flat_reason = live.flatten_all_positions()
+                            if closed:
+                                exposure_notional = 0.0
+                            self.ops.audit_event(
+                                "flatten",
+                                {"reason": flat_reason, "closed": closed, "from": decision.reason},
+                            )
+                        except Exception as exc:
+                            self.ops.audit_event("flatten_error", {"error": str(exc)})
+                    if submission_scheduler.should_submit(now_ts=now_ts):
+                        _submit_safe_probe_from_audit("risk_reject_keepalive_submission")
+                    _update_live_kpis()
+                    self.ops.export_prometheus()
+                    self.ops.export_dashboard_snapshot()
+                    if max_steps and steps >= max_steps:
+                        return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    time.sleep(poll_s)
+                    continue
                 if not is_reduce_only and (not entry_safe_mode_enabled) and str(decision.reason) == "safe_mode_default":
                     risk_overridden = True
                     risk_override_kind = "entry_safe_mode"
@@ -4887,26 +6959,264 @@ class RobotOrchestrator:
                     insufficient_balance_cooldown_until_by_symbol.get(str(adjusted.symbol).upper(), 0.0) or 0.0
                 )
                 if now_ts < insufficient_until:
-                    self.ops.audit_event(
-                        "live_exec",
-                        {
-                            "status": "skipped",
-                            "reason": "insufficient_balance_cooldown",
-                            "symbol": adjusted.symbol,
-                            "side": adjusted.side,
-                            "notional": adjusted.target_notional,
-                            "cooldown_remaining_s": max(0.0, insufficient_until - now_ts),
-                        },
+                    cooldown_affordability = _entry_affordability_ctx(
+                        str(adjusted.symbol),
+                        ask_px=max(0.0, float(ask)),
+                        reserve_ratio=portfolio_quote_reserve_ratio,
+                        notional_target=float(adjusted.target_notional),
                     )
-                    if submission_scheduler.should_submit(now_ts=now_ts):
-                        _submit_safe_probe_from_audit("insufficient_balance_cooldown_keepalive_submission")
-                    _update_live_kpis()
-                    self.ops.export_prometheus()
-                    self.ops.export_dashboard_snapshot()
-                    if max_steps and steps >= max_steps:
-                        return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
-                    time.sleep(poll_s)
-                    continue
+                    cooldown_afford_ratio = float(cooldown_affordability.get("affordability", 0.0) or 0.0)
+                    cooldown_hard_cap_ok = bool(cooldown_affordability.get("hard_cap_ok", True))
+                    if cooldown_hard_cap_ok and cooldown_afford_ratio >= float(portfolio_affordability_buffer):
+                        insufficient_balance_cooldown_until_by_symbol[str(adjusted.symbol).upper()] = 0.0
+                    else:
+                        self.ops.audit_event(
+                            "live_exec",
+                            {
+                                "status": "skipped",
+                                "reason": "insufficient_balance_cooldown",
+                                "symbol": adjusted.symbol,
+                                "side": adjusted.side,
+                                "notional": adjusted.target_notional,
+                                "cooldown_remaining_s": max(0.0, insufficient_until - now_ts),
+                            },
+                        )
+                        tradable_symbols_now = int(last_tradable_scan_diag.get("tradable_symbols", 0) or 0)
+                        if submission_scheduler.should_submit(now_ts=now_ts):
+                            if tradable_symbols_now > 0:
+                                _submit_safe_probe_from_audit("insufficient_balance_cooldown_keepalive_submission")
+                            else:
+                                self.ops.inc_metric("scheduler_probe_suppressed_untradable_total")
+                                self.ops.audit_event(
+                                    "scheduler_probe_suppressed",
+                                    {
+                                        "symbol": str(adjusted.symbol),
+                                        "reason": "insufficient_balance_cooldown",
+                                        "tradable_symbols": int(tradable_symbols_now),
+                                    },
+                                )
+                        _update_live_kpis()
+                        self.ops.export_prometheus()
+                        self.ops.export_dashboard_snapshot()
+                        if max_steps and steps >= max_steps:
+                            return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                        time.sleep(poll_s)
+                        continue
+                buy_affordability = _entry_affordability_ctx(
+                    str(adjusted.symbol),
+                    ask_px=max(0.0, float(ask)),
+                    reserve_ratio=portfolio_quote_reserve_ratio,
+                    notional_target=float(adjusted.target_notional),
+                )
+                required_quote_buy = float(buy_affordability.get("required_quote", 0.0) or 0.0)
+                usable_quote_buy = float(buy_affordability.get("usable_quote", 0.0) or 0.0)
+                hard_cap_ok_buy = bool(buy_affordability.get("hard_cap_ok", True))
+                afford_ratio_buy = float(buy_affordability.get("affordability", 0.0) or 0.0)
+                min_required_floor_buy = _required_entry_quote_for_pair(str(adjusted.symbol), max(0.0, float(ask)))
+                if (
+                    hard_cap_ok_buy
+                    and usable_quote_buy >= (min_required_floor_buy * float(portfolio_affordability_buffer))
+                    and float(adjusted.target_notional) > usable_quote_buy
+                ):
+                    resized_notional = max(
+                        min_required_floor_buy,
+                        usable_quote_buy * 0.995,
+                    )
+                    if resized_notional + 1e-9 < float(adjusted.target_notional):
+                        adjusted_why = dict(adjusted.why)
+                        adjusted_why["affordability_resize"] = {
+                            "resized": True,
+                            "from_notional": float(adjusted.target_notional),
+                            "to_notional": float(resized_notional),
+                            "usable_quote": float(usable_quote_buy),
+                            "required_floor_quote": float(min_required_floor_buy),
+                            "affordability": float(afford_ratio_buy),
+                        }
+                        adjusted = OrderIntent(
+                            adjusted.symbol,
+                            adjusted.side,
+                            float(resized_notional),
+                            adjusted_why,
+                        )
+                        buy_affordability = _entry_affordability_ctx(
+                            str(adjusted.symbol),
+                            ask_px=max(0.0, float(ask)),
+                            reserve_ratio=portfolio_quote_reserve_ratio,
+                            notional_target=float(adjusted.target_notional),
+                        )
+                        required_quote_buy = float(buy_affordability.get("required_quote", 0.0) or 0.0)
+                        usable_quote_buy = float(buy_affordability.get("usable_quote", 0.0) or 0.0)
+                        hard_cap_ok_buy = bool(buy_affordability.get("hard_cap_ok", True))
+                        afford_ratio_buy = float(buy_affordability.get("affordability", 0.0) or 0.0)
+                        self.ops.audit_event(
+                            "buy_affordability_resize",
+                            {
+                                "symbol": adjusted.symbol,
+                                "from_notional": float(adjusted_why["affordability_resize"]["from_notional"]),
+                                "to_notional": float(resized_notional),
+                                "required_floor_quote": float(min_required_floor_buy),
+                                "usable_quote": float(usable_quote_buy),
+                            },
+                        )
+                if (
+                    (not hard_cap_ok_buy)
+                    or afford_ratio_buy < float(portfolio_affordability_buffer)
+                ):
+                    sym_buy = str(adjusted.symbol).upper()
+                    if afford_ratio_buy < min(float(portfolio_affordability_buffer), insufficient_balance_cooldown_ratio_floor):
+                        insufficient_balance_cooldown_until_by_symbol[sym_buy] = max(
+                            float(insufficient_balance_cooldown_until_by_symbol.get(sym_buy, 0.0) or 0.0),
+                            now_ts + insufficient_balance_cooldown_s,
+                        )
+                    self.ops.inc_metric("buy_affordability_precheck_block_total")
+                    unlock_plan: dict[str, float | str | bool] = {"allowed": False, "reason": "capital_unlock_unavailable"}
+                    unlock_context: dict[str, object] = {}
+                    if capital_unlock_sell_enabled:
+                        unlock_shortfall_quote = max(0.0, float(required_quote_buy - usable_quote_buy))
+                        base_free_unlock = float(
+                            (live_state or {}).get("base_free", (live_state or {}).get("position_qty", 0.0)) or 0.0
+                        )
+                        avg_entry_unlock = float((live_state or {}).get("avg_entry_price", 0.0) or 0.0)
+                        min_trade_unlock = float((live_state or {}).get("min_trade_notional_quote", 0.0) or 0.0)
+                        constraints_unlock = _constraint_snapshot_for(str(adjusted.symbol), max(0.0, float(bid)))
+                        exchange_min_unlock = float(constraints_unlock.get("min_notional_quote", 0.0) or 0.0)
+                        min_unlock_notional_quote = max(
+                            0.0,
+                            min_trade_unlock,
+                            exchange_min_unlock,
+                        )
+                        required_exit_price_unlock = 0.0
+                        target_sell_price_unlock = 0.0
+                        if avg_entry_unlock > 0.0 and bid > 0.0:
+                            modeled_tco_unlock_bps = max(
+                                0.0,
+                                (2.0 * float(self.settings.execution.fee_bps))
+                                + float(self.settings.execution.slippage_bps)
+                                + max(0.0, spread_bps),
+                            )
+                            sym_state_unlock = position_state.get(str(adjusted.symbol).upper(), {})
+                            hold_s_unlock = max(
+                                max(0.0, float((live_state or {}).get("position_age_s", 0.0) or 0.0)),
+                                max(0.0, now_ts - float(sym_state_unlock.get("open_ts", 0.0) or 0.0))
+                                if float(sym_state_unlock.get("open_ts", 0.0) or 0.0) > 0.0
+                                else max(0.0, float((live_state or {}).get("position_age_s", 0.0) or 0.0)),
+                            )
+                            tp_unlock = compute_effective_sell_thresholds_bps(
+                                hold_s=int(hold_s_unlock),
+                                modeled_cost_bps=float(modeled_tco_unlock_bps if min_tp_after_costs else 0.0),
+                                entry_price=float(avg_entry_unlock),
+                                bid=float(bid),
+                                market_watch=TPScheduleMarketState(
+                                    regime_hint=str(market_watch_state.regime_hint),
+                                    confidence=float(market_watch_state.confidence),
+                                    spread_spike=bool(spread_state.active),
+                                ),
+                                hard_min_net_bps=int(max(sell_hard_floor_bps, sell_profit_lock_min_bps)),
+                                schedule_str=tp_schedule_str,
+                                greedy_mode=bool(tp_greedy_mode),
+                                greedy_up_net_bps=int(tp_greedy_net_bps_up),
+                                greedy_mid_net_bps=int(tp_greedy_net_bps_mid),
+                                greedy_down_net_bps=int(tp_greedy_net_bps_down),
+                            )
+                            required_exit_price_unlock = float(
+                                avg_entry_unlock * (1.0 + (float(tp_unlock["hard_min_gross_bps"]) / 10000.0))
+                            )
+                            target_sell_price_unlock = float(
+                                avg_entry_unlock * (1.0 + (float(tp_unlock["effective_target_gross_bps"]) / 10000.0))
+                            )
+                        unlock_plan = _capital_unlock_sell_plan(
+                            enabled=bool(capital_unlock_sell_enabled),
+                            sell_profit_lock_require_cost_basis=bool(sell_profit_lock_require_cost_basis),
+                            bid_price=float(bid),
+                            avg_entry_price=float(avg_entry_unlock),
+                            available_base_qty=float(base_free_unlock),
+                            min_unlock_notional_quote=float(min_unlock_notional_quote),
+                            shortfall_quote=float(unlock_shortfall_quote),
+                            shortfall_cover_ratio=float(capital_unlock_sell_cover_ratio),
+                            required_exit_price=float(required_exit_price_unlock),
+                        )
+                        unlock_context = {
+                            "required_quote": float(required_quote_buy),
+                            "usable_quote": float(usable_quote_buy),
+                            "shortfall_quote": float(unlock_shortfall_quote),
+                            "available_base_qty": float(base_free_unlock),
+                            "avg_entry_price": float(avg_entry_unlock),
+                            "bid": float(bid),
+                            "min_unlock_notional_quote": float(min_unlock_notional_quote),
+                            "required_exit_price": float(required_exit_price_unlock),
+                            "target_sell_price": float(target_sell_price_unlock),
+                            "exchange_min_notional_quote": float(exchange_min_unlock),
+                            "hard_cap_ok": bool(hard_cap_ok_buy),
+                            "affordability": float(afford_ratio_buy),
+                        }
+                    if bool(unlock_plan.get("allowed", False)):
+                        unlock_notional_quote = float(unlock_plan.get("target_notional_quote", 0.0) or 0.0)
+                        unlock_why = dict(adjusted.why)
+                        unlock_why["capital_unlock_sell"] = {
+                            "trigger": "insufficient_balance_precheck",
+                            "reason": str(unlock_plan.get("reason", "capital_unlock_sell_candidate")),
+                            "required_quote": float(required_quote_buy),
+                            "usable_quote": float(usable_quote_buy),
+                            "shortfall_quote": float(unlock_context.get("shortfall_quote", 0.0) or 0.0),
+                            "unlock_notional_quote": float(unlock_notional_quote),
+                            "allow_target_bypass": bool(capital_unlock_sell_bypass_tp_target),
+                            "target_sell_price": float(unlock_context.get("target_sell_price", 0.0) or 0.0),
+                            "required_exit_price": float(unlock_context.get("required_exit_price", 0.0) or 0.0),
+                        }
+                        adjusted = OrderIntent(
+                            str(adjusted.symbol),
+                            "sell",
+                            float(unlock_notional_quote),
+                            unlock_why,
+                        )
+                        adjusted_why = dict(unlock_why)
+                        is_reduce_only = True
+                        self.ops.inc_metric("capital_unlock_sell_candidate_total")
+                        self.ops.audit_event(
+                            "capital_unlock_sell_candidate",
+                            {
+                                "symbol": adjusted.symbol,
+                                "side": adjusted.side,
+                                "notional": float(unlock_notional_quote),
+                                "reason": str(unlock_plan.get("reason", "capital_unlock_sell_candidate")),
+                                **{k: v for k, v in unlock_context.items() if k not in {"required_quote", "usable_quote"}},
+                                "required_quote": float(required_quote_buy),
+                                "usable_quote": float(usable_quote_buy),
+                            },
+                        )
+                    else:
+                        self.ops.inc_metric("capital_unlock_sell_unavailable_total")
+                        self.ops.audit_event(
+                            "capital_unlock_sell_unavailable",
+                            {
+                                "symbol": adjusted.symbol,
+                                "reason": str(unlock_plan.get("reason", "capital_unlock_unavailable")),
+                                **unlock_context,
+                            },
+                        )
+                        self.ops.audit_event(
+                            "live_exec",
+                            {
+                                "status": "skipped",
+                                "reason": "insufficient_balance_precheck",
+                                "symbol": adjusted.symbol,
+                                "side": adjusted.side,
+                                "notional": adjusted.target_notional,
+                                "required_quote": float(required_quote_buy),
+                                "usable_quote": float(usable_quote_buy),
+                                "affordability": float(afford_ratio_buy),
+                                "hard_cap_ok": bool(hard_cap_ok_buy),
+                                "hard_cap_quote": float(buy_affordability.get("hard_cap_quote", 0.0) or 0.0),
+                                "required_floor_quote": float(min_required_floor_buy),
+                            },
+                        )
+                        _update_live_kpis()
+                        self.ops.export_prometheus()
+                        self.ops.export_dashboard_snapshot()
+                        if max_steps and steps >= max_steps:
+                            return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                        time.sleep(poll_s)
+                        continue
             cadence_bypass = bool(is_reduce_only and (decision.flatten or governance_fatal))
             sym_key = str(adjusted.symbol).upper()
             last_symbol_attempt_ts = float(last_order_attempt_ts_by_symbol.get(sym_key, 0.0) or 0.0)
@@ -4924,8 +7234,20 @@ class RobotOrchestrator:
                         "min_seconds_between_orders": min_seconds_between_orders,
                     },
                 )
+                tradable_symbols_now = int(last_tradable_scan_diag.get("tradable_symbols", 0) or 0)
                 if submission_scheduler.should_submit(now_ts=now_ts):
-                    _submit_safe_probe_from_audit("cadence_cooldown_keepalive_submission")
+                    if tradable_symbols_now > 0:
+                        _submit_safe_probe_from_audit("cadence_cooldown_keepalive_submission")
+                    else:
+                        self.ops.inc_metric("scheduler_probe_suppressed_untradable_total")
+                        self.ops.audit_event(
+                            "scheduler_probe_suppressed",
+                            {
+                                "symbol": str(adjusted.symbol),
+                                "reason": "cadence_cooldown",
+                                "tradable_symbols": int(tradable_symbols_now),
+                            },
+                        )
                 _update_live_kpis()
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
@@ -4986,7 +7308,7 @@ class RobotOrchestrator:
                                 confidence=float(market_watch_state.confidence),
                                 spread_spike=bool(spread_state.active),
                             ),
-                            hard_min_net_bps=int(max(120.0, sell_profit_lock_min_bps)),
+                            hard_min_net_bps=int(max(sell_hard_floor_bps, sell_profit_lock_min_bps)),
                             schedule_str=tp_schedule_str,
                             greedy_mode=bool(tp_greedy_mode),
                             greedy_up_net_bps=int(tp_greedy_net_bps_up),
@@ -5023,6 +7345,11 @@ class RobotOrchestrator:
                                 "min_sell_price_hard": min_sell_price_hard,
                                 "target_sell_price": target_sell_price,
                             },
+                        )
+                        capital_unlock_sell_ctx = adjusted_why.get("capital_unlock_sell", {})
+                        capital_unlock_target_bypass_active = bool(
+                            isinstance(capital_unlock_sell_ctx, dict)
+                            and capital_unlock_sell_ctx.get("allow_target_bypass", False)
                         )
                         if bid + 1e-12 < min_sell_price_hard:
                             skip_reason = (
@@ -5066,7 +7393,7 @@ class RobotOrchestrator:
                                 return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
                             time.sleep(poll_s)
                             continue
-                        if bid + 1e-12 < target_sell_price:
+                        if bid + 1e-12 < target_sell_price and not capital_unlock_target_bypass_active:
                             skip_reason = "tp_target_not_met"
                             self.ops.inc_metric("tp_blocks_total")
                             self.ops.audit_event(
@@ -5103,6 +7430,20 @@ class RobotOrchestrator:
                                 return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
                             time.sleep(poll_s)
                             continue
+                        if bid + 1e-12 < target_sell_price and capital_unlock_target_bypass_active:
+                            self.ops.inc_metric("capital_unlock_sell_tp_target_bypass_total")
+                            self.ops.audit_event(
+                                "capital_unlock_sell_tp_target_bypass",
+                                {
+                                    "symbol": adjusted.symbol,
+                                    "side": adjusted.side,
+                                    "bid": bid,
+                                    "target_sell_price": target_sell_price,
+                                    "min_sell_price_hard": min_sell_price_hard,
+                                    "modeled_net_profit_pct": modeled_net_profit_pct,
+                                    "position_age_s": hold_s,
+                                },
+                            )
             expected_net_edge_bps = self._intent_expected_net_edge_bps(adjusted)
             route_candidates: list[VenueCandidate] = []
             if latest_feed_quotes:
@@ -5671,8 +8012,24 @@ class RobotOrchestrator:
         self._write_runtime_health(status="starting", reason="boot")
         self.ops.track_config(asdict(self.settings))
         allowlist = self._universe_allowlist()
+        op_override = self._operator_universe_override()
         if allowlist:
             filtered = [s for s in self.settings.universe if str(s).upper() in allowlist]
+            if not filtered:
+                recovered = self._recover_allowlist_with_operator_override(
+                    allowlist=allowlist,
+                    operator_override=op_override,
+                )
+                if recovered:
+                    filtered = list(recovered)
+                    self.ops.audit_event(
+                        "universe_allowlist_recovered",
+                        {
+                            "source": "operator_override",
+                            "allowlist_size": len(allowlist),
+                            "recovered_count": len(recovered),
+                        },
+                    )
             if not filtered:
                 # Dynamic discovery can still produce valid symbols even if the static
                 # config universe has no overlap with operator allowlist.
@@ -5703,7 +8060,6 @@ class RobotOrchestrator:
                 )
             if filtered:
                 self.settings.universe = filtered
-        op_override = self._operator_universe_override()
         if op_override:
             if allowlist:
                 op_override = [s for s in op_override if s in allowlist]
@@ -5734,7 +8090,18 @@ class RobotOrchestrator:
         mode = self.settings.execution_mode_enum()
         provider = "paper_sim_provider" if mode == ExecutionMode.PAPER else self.settings.live_provider()
         c = self.compliance.check_provider_authorization(provider)
-        self.event_store.append("compliance", make_event(ComplianceEvent, "COMPLIANCE_CHECK", symbol, provider, self.event_store.next_seq("compliance"), {"allowed": c.allowed, "reason": c.reason}))
+        self._append_legacy_event_and_mirror(
+            stream="compliance",
+            event=make_event(
+                ComplianceEvent,
+                "COMPLIANCE_CHECK",
+                symbol,
+                provider,
+                self.event_store.next_seq("compliance"),
+                {"allowed": c.allowed, "reason": c.reason},
+            ),
+            adapter_source="orchestrator_boot",
+        )
         self.compliance.write_report(
             run_dir=self.settings.storage.run_dir,
             jurisdiction=str(os.getenv("AUTONOMOUS_JURISDICTION", "SK") or "SK"),
@@ -6056,7 +8423,18 @@ class RobotOrchestrator:
             if self.qa.divergence_breaker(bar, float(self.settings.risk.divergence_threshold_bps)):
                 self.risk.state.kill_switch = True
                 self.risk.state.safe_mode = True
-                self.event_store.append("risk", make_event(RiskEvent, "DIVERGENCE_KILL", symbol, "paper", self.event_store.next_seq("risk"), {"divergence": True}))
+                self._append_legacy_event_and_mirror(
+                    stream="risk",
+                    event=make_event(
+                        RiskEvent,
+                        "DIVERGENCE_KILL",
+                        symbol,
+                        "paper",
+                        self.event_store.next_seq("risk"),
+                        {"divergence": True},
+                    ),
+                    adapter_source="orchestrator_paper_loop",
+                )
                 if abs(exposure) > 0:
                     fills_all.append(self.execution.flatten_worst_case(symbol, exposure))
                     exposure = 0.0
@@ -6118,7 +8496,18 @@ class RobotOrchestrator:
                     },
                 )
             if not decision.allowed:
-                self.event_store.append("risk", make_event(RiskEvent, "RISK_REJECT", symbol, "paper", self.event_store.next_seq("risk"), {"reason": decision.reason}))
+                self._append_legacy_event_and_mirror(
+                    stream="risk",
+                    event=make_event(
+                        RiskEvent,
+                        "RISK_REJECT",
+                        symbol,
+                        "paper",
+                        self.event_store.next_seq("risk"),
+                        {"reason": decision.reason},
+                    ),
+                    adapter_source="orchestrator_paper_loop",
+                )
                 self.ops.inc_metric("orders_rejected_total")
                 if decision.flatten:
                     fills_all.append(self.execution.flatten_worst_case(symbol, exposure))
@@ -6131,13 +8520,37 @@ class RobotOrchestrator:
             adjusted = OrderIntent(intent.symbol, intent.side, decision.adjusted_notional, adjusted_why)
             idem = make_idempotency_key(asdict(adjusted), "perps-intraday", i)
             order_id = f"ord-{i}"
-            self.event_store.append("orders", make_event(OrderIntentEvent, "ORDER_INTENT", symbol, "paper", self.event_store.next_seq("orders"), asdict(adjusted), idempotency_key=idem))
+            self._append_legacy_event_and_mirror(
+                stream="orders",
+                event=make_event(
+                    OrderIntentEvent,
+                    "ORDER_INTENT",
+                    symbol,
+                    "paper",
+                    self.event_store.next_seq("orders"),
+                    asdict(adjusted),
+                    idempotency_key=idem,
+                ),
+                adapter_source="orchestrator_paper_loop",
+            )
             ok_submit, _ = self.oms.submit_intent(ManagedOrder(order_id=order_id, symbol=symbol, side=adjusted.side, notional=adjusted.target_notional, idempotency_key=idem))
             if not ok_submit:
                 self.ops.inc_metric("orders_rejected_total")
                 continue
             self.oms.transition(order_id, "ACK")
-            self.event_store.append("orders", make_event(OrderEvent, "ORDER_ACK", symbol, "paper", self.event_store.next_seq("orders"), {"order_id": order_id}, idempotency_key=idem))
+            self._append_legacy_event_and_mirror(
+                stream="orders",
+                event=make_event(
+                    OrderEvent,
+                    "ORDER_ACK",
+                    symbol,
+                    "paper",
+                    self.event_store.next_seq("orders"),
+                    {"order_id": order_id},
+                    idempotency_key=idem,
+                ),
+                adapter_source="orchestrator_paper_loop",
+            )
 
             fills = self.execution.execute_paper(order_id, adjusted, bar.mark_price, bar.depth_notional, oi_spike, bar.liquidations, bar.funding_rate, bar.spread_bps, fc.regime, fc.liquidity_regime)
             if not fills:
@@ -6146,7 +8559,19 @@ class RobotOrchestrator:
 
             for fill in fills:
                 self.oms.apply_fill(order_id, fill.notional)
-                self.event_store.append("fills", make_event(FillEvent, "FILL", symbol, "paper", self.event_store.next_seq("fills"), asdict(fill), idempotency_key=fill.fill_id))
+                self._append_legacy_event_and_mirror(
+                    stream="fills",
+                    event=make_event(
+                        FillEvent,
+                        "FILL",
+                        symbol,
+                        "paper",
+                        self.event_store.next_seq("fills"),
+                        asdict(fill),
+                        idempotency_key=fill.fill_id,
+                    ),
+                    adapter_source="orchestrator_paper_loop",
+                )
                 fills_all.append(fill)
 
             fill_notional = sum(f.notional for f in fills)
@@ -6183,7 +8608,18 @@ class RobotOrchestrator:
         if not rec_ok:
             self.risk.state.kill_switch = True
             self.risk.state.safe_mode = True
-            self.event_store.append("risk", make_event(RiskEvent, "RECONCILIATION_MISMATCH", symbol, "paper", self.event_store.next_seq("risk"), {"reason": rec_reason}))
+            self._append_legacy_event_and_mirror(
+                stream="risk",
+                event=make_event(
+                    RiskEvent,
+                    "RECONCILIATION_MISMATCH",
+                    symbol,
+                    "paper",
+                    self.event_store.next_seq("risk"),
+                    {"reason": rec_reason},
+                ),
+                adapter_source="orchestrator_paper_loop",
+            )
             fills_all.append(self.execution.flatten_worst_case(symbol, exposure))
             exposure = 0.0
 
@@ -6191,9 +8627,31 @@ class RobotOrchestrator:
         drawdown = max(0.0, (1.0 - (equity / peak)) * 100)
         psi = self.mlops.detector.psi([x.values["ret_1"] for x in fvs[: max(1, len(fvs)//2)]], [x.values["ret_1"] for x in fvs[max(1, len(fvs)//2):]])
         if self.mlops.should_rollback(drawdown, psi):
-            self.event_store.append("risk", make_event(RiskEvent, "AUTO_ROLLBACK", symbol, "paper", self.event_store.next_seq("risk"), {"drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed, "psi": psi}))
+            self._append_legacy_event_and_mirror(
+                stream="risk",
+                event=make_event(
+                    RiskEvent,
+                    "AUTO_ROLLBACK",
+                    symbol,
+                    "paper",
+                    self.event_store.next_seq("risk"),
+                    {"drawdown_pct": drawdown, "drawdown_signed_pct": drawdown_signed, "psi": psi},
+                ),
+                adapter_source="orchestrator_paper_loop",
+            )
 
-        self.event_store.append("positions", make_event(PositionEvent, "POSITION_SNAPSHOT", symbol, "paper", self.event_store.next_seq("positions"), {"exposure_notional": exposure}))
+        self._append_legacy_event_and_mirror(
+            stream="positions",
+            event=make_event(
+                PositionEvent,
+                "POSITION_SNAPSHOT",
+                symbol,
+                "paper",
+                self.event_store.next_seq("positions"),
+                {"exposure_notional": exposure},
+            ),
+            adapter_source="orchestrator_paper_loop",
+        )
 
         self.ops.set_metric("data_lag_seconds", 0.0)
         self.ops.set_metric("pnl", (equity - 1.0) * 100)

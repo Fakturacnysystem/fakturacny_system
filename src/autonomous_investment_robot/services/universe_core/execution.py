@@ -30,6 +30,11 @@ class ExecutionPlan:
     retry_policy: str
     cancel_replace_budget: int
     queue_quality: float
+    slice_count: int = 1
+    slice_interval_s: float = 0.0
+    fee_drag_estimate_bps: float = 0.0
+    expected_net_edge_bps: float = 0.0
+    execution_quality_estimate: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
     def scaled(self, size_scale: float) -> "ExecutionPlan":
@@ -71,6 +76,11 @@ class ExecutionPlan:
             "retry_policy": self.retry_policy,
             "cancel_replace_budget": self.cancel_replace_budget,
             "queue_quality": self.queue_quality,
+            "slice_count": int(self.slice_count),
+            "slice_interval_s": float(self.slice_interval_s),
+            "fee_drag_estimate_bps": float(self.fee_drag_estimate_bps),
+            "expected_net_edge_bps": float(self.expected_net_edge_bps),
+            "execution_quality_estimate": dict(self.execution_quality_estimate),
             "meta": dict(self.meta),
         }
 
@@ -103,6 +113,11 @@ class ExecutionIntelligence:
                 retry_policy="none",
                 cancel_replace_budget=0,
                 queue_quality=1.0,
+                slice_count=0,
+                slice_interval_s=0.0,
+                fee_drag_estimate_bps=0.0,
+                expected_net_edge_bps=0.0,
+                execution_quality_estimate={},
                 meta={"reason": "non_actionable_proposal"},
             )
 
@@ -177,6 +192,17 @@ class ExecutionIntelligence:
             retry_policy=retry_policy,
             cancel_replace_budget=cancel_replace_budget,
             queue_quality=queue_quality,
+            slice_count=1,
+            slice_interval_s=0.0,
+            fee_drag_estimate_bps=max(0.0, 8.0 if maker_taker == "maker" else 16.0),
+            expected_net_edge_bps=max(
+                -100.0,
+                float(proposal.expected_value_bps) - (max_slippage + (8.0 if maker_taker == "maker" else 16.0)),
+            ),
+            execution_quality_estimate={
+                "expected_fill_quality": expected_fill_quality,
+                "queue_quality": queue_quality,
+            },
             meta={
                 "mission": mission.mission,
                 "proposal_strategy": proposal.strategy,

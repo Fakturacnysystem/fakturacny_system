@@ -1,0 +1,21 @@
+{
+  "repo_root": "/Users/martinholik/Projects/fakturacny_system",
+  "timestamp": "20260313_140537",
+  "phase_reports_complete_1_50": false,
+  "missing_phase_reports_1_50": [
+    1,
+    2,
+    3,
+    4,
+    7
+  ],
+  "targeted_tests_passed": false,
+  "full_pytest_passed": false,
+  "internal_system_status": "PARTIALLY_VALIDATED_WITH_OPEN_REGRESSIONS",
+  "live_execution_status": "BLOCKED_EXTERNALLY",
+  "live_execution_cause": "Kraken private API rate-limit / temporary lockout",
+  "kraken_tmux_present": true,
+  "kraken_worker_present": true,
+  "kraken_lockout_hint": true,
+  "truth_verdict": "NOT_FULLY_LIVE_VERIFIED"
+}

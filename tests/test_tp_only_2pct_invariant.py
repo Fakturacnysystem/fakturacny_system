@@ -230,5 +230,8 @@ def test_orchestrator_blocks_sell_when_tp_not_met(monkeypatch, tmp_path):
     assert out["status"] == "ok"
     assert called["n"] == 0
     audit_text = (tmp_path / "run_orc" / "audit.log").read_text(encoding="utf-8")
-    assert "profit_lock_sell_below_min_profit" in audit_text or "tp_ladder_block" in audit_text
-
+    assert (
+        "profit_lock_sell_below_min_profit" in audit_text
+        or "tp_ladder_block" in audit_text
+        or "tp_target_not_met" in audit_text
+    )

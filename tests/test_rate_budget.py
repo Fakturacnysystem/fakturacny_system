@@ -33,3 +33,18 @@ def test_rate_limit_storm_triggers_circuit_breaker():
     assert rb.allow_private(now_ts=now + 2.0) is False
     assert rb.circuit_breaker_active(now_ts=now + 30.0) is False
 
+
+def test_private_budget_refund_restores_token_for_noop_paths():
+    rb = RateBudget(
+        max_public_calls_per_min=10,
+        max_private_calls_per_min=2,
+        storm_threshold=3,
+        breaker_cooldown_s=30.0,
+    )
+    now = 3000.0
+    assert rb.allow_private(now_ts=now) is True
+    state_after_consume = rb.state(now_ts=now)
+    assert state_after_consume.private_tokens < state_after_consume.private_capacity
+    rb.refund_private(now_ts=now)
+    state_after_refund = rb.state(now_ts=now)
+    assert abs(state_after_refund.private_tokens - state_after_refund.private_capacity) < 1e-12

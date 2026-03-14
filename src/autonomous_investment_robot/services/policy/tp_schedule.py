@@ -71,7 +71,7 @@ def compute_effective_sell_thresholds_bps(
 ) -> dict[str, float]:
     _ = entry_price
     _ = bid
-    hard_min_net = max(120, int(hard_min_net_bps))
+    hard_min_net = max(30, int(hard_min_net_bps))
     costs = max(0.0, float(modeled_cost_bps))
     schedule = parse_schedule(schedule_str)
     schedule_target_gross = target_gross_bps_for_hold(max(0, int(hold_s)), schedule)
@@ -103,4 +103,3 @@ def compute_effective_sell_thresholds_bps(
         "effective_target_net_bps": float(effective_target_net),
         "effective_target_gross_bps": float(effective_target_gross),
     }
-

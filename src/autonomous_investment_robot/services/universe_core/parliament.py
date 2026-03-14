@@ -435,8 +435,32 @@ def strategy_proposals_from_intent(intent: Any, *, mission: str = "") -> list[St
     default_notional = max(0.0, _safe_float(getattr(intent, "target_notional", 0.0), 0.0))
     why = getattr(intent, "why", {})
     payload = dict(why or {}) if isinstance(why, Mapping) else {}
-    raw_components = payload.get("components", [])
+    serialized_rows = payload.get("strategy_proposals", [])
     rows: list[StrategyProposal] = []
+    if isinstance(serialized_rows, list):
+        for idx, row in enumerate(serialized_rows):
+            if not isinstance(row, Mapping):
+                continue
+            mapped = dict(row)
+            mapped.setdefault("instrument", symbol)
+            mapped.setdefault("metadata", {})
+            if isinstance(mapped["metadata"], Mapping):
+                mapped["metadata"] = dict(mapped["metadata"])
+            else:
+                mapped["metadata"] = {}
+            mapped["metadata"].setdefault("serialized_index", int(idx))
+            mapped["metadata"].setdefault("mission_preview", str(mission or ""))
+            try:
+                rows.append(StrategyProposal.from_mapping(mapped))
+            except Exception:
+                continue
+
+    if rows:
+        if not any(row.strategy == "no_trade_guardian" for row in rows):
+            rows.append(no_trade_guardian(symbol))
+        return rows
+
+    raw_components = payload.get("components", [])
     if isinstance(raw_components, list):
         for idx, component in enumerate(raw_components):
             if not isinstance(component, Mapping):
@@ -514,4 +538,3 @@ def strategy_proposals_from_intent(intent: Any, *, mission: str = "") -> list[St
     if not any(row.strategy == "no_trade_guardian" for row in rows):
         rows.append(no_trade_guardian(symbol))
     return rows
-

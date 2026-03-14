@@ -204,6 +204,14 @@ class KrakenSpotConnector:
         if ok:
             if cls == "ok":
                 return True, "ok"
+            if cls == "optional_scope_unavailable":
+                optional_scope = str(diag.get("optional_scope", scope) or scope)
+                optional_cls = str(diag.get("optional_classification", "unknown_error") or "unknown_error")
+                optional_reason = str(diag.get("optional_reason", reason) or reason)
+                return (
+                    True,
+                    f"permissions_verified_optional_scope_unavailable:{optional_scope}:{optional_cls}:{optional_reason}",
+                )
             if cls.endswith("_override"):
                 return True, f"permissions_unverified_operator_override:{scope}:{cls}:{reason}"
             return True, f"permissions_verified:{scope}:{cls}"
@@ -271,12 +279,15 @@ class KrakenSpotConnector:
                 "classification": "missing_credentials",
                 "reason": "missing_credentials",
                 "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+                "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
             }
         # Validate required private scopes used by live execution.
-        required_checks = [
-            ("balance", self.balance),
-            ("open_orders", self.open_orders),
-        ]
+        required_checks = [("balance", self.balance)]
+        optional_checks = []
+        if bool(self.settings.require_open_orders_scope):
+            required_checks.append(("open_orders", self.open_orders))
+        else:
+            optional_checks.append(("open_orders", self.open_orders))
         for scope, fn in required_checks:
             try:
                 fn()
@@ -289,6 +300,7 @@ class KrakenSpotConnector:
                         "classification": classification,
                         "reason": detail,
                         "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+                        "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
                     }
                 if self.settings.allow_unknown_permissions:
                     return {
@@ -297,6 +309,7 @@ class KrakenSpotConnector:
                         "classification": f"{classification}_override",
                         "reason": detail,
                         "allow_unknown_permissions": True,
+                        "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
                     }
                 return {
                     "ok": False,
@@ -304,13 +317,42 @@ class KrakenSpotConnector:
                     "classification": classification,
                     "reason": detail,
                     "allow_unknown_permissions": False,
+                    "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
                 }
+        optional_issues: list[dict[str, str]] = []
+        for scope, fn in optional_checks:
+            try:
+                fn()
+            except Exception as exc:
+                classification, detail = self._classify_private_scope_error(exc)
+                optional_issues.append(
+                    {
+                        "scope": scope,
+                        "classification": classification,
+                        "reason": detail,
+                    }
+                )
+        if optional_issues:
+            first = optional_issues[0]
+            return {
+                "ok": True,
+                "scope": "all",
+                "classification": "optional_scope_unavailable",
+                "reason": str(first.get("reason", "")),
+                "optional_scope": str(first.get("scope", "")),
+                "optional_classification": str(first.get("classification", "")),
+                "optional_reason": str(first.get("reason", "")),
+                "optional_issues": optional_issues,
+                "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+                "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
+            }
         return {
             "ok": True,
             "scope": "all",
             "classification": "ok",
             "reason": "ok",
             "allow_unknown_permissions": bool(self.settings.allow_unknown_permissions),
+            "require_open_orders_scope": bool(self.settings.require_open_orders_scope),
         }
 
     # Public

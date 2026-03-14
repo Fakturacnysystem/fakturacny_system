@@ -74,6 +74,21 @@ def test_apply_profit_lock_blocks_sell_below_entry() -> None:
     assert lock["hard_min_net_bps"] >= 120.0
 
 
+def test_apply_profit_lock_respects_configured_hard_floor(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMOUS_SELL_HARD_MIN_PROFIT_BPS", "33")
+    lock = apply_profit_lock(
+        side="sell",
+        bid=100.40,
+        avg_entry_price=100.0,
+        modeled_cost_bps=10.0,
+        min_net_profit_bps=33.0,
+        target_net_profit_bps=33.0,
+        hold_time_s=60.0,
+    )
+    assert lock["allowed"] is True
+    assert lock["hard_min_net_bps"] == 33.0
+
+
 def test_decision_engine_generates_buy_entry_signal() -> None:
     engine = AutonomousMarketPredictionAndDecisionEngine(
         confidence_threshold=0.45,
@@ -232,3 +247,108 @@ def test_decision_engine_respects_xstock_session_closed_guard() -> None:
     out = engine.run_decision_algorithm(ctx)
     assert "session_closed" in out.risk_flags
     assert out.action in {"skip", "hold"}
+
+
+def test_decision_engine_market_class_threshold_overrides_apply() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.42,
+        uncertainty_threshold_bps=120.0,
+        market_class_confidence_thresholds={"xstock": 0.60},
+        market_class_uncertainty_threshold_bps={"xstock": 70.0},
+    )
+    ctx = _base_context()
+    ctx.market_class = "xstock"
+    out = engine.run_decision_algorithm(ctx)
+    thresholds = out.diagnostics.get("adaptive_thresholds", {})
+    assert isinstance(thresholds, dict)
+    assert float(thresholds.get("confidence_threshold", 0.0)) >= 0.60
+    assert float(thresholds.get("uncertainty_threshold_bps", 1e9)) <= 70.0
+
+
+def test_decision_engine_opportunity_decay_guard_blocks_stale_signal() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.35,
+        uncertainty_threshold_bps=200.0,
+        opportunity_decay_max_age_s=30.0,
+        opportunity_decay_guard_threshold=0.45,
+    )
+    ctx = _base_context()
+    ctx.features["signal_ts"] = ctx.now_ts - 240.0
+    out = engine.run_decision_algorithm(ctx)
+    assert float(out.diagnostics.get("signal_age_s", 0.0)) >= 200.0
+    assert float(out.diagnostics.get("opportunity_decay_score", 0.0)) >= 0.45
+    assert ("opportunity_decay" in out.risk_flags) or (out.action in {"skip", "hold"})
+
+
+def test_decision_engine_cross_market_confirmation_guard_can_block_buy() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.35,
+        uncertainty_threshold_bps=200.0,
+        enable_macro=True,
+        enable_sentiment=True,
+        cross_market_confirmation_enabled=True,
+        cross_market_confirmation_min=0.55,
+    )
+    ctx = _base_context()
+    ctx.market_class = "xstock"
+    ctx.macro_features = {"risk_on": -1.0, "liquidity": -0.8, "surprise": -1.0}
+    ctx.sentiment_features = {"score": -1.0, "momentum": -1.0, "dispersion": 0.4}
+    ctx.features["ret_1"] = -0.015
+    ctx.features["ret_3"] = -0.03
+    out = engine.run_decision_algorithm(ctx)
+    assert float(out.diagnostics.get("cross_market_confirmation_score", 1.0)) < 0.55
+    assert ("cross_market_filter" in out.risk_flags) or (out.action in {"skip", "hold"})
+
+
+def test_decision_engine_regime_size_multiplier_exposed() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.40,
+        uncertainty_threshold_bps=160.0,
+        regime_size_multipliers={"BULL_TREND": 1.35, "PANIC": 0.40},
+    )
+    ctx = _base_context()
+    ctx.market_watch["trend_2m_bps"] = 85.0
+    out = engine.run_decision_algorithm(ctx)
+    mult = float(out.diagnostics.get("regime_size_multiplier", 0.0))
+    assert 0.25 <= mult <= 1.75
+
+
+def test_decision_engine_blocks_when_world_state_unavailable() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.40,
+        uncertainty_threshold_bps=160.0,
+    )
+    ctx = _base_context()
+    ctx.world_state_adapter = {
+        "source": "world_state_graph",
+        "world_state_available": False,
+        "graph_available": False,
+        "safe_to_trade": False,
+        "stale_domains": ["market_state"],
+        "stale_critical_domains": ["market_state"],
+        "freshness_s": {"market_state": 120.0},
+    }
+    out = engine.run_decision_algorithm(ctx)
+    assert "world_state_unavailable" in out.risk_flags
+    assert out.action in {"skip", "hold"}
+
+
+def test_decision_engine_blocks_on_world_state_stale_critical_domains() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.40,
+        uncertainty_threshold_bps=160.0,
+    )
+    ctx = _base_context()
+    ctx.world_state_adapter = {
+        "source": "runtime_observation",
+        "world_state_available": True,
+        "graph_available": True,
+        "safe_to_trade": True,
+        "stale_domains": ["risk_state"],
+        "stale_critical_domains": ["risk_state"],
+        "freshness_s": {"risk_state": 65.0},
+    }
+    out = engine.run_decision_algorithm(ctx)
+    assert "world_state_stale" in out.risk_flags
+    assert float(out.diagnostics.get("world_state_available", 0.0)) == 1.0
+    assert isinstance(out.diagnostics.get("world_state_stale_critical_domains", []), list)

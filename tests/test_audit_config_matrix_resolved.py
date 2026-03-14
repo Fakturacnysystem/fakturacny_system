@@ -25,7 +25,11 @@ def test_collect_config_matrix_resolves_harmony(tmp_path: Path) -> None:
     rows = matrix["rows"]
     assert len(rows) == 1
     assert rows[0]["status"] == "ok"
-    assert rows[0]["sell_min_profit_bps"] >= 120.0
+    assert rows[0]["sell_min_profit_bps"] >= 30.0
+    assert rows[0]["config_drift_check_passed"] is True
+    assert rows[0]["resolved_config_fingerprint"]
     assert "summary" in matrix
+    assert int(matrix["summary"]["drift_failures"]) == 0
+    assert matrix["freeze_contract"]["matrix_fingerprint"]
     md = mod.to_markdown(matrix)
     assert "| Config | Status | Mode | Provider | Cadence(s) | MinOrder | SellMinBps |" in md

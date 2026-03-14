@@ -30,6 +30,8 @@ safety:
     ack_i_understand_risks: false
     require_testnet_passed: true
     canary_required_before_full: true
+    require_operator_confirmation_artifact: true
+    operator_confirmation_file: ops/live_operator_confirmation.txt
 risk:
   max_daily_loss_pct: UNSPECIFIED
   max_drawdown_pct: UNSPECIFIED

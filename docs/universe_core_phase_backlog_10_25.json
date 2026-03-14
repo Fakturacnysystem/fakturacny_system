@@ -1,0 +1,823 @@
+{
+  "schema_version": "universe_core_phase_backlog_v1",
+  "generated_on": "2026-03-11",
+  "protocol_file": "docs/universe_core_autonomous_protocol.md",
+  "recommended_next_phase": null,
+  "baseline_truth": {
+    "implemented_additive_phases": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25
+    ],
+    "legacy_orchestrator_authority_path": "src/autonomous_investment_robot/core/orchestrator.py",
+    "manual_live_gate_requirements": [
+      "AUTONOMOUS_LIVE_GO=1",
+      "AUTONOMOUS_LIVE_OPERATOR_CONFIRMATION_FILE exists",
+      "Universe Core rollout governance approval for live-candidate stage"
+    ],
+    "key_phase_reports": [
+      "docs/reports/PHASE_5_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_6_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_8_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_9_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_10_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_11_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_12_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_13_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_14_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_15_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_16_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_17_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_18_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_19_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_20_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_21_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_22_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_23_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_24_STRICT_COMPLETION_REPORT.md",
+      "docs/reports/PHASE_25_STRICT_COMPLETION_REPORT.md"
+    ]
+  },
+  "scoring_model": {
+    "formula": "score = impact + unblock_value + safety_value - effort_cost - blocker_risk",
+    "status_filter": [
+      "pending",
+      "active_hardening"
+    ],
+    "dependency_rule": "all phase dependencies must already be completed_additive"
+  },
+  "phases": [
+    {
+      "phase_number": 10,
+      "title": "Universe Ops Productionization",
+      "status": "completed_additive",
+      "objective": "Maintain typed rollout governance, production readiness artifacts, and manual live gate enforcement in additive Universe Core path.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/ops.py",
+          "src/autonomous_investment_robot/services/universe_core/service.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_ops_phase10.py",
+          "tests/test_universe_core.py"
+        ],
+        "doc_anchors": [
+          "docs/reports/PHASE_10_STRICT_COMPLETION_REPORT.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "priority_factors": {
+        "impact": 0,
+        "unblock_value": 0,
+        "safety_value": 0,
+        "effort_cost": 0,
+        "blocker_risk": 0
+      },
+      "done_when": [
+        "rollout_governance and production_readiness artifacts emitted by UniverseOpsSnapshot",
+        "manual live gate is required for live-candidate stages",
+        "phase 10 focused tests remain green"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_ops_phase10.py tests/test_universe_core.py"
+      ],
+      "rollout_safety_gates": [
+        "no blocked rollout stage for approved candidate",
+        "production_readiness checklist required items pass"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 11
+    },
+    {
+      "phase_number": 11,
+      "title": "Legacy Orchestrator Shadow Adapter",
+      "status": "completed_additive",
+      "objective": "Add a shadow-only UniverseMind adapter inside orchestrator runtime for observability parity, without changing authority over order placement.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/core/orchestrator.py",
+          "src/autonomous_investment_robot/services/universe_core/service.py",
+          "src/autonomous_investment_robot/services/ops/service.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_core.py",
+          "tests/test_orchestrator_universe_allowlist.py"
+        ],
+        "doc_anchors": [
+          "docs/universe_core_program.md",
+          "docs/operator_runbook.md"
+        ]
+      },
+      "dependencies": [
+        10
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 5,
+        "safety_value": 5,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "orchestrator emits shadow Universe Core decision packets per cycle",
+        "legacy orchestrator remains sole live execution authority",
+        "shadow adapter can be disabled by flag with zero behavior change"
+      ],
+      "mandatory_test_gates": [
+        "python3 -m py_compile src/autonomous_investment_robot/core/orchestrator.py src/autonomous_investment_robot/services/universe_core/service.py",
+        "pytest -q tests/test_universe_core.py tests/test_orchestrator_universe_allowlist.py tests/test_runtime_audit.py"
+      ],
+      "rollout_safety_gates": [
+        "authority path unchanged for order submission",
+        "manual live gate behavior unchanged"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 12
+    },
+    {
+      "phase_number": 12,
+      "title": "Unified Event Fabric Legacy Producer Adoption",
+      "status": "completed_additive",
+      "objective": "Bridge selected legacy producers into canonical Universe Core event envelope while preserving existing event logs and buses.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/events.py",
+          "src/autonomous_investment_robot/services/replay/events.py",
+          "src/autonomous_investment_robot/services/event_store/service.py",
+          "src/autonomous_investment_robot/services/reliability/bus.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_core.py",
+          "tests/test_runtime_audit.py"
+        ],
+        "doc_anchors": [
+          "docs/universe_core_program.md",
+          "docs/redis_postgres_validation.md"
+        ]
+      },
+      "dependencies": [
+        11
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 4,
+        "safety_value": 4,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "done_when": [
+        "legacy adapters emit canonical envelope fields for selected domains",
+        "duplicate suppression and dead-letter handling stay deterministic",
+        "existing audit/event artifacts remain backwards compatible"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_core.py tests/test_runtime_audit.py"
+      ],
+      "rollout_safety_gates": [
+        "event adapters do not bypass fail-closed paths"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 13
+    },
+    {
+      "phase_number": 13,
+      "title": "World State Canonical Read Adapter",
+      "status": "completed_additive",
+      "objective": "Introduce read-only world-state adapter for orchestrator decisions, avoiding direct state fragmentation while keeping authority unchanged.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/state.py",
+          "src/autonomous_investment_robot/services/autonomous_decision/engine.py",
+          "src/autonomous_investment_robot/services/autonomous_decision/causal_market_twin.py",
+          "src/autonomous_investment_robot/core/orchestrator.py"
+        ],
+        "test_anchors": [
+          "tests/test_autonomous_decision_engine.py",
+          "tests/test_causal_market_twin_engine.py",
+          "tests/test_universe_core.py"
+        ],
+        "doc_anchors": [
+          "docs/causal_market_twin_runbook.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        12
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 4,
+        "safety_value": 4,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "done_when": [
+        "orchestrator can consume world-state snapshot through adapter APIs",
+        "world-state freshness and graph availability are explicit in decisions"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_core.py tests/test_autonomous_decision_engine.py tests/test_causal_market_twin_engine.py"
+      ],
+      "rollout_safety_gates": [
+        "graph unavailability degrades to conservative/no-trade behavior"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 14
+    },
+    {
+      "phase_number": 14,
+      "title": "Mission and Incident Bridge",
+      "status": "completed_additive",
+      "objective": "Map mission outcomes into incident and mastermind policy diagnostics as traceable, non-authoritative advisory signals.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/mission.py",
+          "src/autonomous_investment_robot/services/incident/service.py",
+          "src/autonomous_investment_robot/services/policy/mastermind_policy.py"
+        ],
+        "test_anchors": [
+          "tests/test_incident_policy_phase3.py",
+          "tests/test_universe_core.py"
+        ],
+        "doc_anchors": [
+          "docs/decision_scenarios.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        13
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "mission reason codes are visible in orchestrator diagnostics",
+        "incident/no-trade outcomes remain subordinate to hard safety rules"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_incident_policy_phase3.py tests/test_universe_core.py"
+      ],
+      "rollout_safety_gates": [
+        "mission bridge never weakens hard_stop or observe_only behavior"
+      ],
+      "known_gaps": [
+        "mission layer is mostly additive and isolated from orchestrator authority"
+      ],
+      "next_phase_if_completed": 15
+    },
+    {
+      "phase_number": 15,
+      "title": "Strategy Parliament Contract Adapter",
+      "status": "completed_additive",
+      "objective": "Adapt legacy strategy outputs to typed proposal contracts for deterministic comparison, scoring, and replay traceability.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/parliament.py",
+          "src/autonomous_investment_robot/services/policy/service.py",
+          "src/autonomous_investment_robot/services/policy/allocator.py",
+          "src/autonomous_investment_robot/services/policy/mastermind_policy.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_meta_intelligence.py",
+          "tests/test_phase1_policy_regime.py"
+        ],
+        "doc_anchors": [
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        14
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 4,
+        "safety_value": 3,
+        "effort_cost": 3,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "legacy strategy intents can be serialized into StrategyProposal contracts",
+        "selection/blending remains replay deterministic and risk-capped"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_meta_intelligence.py tests/test_phase1_policy_regime.py tests/test_universe_core.py"
+      ],
+      "rollout_safety_gates": [
+        "proposal blending cannot bypass profit floor or exposure caps"
+      ],
+      "known_gaps": [
+        "formal proposal contract adoption in legacy policy path is incomplete"
+      ],
+      "next_phase_if_completed": 16
+    },
+    {
+      "phase_number": 16,
+      "title": "ExecutionPlan Contract Bridge",
+      "status": "completed_additive",
+      "objective": "Bridge typed execution plan semantics into live execution services as advisory metadata, without replacing existing router authority.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/execution.py",
+          "src/autonomous_investment_robot/services/universe_core/execution_intel.py",
+          "src/autonomous_investment_robot/services/execution/smart_router.py",
+          "src/autonomous_investment_robot/services/execution/live_kraken_spot_service.py",
+          "src/autonomous_investment_robot/services/execution/live_kraken_router_service.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_execution_phase9.py",
+          "tests/test_kraken_spot_live_service.py"
+        ],
+        "doc_anchors": [
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        15
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "done_when": [
+        "execution plans can be attached to live execution intents for audit",
+        "abort/advisory outcomes block risky execution deterministically"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_execution_phase9.py tests/test_kraken_spot_live_service.py tests/test_runtime_audit.py"
+      ],
+      "rollout_safety_gates": [
+        "non-positive expected net edge path remains blocked",
+        "critical advisory path remains blocked"
+      ],
+      "known_gaps": [
+        "execution contract parity in legacy services is partial"
+      ],
+      "next_phase_if_completed": 17
+    },
+    {
+      "phase_number": 17,
+      "title": "Shield Convergence Adapter",
+      "status": "completed_additive",
+      "objective": "Converge shield diagnostics with legacy risk/watchdog services using additive adapters and explicit escalation telemetry.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/shield.py",
+          "src/autonomous_investment_robot/services/risk_engine/service.py",
+          "src/autonomous_investment_robot/services/reliability/watchdog.py",
+          "src/autonomous_investment_robot/services/execution/profit_gate.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_shield_phase6.py",
+          "tests/test_risk_live_guard.py",
+          "tests/test_watchdog_supervisor.py"
+        ],
+        "doc_anchors": [
+          "docs/live_readiness_checklist.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        16
+      ],
+      "priority_factors": {
+        "impact": 5,
+        "unblock_value": 3,
+        "safety_value": 5,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "shield escalation telemetry is reflected in runtime diagnostics and watchdog context",
+        "hard stop and observe-only triggers remain non-bypassable"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_shield_phase6.py tests/test_risk_live_guard.py tests/test_watchdog_supervisor.py"
+      ],
+      "rollout_safety_gates": [
+        "hard safety behavior preserved or strengthened"
+      ],
+      "known_gaps": [
+        "shield diagnostics are rich in Universe Core but partially isolated from legacy path"
+      ],
+      "next_phase_if_completed": 18
+    },
+    {
+      "phase_number": 18,
+      "title": "Decision Memory Ubiquity",
+      "status": "completed_additive",
+      "objective": "Ensure every relevant orchestrator decision path has Universe decision packet and memory trace coverage for audit/replay.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/memory.py",
+          "src/autonomous_investment_robot/services/universe_core/service.py",
+          "src/autonomous_investment_robot/services/ops/service.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_memory_phase7.py",
+          "tests/test_ops_evidence_snapshot.py"
+        ],
+        "doc_anchors": [
+          "docs/operator_runbook.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        17
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 3,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "decision packets include consistent governance/learning summaries across integrated paths",
+        "bounded memory compaction remains healthy under stress tests"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_memory_phase7.py tests/test_ops_evidence_snapshot.py tests/test_runtime_audit.py"
+      ],
+      "rollout_safety_gates": [
+        "memory persistence failures degrade safely and do not crash live loop"
+      ],
+      "known_gaps": [
+        "legacy-wide decision memory coverage is still incomplete"
+      ],
+      "next_phase_if_completed": 19
+    },
+    {
+      "phase_number": 19,
+      "title": "Replay Determinism and Promotion Gate CI",
+      "status": "completed_additive",
+      "objective": "Add deterministic replay and promotion-governance regression checks to CI-grade phase gates.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/replay_ladder.py",
+          "src/autonomous_investment_robot/services/universe_core/ops.py",
+          "src/autonomous_investment_robot/services/universe_core/memory.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_replay_phase8.py",
+          "tests/test_universe_ops_phase10.py"
+        ],
+        "doc_anchors": [
+          "docs/live_readiness_checklist.md",
+          "docs/universe_core_program.md"
+        ]
+      },
+      "dependencies": [
+        18
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 2,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "replay determinism checks are required for promotion-governance changes",
+        "promotion/rollback evidence is emitted consistently under replay"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_replay_phase8.py tests/test_universe_ops_phase10.py tests/test_universe_memory_phase7.py"
+      ],
+      "rollout_safety_gates": [
+        "promotion recommendation remains separate from live activation"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 20
+    },
+    {
+      "phase_number": 20,
+      "title": "Cross-Asset Allocator Normalization",
+      "status": "completed_additive",
+      "objective": "Normalize opportunity and allocation contracts across spot/perps/futures/xstocks classes using existing exchange and universe services.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/cross_asset.py",
+          "src/autonomous_investment_robot/services/multi_exchange",
+          "src/autonomous_investment_robot/services/universe",
+          "src/autonomous_investment_robot/services/distributed/compute_bridge.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_builder_kraken.py",
+          "tests/test_kraken_universe_service.py",
+          "tests/test_distributed_services.py"
+        ],
+        "doc_anchors": [
+          "docs/market_matrix.md",
+          "docs/runtime_topology.md"
+        ]
+      },
+      "dependencies": [
+        19
+      ],
+      "priority_factors": {
+        "impact": 4,
+        "unblock_value": 2,
+        "safety_value": 3,
+        "effort_cost": 3,
+        "blocker_risk": 2
+      },
+      "done_when": [
+        "allocation inputs are normalized by market class with deterministic scoring",
+        "asset-aware caps remain compatible with existing risk gates"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_builder_kraken.py tests/test_kraken_universe_service.py tests/test_distributed_services.py"
+      ],
+      "rollout_safety_gates": [
+        "cross-asset allocations respect existing exposure and drawdown caps"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 21
+    },
+    {
+      "phase_number": 21,
+      "title": "Distributed Runtime Evidence Enforcement",
+      "status": "completed_additive",
+      "objective": "Turn distributed diagnostics and acceptance evidence into strict phase gates for rollout claims.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/distributed/contracts.py",
+          "src/autonomous_investment_robot/services/distributed/compute_bridge.py",
+          "src/autonomous_investment_robot/services/distributed/postgres_mirror.py",
+          "scripts/validate_deployment_manifests.py"
+        ],
+        "test_anchors": [
+          "tests/test_distributed_services.py",
+          "tests/test_distributed_e2e.py",
+          "tests/test_postgres_mirror.py",
+          "tests/test_parallel_symbol_processing.py"
+        ],
+        "doc_anchors": [
+          "docs/distributed_acceptance_checklist.md",
+          "docs/redis_postgres_validation.md"
+        ]
+      },
+      "dependencies": [
+        20
+      ],
+      "priority_factors": {
+        "impact": 3,
+        "unblock_value": 2,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 2
+      },
+      "done_when": [
+        "distributed readiness claims require runtime evidence artifacts, not code-only proof",
+        "host-level infrastructure blockers are explicitly classified as blocked, not passed"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_distributed_services.py tests/test_distributed_e2e.py tests/test_postgres_mirror.py tests/test_parallel_symbol_processing.py",
+        "python3 scripts/validate_deployment_manifests.py"
+      ],
+      "rollout_safety_gates": [
+        "fallback to local mode must stay fail-safe and risk-gated"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 22
+    },
+    {
+      "phase_number": 22,
+      "title": "Rollback Dry-Run Automation",
+      "status": "completed_additive",
+      "objective": "Automate and persist rollback dry-run evidence for each phase checkpoint.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/ops.py",
+          "scripts/safety_preflight.py",
+          "scripts/runtime_audit.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_ops_phase10.py",
+          "tests/test_runtime_audit.py",
+          "tests/test_safety_preflight.py"
+        ],
+        "doc_anchors": [
+          "docs/live_readiness_checklist.md",
+          "docs/operator_runbook.md"
+        ]
+      },
+      "dependencies": [
+        21
+      ],
+      "priority_factors": {
+        "impact": 3,
+        "unblock_value": 2,
+        "safety_value": 5,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "rollback_dry_run_validated is evidence-backed, not manually asserted",
+        "rollback dry-run artifacts are linked from strict completion report"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_ops_phase10.py tests/test_runtime_audit.py tests/test_safety_preflight.py"
+      ],
+      "rollout_safety_gates": [
+        "no phase completion claim when rollback dry-run fails"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 23
+    },
+    {
+      "phase_number": 23,
+      "title": "Configuration Determinism and Freeze Contract",
+      "status": "completed_additive",
+      "objective": "Enforce deterministic resolved-config artifacts for phase checkpoints and rollout comparisons.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/ops/harmony.py",
+          "scripts/audit_config_matrix.py",
+          "src/autonomous_investment_robot/config/settings.py",
+          "src/autonomous_investment_robot/schemas/config.example.yaml"
+        ],
+        "test_anchors": [
+          "tests/test_audit_config_matrix_resolved.py",
+          "tests/test_guards_mode_overrides.py",
+          "tests/test_harmony_profit_floor_override.py"
+        ],
+        "doc_anchors": [
+          "docs/config_matrix.md",
+          "docs/live_readiness_checklist.md"
+        ]
+      },
+      "dependencies": [
+        22
+      ],
+      "priority_factors": {
+        "impact": 3,
+        "unblock_value": 2,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "phase checkpoints include immutable resolved config snapshots",
+        "config drift checks are machine-checked in phase gates"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_audit_config_matrix_resolved.py tests/test_guards_mode_overrides.py tests/test_harmony_profit_floor_override.py",
+        "python3 scripts/audit_config_matrix.py --json-output /tmp/config_matrix_audit.json --md-output /tmp/config_matrix_audit.md"
+      ],
+      "rollout_safety_gates": [
+        "sell_min_profit_bps floor remains at or above policy minimum"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 24
+    },
+    {
+      "phase_number": 24,
+      "title": "Manual Live Gate Dual-Control Hardening",
+      "status": "completed_additive",
+      "objective": "Unify environment-level manual gate and governance approval artifact checks into one deterministic dual-control contract.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/ops.py",
+          "scripts/create_live_confirmation_artifact.sh",
+          "cli/run.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_ops_phase10.py",
+          "tests/test_safety_preflight.py",
+          "tests/test_runtime_audit.py"
+        ],
+        "doc_anchors": [
+          "docs/operator_runbook.md",
+          "docs/live_readiness_checklist.md"
+        ]
+      },
+      "dependencies": [
+        23
+      ],
+      "priority_factors": {
+        "impact": 3,
+        "unblock_value": 1,
+        "safety_value": 5,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "live-candidate rollout requires both env gate and signed/typed approval artifact",
+        "missing either control resolves rollout stage to blocked"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q tests/test_universe_ops_phase10.py tests/test_safety_preflight.py tests/test_runtime_audit.py"
+      ],
+      "rollout_safety_gates": [
+        "manual gate cannot be bypassed by config or fallback defaults"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": 25
+    },
+    {
+      "phase_number": 25,
+      "title": "Program Freeze and Truth Dossier",
+      "status": "completed_additive",
+      "objective": "Freeze additive Universe Core contract for this roadmap window and publish a complete truth dossier with explicit residual risks.",
+      "repo_grounding": {
+        "code_anchors": [
+          "src/autonomous_investment_robot/services/universe_core/__init__.py",
+          "src/autonomous_investment_robot/services/universe_core/service.py"
+        ],
+        "test_anchors": [
+          "tests/test_universe_core.py",
+          "tests/test_universe_ops_phase10.py"
+        ],
+        "doc_anchors": [
+          "docs/universe_core_program.md",
+          "docs/reports"
+        ]
+      },
+      "dependencies": [
+        24
+      ],
+      "priority_factors": {
+        "impact": 2,
+        "unblock_value": 0,
+        "safety_value": 4,
+        "effort_cost": 2,
+        "blocker_risk": 1
+      },
+      "done_when": [
+        "final strict report includes complete phase ledger and residual-risk register",
+        "no unresolved safety blockers remain open"
+      ],
+      "mandatory_test_gates": [
+        "pytest -q"
+      ],
+      "rollout_safety_gates": [
+        "all live-readiness and distributed-readiness checklist items are either passed or explicitly blocked with evidence"
+      ],
+      "known_gaps": [
+        "none for additive phase scope"
+      ],
+      "next_phase_if_completed": null
+    }
+  ]
+}

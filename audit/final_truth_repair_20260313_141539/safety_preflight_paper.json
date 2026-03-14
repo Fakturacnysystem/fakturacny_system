@@ -1,0 +1,44 @@
+{
+  "ok": true,
+  "target_mode": "paper",
+  "config": "/Users/martinholik/Projects/fakturacny_system/config.kraken_spot.live_profit.yaml",
+  "checks": [
+    {
+      "name": "config_exists",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "config": "/Users/martinholik/Projects/fakturacny_system/config.kraken_spot.live_profit.yaml"
+      }
+    },
+    {
+      "name": "required_docs",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "cloud_artifacts",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "settings_validation",
+      "ok": true,
+      "reason": "ok",
+      "details": {
+        "target_mode": "paper"
+      }
+    }
+  ],
+  "rollback_dry_run": {
+    "validated": true,
+    "artifact_id": "a4aa2cc3ccdb13980468736675411d2cb0066a8237732c85ec33f4680a4e1bf9",
+    "reason_codes": []
+  }
+}

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source "./scripts/_common_env.sh"
+PYTHON_BIN="$(resolve_python_bin)"
 
 : "${KRAKEN_API_KEY:?Set KRAKEN_API_KEY}"
 : "${KRAKEN_API_SECRET:?Set KRAKEN_API_SECRET}"
@@ -13,7 +15,7 @@ fi
 
 RUN_DIR="${AUTONOMOUS_RUN_DIR:-}"
 if [[ -z "${RUN_DIR}" ]]; then
-  RUN_DIR="$(python3 - "${LIVE_CONFIG}" <<'PY'
+  RUN_DIR="$("${PYTHON_BIN}" - "${LIVE_CONFIG}" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -61,4 +63,4 @@ export AUTONOMOUS_LIVE_LOOP_MAX_STEPS="${AUTONOMOUS_LIVE_LOOP_MAX_STEPS:-1200}"
 export PYTHONUNBUFFERED=1
 
 TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config "${LIVE_CONFIG}"
+PYTHONPATH=src "${PYTHON_BIN}" -m autonomous_investment_robot live --config "${LIVE_CONFIG}"

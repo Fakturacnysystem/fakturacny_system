@@ -1,0 +1,187 @@
+mode: live
+enable_live_trading: true
+ack_i_understand_risks: true
+canary_mode: true
+safe_mode_default: false
+safety:
+  live_unlock:
+    enable_live_trading: true
+    ack_i_understand_risks: true
+    require_testnet_passed: true
+    canary_required_before_full: true
+    require_operator_confirmation_artifact: true
+    operator_confirmation_file: ops/live_operator_confirmation.txt
+provider_whitelist:
+- kraken_spot
+universe:
+  - ADAXBT
+  - ALGOXBT
+  - DOTXBT
+  - SOLXBT
+  - XXRPXXBT
+  - XXLMXXBT
+  - LINKXBT
+  - XETHXXBT
+execution:
+  mode: live
+  fee_bps: 25.0
+  slippage_bps: 1.5
+  maker_preference: true
+  maker_timeout_s: 90
+  kraken_spot:
+    allow_unknown_permissions: true
+    require_open_orders_scope: false
+    dry_run_long_only: false
+policy:
+  confidence_threshold: 0.0
+  safety_buffer_bps: 3.0
+  base_risk_budget: 25.0
+autonomous:
+  confidence_threshold: 0.44
+  uncertainty_threshold_bps: 85.0
+  confidence_threshold_crypto: 0.52
+  confidence_threshold_xstock: 0.58
+  confidence_threshold_xstock_etf: 0.60
+  uncertainty_threshold_bps_crypto: 92.0
+  uncertainty_threshold_bps_xstock: 74.0
+  uncertainty_threshold_bps_xstock_etf: 68.0
+  conformal_alpha: 0.1
+  drift_threshold: 0.2
+  regime_hold_s: 30.0
+  max_slippage_guard_bps: 8.0
+  latency_risk_threshold: 0.65
+  max_drawdown_guard_pct: 8.0
+  online_learning_enabled: true
+  online_learning_rate: 0.02
+  enable_news_features: false
+  enable_macro_features: false
+  enable_fundamental_features: false
+  enable_sentiment_features: false
+  signal_decay_guard_threshold: 0.6
+  execution_quality_guard_threshold: 2.5
+  liquidity_pressure_guard_threshold: -0.6
+  adaptive_hold_base_s: 1800.0
+  forecast_backend: baseline
+  forecast_backend_plugin: ""
+  transformer_backend_enabled: false
+  foundation_backend_enabled: false
+  self_optimization_window: 120
+  self_optimization_min_samples: 24
+  self_optimization_apply_every: 12
+  regime_size_mult_bull_trend: 1.15
+  regime_size_mult_trend: 1.10
+  regime_size_mult_range: 0.95
+  regime_size_mult_chop: 0.80
+  regime_size_mult_panic: 0.45
+  regime_size_mult_high_vol: 0.60
+  regime_size_mult_low_liquidity: 0.55
+  opportunity_decay_max_age_s: 45.0
+  opportunity_decay_guard_threshold: 0.65
+  cross_market_confirmation_enabled: true
+  cross_market_confirmation_min: -0.35
+  counterfactual_min_edge_bps: 1.0
+  market_twin_include_advanced_scenarios: true
+  market_twin_max_snapshots: 256
+llm:
+  provider: groq
+  model: openai/gpt-oss-120b
+  model_primary: openai/gpt-oss-120b
+  model_fallback: openai/gpt-oss-20b
+  base_url: https://api.groq.com/openai/v1
+  enabled: true
+  timeout_s: 12.0
+  max_retries: 1
+  healthcheck_remote: false
+  self_improvement_enabled: true
+  self_improvement_hours: 24.0
+  self_improvement_every_s: 1800.0
+  llm_augment_enabled: false
+distributed:
+  enabled: true
+  node_role: live
+  compute_bridge: auto
+  compute_timeout_s: 0.8
+  compute_refresh_s: 10.0
+  compute_top_n: 24
+  redis_url: ""
+  stream_prefix: autobot
+  stream_payload_version: v1
+  allow_local_fallback: true
+  enforce_remote_compute: false
+  postgres_mirror_enabled: false
+  postgres_dsn: ""
+  postgres_connect_timeout_s: 2.0
+  disable_advisory_on_live: true
+risk:
+  max_daily_loss_pct: 1.5
+  max_weekly_loss_pct: 5.0
+  max_drawdown_pct: 6.0
+  max_position_notional: 1000000.0
+  max_exposure_notional: 1000000.0
+  max_symbol_exposure_notional: 1000000.0
+  max_cluster_exposure_notional: 1000000.0
+  max_orders_per_min: 30
+  leverage: 0
+  target_portfolio_vol: 0.12
+  cvar_limit_pct: 200.0
+  stress_loss_limit_pct: 3.0
+  max_spread_bps: 120.0
+  min_depth_notional: 0.0
+  stale_data_seconds: 30.0
+  min_margin_buffer: 1.0
+  max_funding_cost_per_day: 5.0
+  max_oi_spike_pct: 200.0
+  max_liquidation_spike: 10000000.0
+  divergence_threshold_bps: 30.0
+  crowding_score_kill: 40.0
+tco:
+  max_total_cost_bps: 45.0
+  max_impact_bps: 20.0
+storage:
+  run_dir: runs/kraken_spot_live_profit09
+fixtures:
+  ohlcv_csv: data/fixtures/btcusdt_1h.csv
+  symbol_files:
+    ADAXBT: data/fixtures/kraken_spot_live_profit/adaxbt_1h.csv
+    ALGOXBT: data/fixtures/kraken_spot_live_profit/algoxbt_1h.csv
+    DOTXBT: data/fixtures/kraken_spot_live_profit/dotxbt_1h.csv
+    SOLXBT: data/fixtures/kraken_spot_live_profit/solxbt_1h.csv
+    XXRPXXBT: data/fixtures/kraken_spot_live_profit/xxrpxxbt_1h.csv
+    XXLMXXBT: data/fixtures/kraken_spot_live_profit/xxlmxxbt_1h.csv
+    LINKXBT: data/fixtures/kraken_spot_live_profit/linkxbt_1h.csv
+    XETHXXBT: data/fixtures/kraken_spot_live_profit/xethxxbt_1h.csv
+universe_builder:
+  top_n_target: 60
+  candidate_max: 120
+  trade_max_positions: 4
+  min_24h_quote_volume: 100000.0
+  max_spread_bps: 60.0
+market_coverage:
+  enable_spot: true
+  enable_margin: true
+  enable_perps: false
+  enable_optional_venues: true
+  discover_all_symbols: true
+  max_symbols: 120
+  enable_crypto_spot: true
+  enable_xstocks: true
+  enable_xstocks_etf: true
+  xstocks_allowlist: []
+  xstocks_denylist: []
+  mixed_universe_mode: true
+watchdog:
+  enabled: true
+  poll_interval_s: 5.0
+  stall_timeout_s: 300.0
+  restart_backoff_s: 5.0
+  max_restarts: 0
+  heartbeat_file: health.json
+  state_file: watchdog_state.json
+health_audit_110:
+  enabled: false
+  interval_s: 600.0
+  health_threshold: 60.0
+  stream_stale_after_s: 20.0
+  scheduler_lag_grace_s: 5.0
+  max_rate_limit_events_60s: 100.0
+  pause_openings_s: 180.0

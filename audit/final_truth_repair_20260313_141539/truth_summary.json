@@ -1,0 +1,35 @@
+{
+  "bundle_dir": "/Users/martinholik/Projects/fakturacny_system/audit/final_truth_repair_20260313_141539",
+  "phase_reports_complete_1_50": true,
+  "phase_reports_missing_1_50": [],
+  "pytest_full": "560 passed, 1 skipped",
+  "paper_preflight_ok": true,
+  "live_preflight_ok": false,
+  "live_failed_checks": [
+    "settings_validation",
+    "manual_live_gate",
+    "manual_live_dual_control"
+  ],
+  "ultra_main": {
+    "system_state": "BLOCKED",
+    "hard_invariants_ok": true,
+    "execution_topic_present": true,
+    "submitted_orders": 0,
+    "blocked_orders": 243,
+    "rollback_validated": true
+  },
+  "ultra_alt": {
+    "system_state": "BLOCKED",
+    "hard_invariants_ok": true,
+    "execution_topic_present": false,
+    "rollback_validated": false,
+    "rollback_reasons": [
+      "execution_topic_missing"
+    ]
+  },
+  "perps": {
+    "system_state": "OK",
+    "execution_topic_present": true
+  },
+  "external_blocker": "Kraken private API temporary lockout / rate-limit windows still observed in live attempts"
+}

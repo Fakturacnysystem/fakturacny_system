@@ -15,6 +15,25 @@ IMMUTABLE_SAFETY_KEYS = {
     "AUTONOMOUS_SPOT_SELL_MIN_PROFIT_BPS",
 }
 
+ENV_DIRECT_KEYS = {
+    "AUTONOMOUS_HARD_CAP_NOTIONAL_QUOTE",
+    "AUTONOMOUS_MIN_NOTIONAL_QUOTE",
+    "AUTONOMOUS_SELL_MIN_NET_PROFIT_BPS",
+    "AUTONOMOUS_CONFIDENCE_THRESHOLD",
+    "AUTONOMOUS_ORDER_CADENCE_S",
+    "AUTONOMOUS_ADAPTIVE_HOLD_MULTIPLIER",
+    "AUTONOMOUS_LIQUIDITY_NIGHT_EDGE_ADD_BPS",
+    "AUTONOMOUS_USER_MIN_ORDER_QUOTE",
+    "AUTONOMOUS_EXCHANGE_MIN_ORDER_QUOTE_FALLBACK",
+    "AUTONOMOUS_MAX_OPEN_ORDERS_GLOBAL",
+    "AUTONOMOUS_MAX_PARALLEL_TRADES",
+    "AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE",
+    "AUTONOMOUS_MAX_ORDER_NOTIONAL_QUOTE_DEFAULT",
+    "AUTONOMOUS_GUARDS_MODE",
+    "AUTONOMOUS_LIVE_GO",
+    "AUTONOMOUS_REQUIRE_OPERATOR_LIVE_CONFIRMATION",
+}
+
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = dict(base)
@@ -48,6 +67,38 @@ def _override_path_for(config_path: str) -> Path:
     return Path(_resolve_run_dir(config_path)) / "override.yaml"
 
 
+def _coerce_env_value(raw: str) -> Any:
+    value = str(raw).strip()
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except Exception:
+        return value
+
+
+def _env_runtime_override() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in ENV_DIRECT_KEYS:
+        raw = os.getenv(key)
+        if raw is None or not str(raw).strip():
+            continue
+        if key in IMMUTABLE_SAFETY_KEYS:
+            continue
+        out[key] = _coerce_env_value(raw)
+
+    allowlist = str(os.getenv("AUTONOMOUS_UNIVERSE_ALLOWLIST", "") or "").strip()
+    if allowlist:
+        symbols = [s.strip() for s in allowlist.split(",") if s.strip()]
+        if symbols:
+            out["universe"] = symbols
+
+    return out
+
+
 def apply_runtime_override(config_path: str) -> str:
     cfg = _load_yaml_like(config_path)
     if not isinstance(cfg, dict):
@@ -72,6 +123,8 @@ def apply_runtime_override(config_path: str) -> str:
                 merged = _deep_merge(cfg, raw)
         except Exception:
             merged = dict(cfg)
+
+    merged = _deep_merge(merged, _env_runtime_override())
 
     run_dir = Path(_resolve_run_dir(config_path))
     run_dir.mkdir(parents=True, exist_ok=True)

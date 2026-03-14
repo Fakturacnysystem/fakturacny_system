@@ -47,6 +47,15 @@ EVENT_TYPE_DOMAIN: dict[str, str] = {
 }
 
 CANONICAL_EVENT_TYPES: tuple[str, ...] = tuple(EVENT_TYPE_DOMAIN.keys())
+LEGACY_EVENT_TYPE_MAP: dict[str, str] = {
+    "MarketEvent": "MarketTickEvent",
+    "OrderIntentEvent": "StrategyProposalEvent",
+    "OrderEvent": "OrderEvent",
+    "FillEvent": "FillEvent",
+    "PositionEvent": "AccountSnapshotEvent",
+    "RiskEvent": "RiskEvent",
+    "ComplianceEvent": "HealthEvent",
+}
 
 
 def _stable_hash(payload: Mapping[str, Any]) -> str:
@@ -58,6 +67,151 @@ def _float_ts(value: float | None = None) -> float:
     if value is None:
         return datetime.now(timezone.utc).timestamp()
     return float(value)
+
+
+def _float_ts_any(value: Any) -> float:
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if value in {None, ""}:
+        return _float_ts(None)
+    if isinstance(value, (int, float)):
+        return _float_ts(float(value))
+    if isinstance(value, str):
+        text = str(value).strip()
+        if not text:
+            return _float_ts(None)
+        try:
+            return _float_ts(float(text))
+        except Exception:
+            pass
+        try:
+            normalized = text.replace("Z", "+00:00")
+            return datetime.fromisoformat(normalized).timestamp()
+        except Exception:
+            return _float_ts(None)
+    return _float_ts(None)
+
+
+def _legacy_event_mapping(legacy_event: Any) -> dict[str, Any]:
+    if isinstance(legacy_event, Mapping):
+        return dict(legacy_event)
+    if isinstance(legacy_event, UniverseEventEnvelope):
+        return legacy_event.to_dict()
+    to_dict = getattr(legacy_event, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    fields = getattr(legacy_event, "__dict__", None)
+    if isinstance(fields, Mapping):
+        return dict(fields)
+    return {}
+
+
+def adapt_legacy_event(
+    legacy_event: UniverseEventEnvelope | Mapping[str, Any] | Any,
+    *,
+    source: str = "legacy_adapter",
+    metadata: Mapping[str, Any] | None = None,
+) -> UniverseEventEnvelope:
+    if isinstance(legacy_event, UniverseEventEnvelope):
+        return legacy_event
+
+    raw = _legacy_event_mapping(legacy_event)
+    if not raw:
+        raise ValueError("legacy_event_unreadable")
+
+    payload_raw = raw.get("payload", {})
+    if isinstance(payload_raw, Mapping):
+        payload = dict(payload_raw)
+    else:
+        payload = {}
+
+    symbol = str(raw.get("symbol", payload.get("symbol", raw.get("partition_key", "global"))) or "global")
+    venue = str(raw.get("venue", payload.get("venue", "legacy")) or "legacy")
+    payload.setdefault("symbol", symbol)
+    payload.setdefault("venue", venue)
+
+    legacy_event_type = str(raw.get("event_type", "") or "")
+    canonical_event_type = LEGACY_EVENT_TYPE_MAP.get(legacy_event_type, legacy_event_type)
+    if not canonical_event_type:
+        canonical_event_type = "HealthEvent"
+    if canonical_event_type not in CANONICAL_EVENT_TYPES:
+        canonical_event_type = "HealthEvent"
+        payload.setdefault("status", "WARN")
+        payload.setdefault("latency_ms", 0.0)
+        payload.setdefault("health_score", 0.0)
+        payload.setdefault("rejection_ratio", 0.0)
+        payload.setdefault("stale_feed", False)
+        payload.setdefault("desync", False)
+
+    if canonical_event_type == "StrategyProposalEvent":
+        payload.setdefault("strategy", str(payload.get("strategy", "legacy_intent") or "legacy_intent"))
+        side = str(payload.get("side", payload.get("signal_side", "flat")) or "flat").strip().lower()
+        if side not in {"buy", "sell", "flat"}:
+            side = "flat"
+        payload.setdefault("side", side)
+        payload.setdefault("action", "trade" if side in {"buy", "sell"} else "hold")
+        payload.setdefault(
+            "target_notional_quote",
+            max(0.0, float(payload.get("target_notional_quote", payload.get("target_notional", 0.0)) or 0.0)),
+        )
+        payload.setdefault("expected_value_bps", float(payload.get("expected_value_bps", 0.0) or 0.0))
+        payload.setdefault("confidence", float(payload.get("confidence", 0.0) or 0.0))
+    elif canonical_event_type == "HealthEvent":
+        payload.setdefault("status", "OK")
+        payload.setdefault("latency_ms", float(payload.get("latency_ms", 0.0) or 0.0))
+        payload.setdefault("health_score", float(payload.get("health_score", 1.0) or 1.0))
+        payload.setdefault("rejection_ratio", float(payload.get("rejection_ratio", 0.0) or 0.0))
+        payload.setdefault("stale_feed", bool(payload.get("stale_feed", False)))
+        payload.setdefault("desync", bool(payload.get("desync", False)))
+
+    seq = int(raw.get("seq", raw.get("sequence_no", 0)) or 0)
+    checksum = str(raw.get("checksum", "") or "")
+    idempotency_key = str(raw.get("idempotency_key", "") or "").strip()
+    if not idempotency_key:
+        idempotency_key = _stable_hash(
+            {
+                "legacy_event_type": legacy_event_type,
+                "canonical_event_type": canonical_event_type,
+                "symbol": symbol,
+                "venue": venue,
+                "seq": seq,
+                "checksum": checksum,
+                "payload": payload,
+            }
+        )
+    event_id = str(raw.get("event_id", "") or "").strip()
+    if not event_id:
+        event_id = _stable_hash(
+            {
+                "idempotency_key": idempotency_key,
+                "canonical_event_type": canonical_event_type,
+                "source": str(source or raw.get("source", "legacy_adapter")),
+            }
+        )
+
+    meta_payload = {
+        "legacy_event_type": legacy_event_type,
+        "legacy_sequence": seq,
+        "legacy_checksum": checksum,
+        **dict(metadata or {}),
+    }
+    correlation = str(raw.get("correlation_id", "") or "")
+    return build_event(
+        event_id=event_id,
+        event_type=canonical_event_type,
+        source=str(source or raw.get("source", "legacy_adapter")),
+        partition_key=str(raw.get("partition_key", symbol) or symbol),
+        payload=payload,
+        event_time=_float_ts_any(raw.get("event_time", raw.get("ts"))),
+        observed_time=_float_ts_any(raw.get("observed_time", raw.get("ts"))),
+        processed_time=_float_ts_any(raw.get("processed_time", raw.get("ts"))),
+        correlation_id=correlation,
+        sequence_no=max(0, seq),
+        idempotency_key=idempotency_key,
+        metadata=meta_payload,
+    )
 
 
 def _infer_domain(event_type: str, explicit_domain: str = "") -> str:
@@ -610,6 +764,41 @@ class EventFabric:
             metadata=metadata,
         )
         return self.publish(event)
+
+    def ingest_legacy_event(
+        self,
+        legacy_event: UniverseEventEnvelope | Mapping[str, Any] | Any,
+        *,
+        source: str = "legacy_adapter",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> UniverseEventEnvelope | None:
+        try:
+            adapted = adapt_legacy_event(
+                legacy_event,
+                source=source,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            self.metrics.rejected_total += 1
+            self._record_dead_letter(None, reason="legacy_adapter_reject", error=str(exc))
+            self._emit_metrics_hook(kind="reject", reason="legacy_adapter_reject")
+            self._observe_queue_depth()
+            return None
+        return self.publish(adapted)
+
+    def ingest_legacy_events(
+        self,
+        legacy_events: Iterable[UniverseEventEnvelope | Mapping[str, Any] | Any],
+        *,
+        source: str = "legacy_adapter",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> list[UniverseEventEnvelope]:
+        published: list[UniverseEventEnvelope] = []
+        for row in legacy_events:
+            event = self.ingest_legacy_event(row, source=source, metadata=metadata)
+            if event is not None:
+                published.append(event)
+        return published
 
     def replay(
         self,

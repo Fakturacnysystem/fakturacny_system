@@ -1,0 +1,169 @@
+[
+  {
+    "config": "config.kraken_spot.live.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "EUR",
+    "symbol_count": 2,
+    "symbols": [
+      "XBTEUR",
+      "ETHEUR"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.live_canary.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live_testnet",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 2,
+    "symbols": [
+      "XBTUSD",
+      "ETHUSD"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.live_growth.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "XBTUSD"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.live_pro_growth.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "XBTUSD"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.live_profit.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "",
+    "symbol_count": 8,
+    "symbols": [
+      "ADAXBT",
+      "ALGOXBT",
+      "DOTXBT",
+      "SOLXBT",
+      "XXRPXXBT",
+      "XXLMXXBT",
+      "LINKXBT",
+      "XETHXXBT"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.live_readonly.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live_readonly",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 2,
+    "symbols": [
+      "XBTUSD",
+      "ETHUSD"
+    ]
+  },
+  {
+    "config": "config.kraken_spot.paper.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "paper",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "XBTUSD"
+    ]
+  },
+  {
+    "config": "config.paper.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "paper",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "BTCUSDT"
+    ]
+  },
+  {
+    "config": "config.perps_intraday.live.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "BTCUSDT"
+    ]
+  },
+  {
+    "config": "config.perps_intraday.live_canary.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "BTCUSDT"
+    ]
+  },
+  {
+    "config": "config.perps_intraday.live_readonly.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live_readonly",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "BTCUSDT"
+    ]
+  },
+  {
+    "config": "config.perps_intraday.paper.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "paper",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 2,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ]
+  },
+  {
+    "config": "config.perps_intraday.testnet.yaml",
+    "leverage": 0,
+    "market_type": "spot",
+    "mode": "live_testnet",
+    "provider": "paper_sim_provider",
+    "quote": "USD",
+    "symbol_count": 1,
+    "symbols": [
+      "BTCUSDT"
+    ]
+  }
+]

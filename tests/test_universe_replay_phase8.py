@@ -11,6 +11,7 @@ from autonomous_investment_robot.services.universe_core import (
     StrategyProposal,
     StrategyReplayGrade,
     UniverseMind,
+    build_promotion_replay_contract,
 )
 
 
@@ -146,6 +147,29 @@ def test_phase8_deterministic_replay_session_support(tmp_path) -> None:
     assert first.batch_status["batch_id"] == second.batch_status["batch_id"]
     assert first.walk_forward == second.walk_forward
     assert first.comparative_counterfactual == second.comparative_counterfactual
+
+
+def test_phase19_promotion_replay_contract_determinism(tmp_path) -> None:
+    memory = MemoryEngine(str(tmp_path))
+    packets = [_packet(memory, cycle_id=f"contract-{idx}", pnl=1.0 + idx * 0.1) for idx in range(10)]
+    engine = ReplayLadderEngine(max_batch_packets=50)
+    session = engine.run_session(packets=packets, mission_filter="momentum_extraction", capital_scale=0.30)
+    batch_status = dict(session.batch_status)
+    top = batch_status.get("top_strategy_candidates", [])
+    contract_a = build_promotion_replay_contract(
+        batch_status=batch_status,
+        top_strategy_candidates=top if isinstance(top, list) else [],
+        quarantine_strategy_fingerprints=batch_status.get("quarantine_strategy_fingerprints", []),
+    )
+    contract_b = build_promotion_replay_contract(
+        batch_status=batch_status,
+        top_strategy_candidates=top if isinstance(top, list) else [],
+        quarantine_strategy_fingerprints=batch_status.get("quarantine_strategy_fingerprints", []),
+    )
+    assert contract_a["contract_id"] == contract_b["contract_id"]
+    assert contract_a["contract_ready"] is True
+    assert contract_a["required_fields_missing"] == []
+    assert contract_a["deterministic"] is True
 
 
 def test_phase8_decision_reconstruction_and_inferred_markers(tmp_path) -> None:

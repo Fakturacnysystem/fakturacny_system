@@ -1,0 +1,234 @@
+====================================================================================================
+FULL SYSTEM TRUTH AUDIT
+====================================================================================================
+{
+  "phase_reports_complete_1_50": false,
+  "pytest_ok": false,
+  "python_syntax_ok": false,
+  "smoke_imports_ok": true,
+  "shell_syntax_ok": true,
+  "overall_truth_status": "RED"
+}
+
+--- MISSING PHASES 1-50 ---
+[1, 2, 3, 4, 7]
+
+--- PYTHON SYNTAX ERRORS ---
+1
+
+[x] import reportlab.py
+  File "/Users/martinholik/Projects/fakturacny_system/import reportlab.py", line 1
+    python -c "import reportlab; print(reportlab.Version)"
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: invalid syntax
+
+
+--- SMOKE IMPORT FAILURES ---
+0
+
+--- PYTEST ---
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+....................................................................s... [ 38%]
+........................................................................ [ 51%]
+........................................................................ [ 64%]
+................................................F....................... [ 77%]
+........................................F............................... [ 90%]
+.....................................................                    [100%]
+=================================== FAILURES ===================================
+__________ test_memory_research_and_ops_promote_only_to_limited_live ___________
+
+tmp_path = PosixPath('/private/var/folders/nn/n3pthw1d6md_cn8sbp6hhqvw0000gn/T/pytest-of-martinholik/pytest-385/test_memory_research_and_ops_p0')
+
+    def test_memory_research_and_ops_promote_only_to_limited_live(tmp_path) -> None:
+        memory = MemoryEngine(str(tmp_path))
+        world_state = _healthy_world_snapshot().to_dict()
+        packets = []
+        for idx in range(12):
+            packet = memory.build_packet(
+                symbol="XBTUSD",
+                venue="kraken_spot",
+                world_state=world_state,
+                mission={"mission": "momentum_extraction", "confidence": 0.82},
+                proposals=[{"strategy": "microstructure_momentum", "expected_value_bps": 12.0}],
+                selected_strategy="microstructure_momentum",
+                parliament={"selected": {"strategy": "microstructure_momentum"}},
+                execution_plan={"target_notional_quote": 120.0},
+                shield={"mode": "normal", "approved": True},
+                ops_snapshot={"rollout_stage": "paper"},
+                cycle_id=f"cycle-{idx}",
+            )
+            memory.record(packet)
+            packets.append(
+                memory.grade(
+                    packet,
+                    realized_pnl_quote=8.0 if idx < 10 else 2.0,
+                    realized_slippage_bps=2.0,
+                    realized_regime="TREND",
+                    fill_ratio=0.92,
+                )
+            )
+    
+        graded = memory.load(graded=True)
+        summary = memory.aggregate_performance(graded)
+        assert summary["total_records"] == 12
+        assert summary["win_rate"] == 1.0
+    
+        research = ResearchReplayLab().assess(graded)
+        assert research.current_stage == "limited_live"
+        assert research.next_stage == "scaled_live"
+        assert research.ready_to_promote is True
+    
+        allocations = CrossAssetAllocator().allocate(
+            [
+                UniverseAllocationInput("crypto_spot", "crypto_spot", 0.80, 0.90, 0.85, 0.95),
+                UniverseAllocationInput("index_futures", "futures", 0.50, 0.70, 0.80, 0.90),
+            ]
+        )
+        ops = UniverseOpsService().assess(
+            world=_healthy_world_snapshot(),
+            shield=ShieldDecision(mode="normal", approved=True, size_scale=1.0, reason_codes=["normal"], kill_switch=False),
+            research=research,
+            allocations=allocations,
+        )
+        assert ops.rollout_stage == "blocked"
+>       assert ops.manual_gate_required is True
+E       AssertionError: assert False is True
+E        +  where False = UniverseOpsSnapshot(readiness_score=0.894385, rollout_stage='blocked', manual_gate_required=False, blockers=[], notes=..._requested': False, 'phase19_replay_contract_id': '0ebcef8ade9883f851b22fd206127af70b5d1de02879c6a4387c1330b7635902'}}).manual_gate_required
+
+tests/test_universe_core.py:581: AssertionError
+_________ test_phase10_requires_manual_gate_for_limited_live_promotion _________
+
+    def test_phase10_requires_manual_gate_for_limited_live_promotion() -> None:
+        ops = UniverseOpsService().assess(
+            world=_healthy_world(),
+            shield=ShieldDecision(mode="normal", approved=True, size_scale=1.0, reason_codes=[], kill_switch=False),
+            research=PromotionState(current_stage="paper_mode", next_stage="limited_live", ready_to_promote=True, score=0.80),
+            learning_summary=_base_learning_summary(),
+            execution_intelligence=_base_execution_intel(),
+        )
+        decision = ops.rollout_governance["decision"]
+        assert decision["candidate_stage"] == "limited_live_ready"
+>       assert decision["approved"] is False
+E       assert True is False
+
+tests/test_universe_ops_phase10.py:139: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_universe_core.py::test_memory_research_and_ops_promote_only_to_limited_live
+FAILED tests/test_universe_ops_phase10.py::test_phase10_requires_manual_gate_for_limited_live_promotion
+2 failed, 554 passed, 1 skipped in 17.56s
+
+
+
+--- TODO/FIXME/HACK ---
+
+
+--- FEATURE FLAGS ---
+count=0
+
+
+--- POSSIBLE LOW INTEGRATION FILES ---
+tests/test_watchdog_supervisor.py
+tests/test_stuck_position_governor.py
+tests/test_fee_profile_service.py
+tests/test_kraken_futures_connector.py
+tests/test_multi_exchange_manager.py
+tests/test_llm_provider.py
+tests/test_universe_builder_kraken.py
+tests/test_feature_store.py
+tests/test_tco_execution.py
+tests/test_capital_unlock_manager.py
+tests/test_portfolio_optimizer.py
+tests/test_oms.py
+tests/test_hedge_manager.py
+tests/test_market_session_adapter.py
+tests/test_online_validator.py
+tests/test_kraken_record_replay.py
+tests/test_integration_kill_switch.py
+tests/test_order_churn_controller.py
+tests/test_allocator.py
+tests/test_replay_golden.py
+tests/test_safety_preflight.py
+tests/test_modifiers_pipeline.py
+tests/test_account_router.py
+tests/test_exchange_constraints.py
+tests/test_slippage_calibrator.py
+tests/test_feature_cache.py
+tests/test_order_scheduler.py
+tests/test_data_qa_v2.py
+tests/test_replay_golden_perps.py
+tests/test_exchange_constraints_oracle.py
+tests/test_portfolio_backtest_engine.py
+tests/test_mastermind_policy.py
+tests/test_ws_integrity_guard.py
+tests/test_sqlite_audit_tables.py
+tests/test_orchestrator_risk_caps.py
+tests/test_kraken_min_order_guard.py
+tests/test_kraken_live_router.py
+tests/test_research_market_data_engine.py
+tests/test_walkforward_locking.py
+tests/test_toxicity_scorer.py
+tests/test_hybrid_mode.py
+tests/test_kraken_spot_signing.py
+tests/test_market_discovery.py
+tests/test_universe_gateway_auth.py
+tests/test_rate_limit_governor.py
+tests/test_kraken_universe_service.py
+tests/test_storage_sqlite.py
+tests/test_paper_perps_run.py
+tests/test_live_profit_symbol_fixtures.py
+tests/test_universe_gateway_run_registry.py
+tests/test_kraken_live_guard.py
+tests/test_ops_dashboard_kpis.py
+tests/test_mlops.py
+tests/test_kill_flatten_integration.py
+tests/test_pnl_attribution.py
+tests/test_orchestrator_capital_unlock_sell.py
+tests/test_paper_run.py
+tests/test_universe_gateway_projections.py
+tests/test_rate_budget.py
+tests/test_ml_pipeline_skeleton.py
+cli/audit.py
+cli/self_improve.py
+cli/train_model.py
+cli/health.py
+cli/paper.py
+cli/backtest.py
+cli/status.py
+scripts/run_paper.py
+scripts/audit_market_matrix.py
+monitoring/dashboard.py
+src/autonomous_investment_robot/__main__.py
+src/autonomous_investment_robot/connectors/onchain/connectors.py
+src/autonomous_investment_robot/connectors/normalized/connectors.py
+src/autonomous_investment_robot/connectors/macro/connectors.py
+src/autonomous_investment_robot/connectors/news/connectors.py
+src/autonomous_investment_robot/connectors/dex/connectors.py
+src/autonomous_investment_robot/connectors/cex/binance_um_perps.py
+src/autonomous_investment_robot/connectors/cex/connectors.py
+src/autonomous_investment_robot/core/contracts.py
+src/autonomous_investment_robot/universe_gateway/auth.py
+src/autonomous_investment_robot/universe_gateway/ws.py
+src/autonomous_investment_robot/universe_gateway/event_bus.py
+src/autonomous_investment_robot/backtest/harness.py
+src/autonomous_investment_robot/backtest/walk_forward.py
+src/autonomous_investment_robot/monitoring/__init__.py
+src/autonomous_investment_robot/services/research/service.py
+src/autonomous_investment_robot/services/reconciliation/service.py
+src/autonomous_investment_robot/services/llm/__init__.py
+src/autonomous_investment_robot/services/data_qa/service.py
+src/autonomous_investment_robot/services/market_discovery/__init__.py
+src/autonomous_investment_robot/services/models/regime_controller.py
+src/autonomous_investment_robot/services/liquidity_map/__init__.py
+src/autonomous_investment_robot/services/storage/__init__.py
+src/autonomous_investment_robot/services/exchange_constraints/service.py
+src/autonomous_investment_robot/services/ml/__init__.py
+src/autonomous_investment_robot/services/execution/live_kraken_router_service.py
+src/autonomous_investment_robot/services/execution/binance_user_stream.py
+src/autonomous_investment_robot/services/execution/hybrid_mode.py
+src/autonomous_investment_robot/services/governance/__init__.py
+src/autonomous_investment_robot/services/portfolio/__init__.py
+
+--- END ---
+
+JSON_REPORT=/Users/martinholik/Projects/fakturacny_system/audit/FULL_SYSTEM_TRUTH_AUDIT_manual.json

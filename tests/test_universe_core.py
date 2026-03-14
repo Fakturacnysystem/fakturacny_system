@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from autonomous_investment_robot.services.autonomous_decision.engine import DecisionContext
 from autonomous_investment_robot.services.policy.service import OrderIntent
+from autonomous_investment_robot.services.replay.events import MarketEvent, make_event
 from autonomous_investment_robot.services.universe_core import (
     CrossAssetAllocator,
     EventFabric,
@@ -13,9 +14,11 @@ from autonomous_investment_robot.services.universe_core import (
     UniverseAllocationInput,
     UniverseMind,
     UniverseOpsService,
+    WorldStateReadAdapter,
     WorldStateGraph,
     WorldStateStore,
     build_event,
+    strategy_proposals_from_intent,
 )
 
 
@@ -174,6 +177,36 @@ def test_event_fabric_deduplicates_and_projects_world_state(tmp_path) -> None:
     assert snap.confidence_score > 0.40
 
 
+def test_world_state_read_adapter_snapshot_exposes_freshness_and_graph_state() -> None:
+    adapter = WorldStateReadAdapter()
+    snapshot = _healthy_world_snapshot()
+    view = adapter.from_snapshot(snapshot, symbol="XBTUSD", max_age_s=30.0)
+    payload = view.to_dict()
+    assert payload["world_state_available"] is True
+    assert payload["graph_available"] is True
+    assert "market_state" in payload["freshness_s"]
+    assert isinstance(payload["stale_domains"], list)
+
+
+def test_world_state_read_adapter_runtime_observation_degrades_when_unhealthy() -> None:
+    adapter = WorldStateReadAdapter()
+    view = adapter.from_runtime_observation(
+        symbol="XBTUSD",
+        as_of_time=1_700_000_000.0,
+        market_data_stale_s=90.0,
+        ws_healthy=False,
+        drawdown_pct=0.2,
+        regime="PANIC",
+        market_class="crypto_spot",
+        max_age_s=30.0,
+    )
+    payload = view.to_dict()
+    assert payload["world_state_available"] is False
+    assert payload["graph_available"] is False
+    assert payload["safe_to_trade"] is False
+    assert "market_state" in payload["stale_critical_domains"]
+
+
 def test_unified_event_envelope_contains_phase1_contract_fields() -> None:
     event = build_event(
         event_type="MarketTickEvent",
@@ -281,6 +314,106 @@ def test_event_fabric_projection_seed_and_correlation_reconstruction(tmp_path) -
     assert "XBTUSD" in projection["market"]
     assert "XBTUSD" in projection["risk"]
     assert "XBTUSD" in projection["health"]
+
+
+def test_event_fabric_ingests_legacy_replay_events_with_deterministic_dedup(tmp_path) -> None:
+    fabric = EventFabric(str(tmp_path))
+    legacy = make_event(
+        MarketEvent,
+        "MarketEvent",
+        "XBTUSD",
+        "kraken_spot",
+        7,
+        {"mid": 101.5, "spread_bps": 6.2, "realized_vol": 0.009},
+    )
+    first = fabric.ingest_legacy_event(legacy, source="legacy_replay")
+    second = fabric.ingest_legacy_event(legacy, source="legacy_replay")
+    assert first is not None
+    assert second is None
+    assert first.event_type == "MarketTickEvent"
+    assert first.payload["symbol"] == "XBTUSD"
+    assert first.payload["venue"] == "kraken_spot"
+    assert len(fabric.replay()) == 1
+
+
+def test_event_fabric_ingests_legacy_intent_mapping_as_strategy_proposal(tmp_path) -> None:
+    fabric = EventFabric(str(tmp_path))
+    events = fabric.ingest_legacy_events(
+        [
+            {
+                "event_type": "OrderIntentEvent",
+                "symbol": "XBTUSD",
+                "venue": "kraken_spot",
+                "seq": 3,
+                "payload": {
+                    "signal_side": "buy",
+                    "target_notional": 42.0,
+                },
+            }
+        ],
+        source="legacy_replay",
+    )
+    assert len(events) == 1
+    assert events[0].event_type == "StrategyProposalEvent"
+    assert events[0].payload["strategy"] == "legacy_intent"
+    assert events[0].payload["side"] == "buy"
+    assert events[0].payload["target_notional_quote"] == 42.0
+
+
+def test_event_fabric_legacy_adapter_rejects_unreadable_payload_with_dead_letter(tmp_path) -> None:
+    fabric = EventFabric(str(tmp_path))
+    rejected = fabric.ingest_legacy_event(42, source="legacy_replay")
+    assert rejected is None
+    metrics = fabric.metrics_snapshot()
+    assert metrics["rejected_total"] >= 1
+    dead_letter = tmp_path / "universe_event_dead_letter.jsonl"
+    assert dead_letter.exists()
+    text = dead_letter.read_text(encoding="utf-8")
+    assert "legacy_adapter_reject" in text
+
+
+def test_strategy_proposals_from_intent_prefers_serialized_contract_payload() -> None:
+    intent = OrderIntent(
+        symbol="XBTUSD",
+        side="buy",
+        target_notional=99.0,
+        why={
+            "strategy_proposals": [
+                {
+                    "strategy": "serialized_momentum",
+                    "instrument": "XBTUSD",
+                    "action": "trade",
+                    "side": "buy",
+                    "target_notional_quote": 12.5,
+                    "expected_value_bps": 9.0,
+                    "confidence": 0.77,
+                    "expected_hold_time_s": 30.0,
+                    "execution_sensitivity": 0.5,
+                    "slippage_risk_bps": 1.0,
+                    "regime_compatibility": 0.9,
+                    "risk_cost_bps": 1.5,
+                    "source": "legacy_policy_adapter",
+                }
+            ],
+            "components": [
+                {
+                    "strategy": "component_should_not_override_serialized",
+                    "signal_side": "sell",
+                    "signal_notional": 20.0,
+                }
+            ],
+        },
+    )
+    rows_a = strategy_proposals_from_intent(intent, mission="momentum_extraction")
+    rows_b = strategy_proposals_from_intent(intent, mission="momentum_extraction")
+
+    payload_a = [row.to_dict() for row in rows_a]
+    payload_b = [row.to_dict() for row in rows_b]
+    assert payload_a == payload_b
+    assert payload_a[0]["strategy"] == "serialized_momentum"
+    assert payload_a[0]["source"] == "legacy_policy_adapter"
+    assert payload_a[0]["target_notional_quote"] == 12.5
+    assert any(row["strategy"] == "no_trade_guardian" for row in payload_a)
 
 
 def test_universe_mind_cycle_from_context_and_intent_generates_plan(tmp_path) -> None:
@@ -444,8 +577,9 @@ def test_memory_research_and_ops_promote_only_to_limited_live(tmp_path) -> None:
         research=research,
         allocations=allocations,
     )
-    assert ops.rollout_stage == "limited_live"
+    assert ops.rollout_stage == "blocked"
     assert ops.manual_gate_required is True
+    assert ops.rollout_governance["decision"]["candidate_stage"] == "limited_live_ready"
     assert ops.readiness_score > 0.70
     assert ops.world_state_available is True
     assert ops.world_state_summary["market"]["regime"] == "TREND"

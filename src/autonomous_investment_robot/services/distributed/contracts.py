@@ -9,6 +9,8 @@ from typing import Any, Mapping
 
 DEFAULT_STREAM_PREFIX = "autobot"
 DEFAULT_PAYLOAD_VERSION = "v1"
+DEFAULT_GROUP_LIVE_NODE = "live_node"
+DEFAULT_GROUP_COMPUTE_NODE = "compute_node"
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,25 @@ class DistributedStreamNames:
             result_rankings=f"{root}.results.rankings",
             audit_events=f"{root}.events.audit",
         )
+
+
+@dataclass(frozen=True)
+class DistributedConsumerGroups:
+    """Canonical consumer-group names for distributed Redis streams."""
+
+    live_node: str = DEFAULT_GROUP_LIVE_NODE
+    compute_node: str = DEFAULT_GROUP_COMPUTE_NODE
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        live_node: str | None = None,
+        compute_node: str | None = None,
+    ) -> "DistributedConsumerGroups":
+        live = str(live_node or DEFAULT_GROUP_LIVE_NODE).strip() or DEFAULT_GROUP_LIVE_NODE
+        compute = str(compute_node or DEFAULT_GROUP_COMPUTE_NODE).strip() or DEFAULT_GROUP_COMPUTE_NODE
+        return cls(live_node=live, compute_node=compute)
 
 
 @dataclass(frozen=True)

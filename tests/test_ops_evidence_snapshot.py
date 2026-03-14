@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from autonomous_investment_robot.services.ops.evidence import DecisionTickEmitter, build_evidence_snapshot
+from autonomous_investment_robot.services.ops.service import OpsService
 
 
 def test_build_evidence_snapshot_schema_stable() -> None:
@@ -35,3 +36,57 @@ def test_decision_tick_emitter_global_mode() -> None:
     assert emitter.should_emit(symbol="XBTUSD", now_ts=90.0) is True
     assert emitter.should_emit(symbol="ETHUSD", now_ts=90.1) is False
     assert emitter.should_emit(symbol="ETHUSD", now_ts=121.0) is True
+
+
+def test_ops_service_records_universe_memory_trace_with_bounded_retention(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AUTONOMOUS_UNIVERSE_MEMORY_TRACE_MAX_ROWS", "3")
+    ops = OpsService(str(tmp_path))
+    for idx in range(5):
+        row = ops.record_universe_memory_trace(
+            {
+                "ts": 100.0 + idx,
+                "symbol": "xbteur",
+                "action": "buy",
+                "reason": f"r{idx}",
+                "packet_id": f"pkt-{idx}",
+                "mission": "momentum_extraction",
+                "shield_mode": "normal",
+                "execution_abort": False,
+                "gated_by": [],
+                "bounded_retention_status": "healthy",
+                "bounded_retention_within_limit": True,
+                "errors_count": 0,
+                "world_state_source": "runtime_observation",
+                "world_state_available": True,
+                "world_state_graph_available": True,
+                "world_state_safe_to_trade": True,
+                "world_state_stale_domains": [],
+                "world_state_stale_critical_domains": [],
+            }
+        )
+        assert row["symbol"] == "XBTEUR"
+        assert row["world_state_source"] == "runtime_observation"
+    trace_path = tmp_path / "universe_memory_trace.jsonl"
+    lines = [line for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 3
+    assert ops.metrics["universe_memory_trace_rows"] == 3.0
+    assert ops.metrics["universe_memory_trace_last_has_packet"] == 1.0
+
+
+def test_ops_service_memory_trace_world_state_defaults(tmp_path) -> None:
+    ops = OpsService(str(tmp_path))
+    row = ops.record_universe_memory_trace(
+        {
+            "ts": 200.0,
+            "symbol": "ethusd",
+            "action": "hold",
+            "reason": "default_world_state_diag",
+        }
+    )
+    assert row["symbol"] == "ETHUSD"
+    assert row["world_state_source"] == ""
+    assert row["world_state_available"] is False
+    assert row["world_state_graph_available"] is False
+    assert row["world_state_safe_to_trade"] is False
+    assert row["world_state_stale_domains"] == []
+    assert row["world_state_stale_critical_domains"] == []

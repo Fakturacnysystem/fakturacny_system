@@ -1,0 +1,34 @@
+SYSTEM OVERRIDE: CONTINUE PRODUCTION IMPLEMENTATION.
+
+You previously stopped during Phase 4 Strategy Parliament build.
+This is NOT cancellation.
+This is session continuation.
+
+MISSION NOW:
+Finish FULL Phase 4 production implementation.
+
+REQUIRED COMPLETION SCOPE:
+- finalize services/universe_core/parliament.py
+- implement full diagnostics propagation
+- mission filtering enforcement
+- correlation + conflict penalties final logic
+- allocations weighting final logic
+- integration into UniverseMind service cycle
+- ops readiness snapshot enrichment
+- universe memory persistence updates
+- backward compatibility adapters
+- strict unit tests coverage for parliament
+- full repository pytest pass
+
+RULES:
+- do not stop mid-phase
+- do not ask confirmation
+- do not output partial roadmap
+- implement → test → fix → retest until green
+
+FINAL STEP:
+print STRICT PHASE 4 COMPLETION REPORT with:
+files_changed
+integration_status
+runtime_safety_status
+next_phase_recommendation

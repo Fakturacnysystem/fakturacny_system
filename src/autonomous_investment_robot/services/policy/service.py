@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import defaultdict
 import os
+from typing import Any
 
 from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings, TCOSettings, UNSPECIFIED
 from autonomous_investment_robot.services.models.service import Forecast
@@ -17,6 +18,7 @@ from autonomous_investment_robot.services.policy.strategy_plugins import (
     TrendStrategy,
 )
 from autonomous_investment_robot.services.policy.tco import edge_from_bps, estimate_cost, should_trade
+from autonomous_investment_robot.services.universe_core.parliament import StrategyProposal
 
 
 @dataclass
@@ -25,6 +27,110 @@ class OrderIntent:
     side: str
     target_notional: float
     why: dict
+
+
+def _normalize_side(value: Any) -> str:
+    side = str(value or "flat").strip().lower()
+    if side in {"buy", "sell", "flat"}:
+        return side
+    return "flat"
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _serialize_strategy_proposals_from_components(
+    *,
+    symbol: str,
+    components: list[dict[str, object]],
+    target_notional: float,
+    fallback_side: str,
+    fallback_confidence: float,
+    regime: str,
+    liquidity_regime: str,
+) -> list[dict[str, object]]:
+    proposals: list[StrategyProposal] = []
+    safe_target = max(0.0, float(target_notional))
+    for idx, component in enumerate(components):
+        strategy = str(component.get("strategy", "") or f"component_{idx + 1}")
+        side = _normalize_side(component.get("signal_side", fallback_side))
+        weight = max(0.0, _safe_float(component.get("weight", 0.0), 0.0))
+        allocated_notional = max(0.0, safe_target * weight)
+        if side not in {"buy", "sell"} or allocated_notional <= 0.0:
+            continue
+        reason_codes = component.get("reason_codes", [])
+        if not isinstance(reason_codes, list):
+            reason_codes = []
+        proposals.append(
+            StrategyProposal(
+                strategy=strategy,
+                instrument=str(symbol),
+                action="trade",
+                side=side,
+                target_notional_quote=allocated_notional,
+                expected_value_bps=_safe_float(component.get("final_edge_bps", component.get("edge_bps", 0.0)), 0.0),
+                confidence=_safe_float(component.get("confidence", fallback_confidence), fallback_confidence),
+                expected_hold_time_s=_safe_float(component.get("expected_hold_time_s", 45.0), 45.0),
+                execution_sensitivity=_safe_float(component.get("execution_sensitivity", 0.4), 0.4),
+                slippage_risk_bps=_safe_float(
+                    component.get("slippage_risk_bps", component.get("impact_bps", 0.0)),
+                    0.0,
+                ),
+                regime_compatibility=_safe_float(component.get("regime_fit", 1.0), 1.0),
+                risk_cost_bps=_safe_float(component.get("cost_total_bps", 0.0), 0.0),
+                reason_codes=tuple([*(str(code) for code in reason_codes if str(code)), "legacy_policy_adapter"]),
+                source="legacy_policy_adapter",
+                metadata={
+                    "component_index": int(idx),
+                    "allocator_weight": weight,
+                    "allocator_weight_raw": _safe_float(component.get("allocator_weight_raw", weight), weight),
+                    "signal_notional": _safe_float(component.get("signal_notional", allocated_notional), allocated_notional),
+                    "regime": str(regime),
+                    "liquidity_regime": str(liquidity_regime),
+                },
+                correlation_group=str(component.get("family", component.get("correlation_group", "")) or ""),
+                robustness_score=_safe_float(component.get("robustness_score", 1.0), 1.0),
+            )
+        )
+
+    if not proposals and safe_target > 0.0 and fallback_side in {"buy", "sell"}:
+        proposals.append(
+            StrategyProposal(
+                strategy="intent_primary",
+                instrument=str(symbol),
+                action="trade",
+                side=fallback_side,
+                target_notional_quote=safe_target,
+                expected_value_bps=0.0,
+                confidence=max(0.0, min(1.0, float(fallback_confidence))),
+                expected_hold_time_s=45.0,
+                execution_sensitivity=0.4,
+                slippage_risk_bps=0.0,
+                regime_compatibility=1.0,
+                risk_cost_bps=0.0,
+                reason_codes=("intent_primary_fallback", "legacy_policy_adapter"),
+                source="legacy_policy_adapter",
+                metadata={
+                    "fallback": True,
+                    "regime": str(regime),
+                    "liquidity_regime": str(liquidity_regime),
+                },
+            )
+        )
+
+    proposals.sort(
+        key=lambda proposal: (
+            proposal.strategy,
+            proposal.side,
+            proposal.instrument,
+            round(float(proposal.target_notional_quote), 8),
+        )
+    )
+    return [proposal.to_dict() for proposal in proposals]
 
 
 def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float:
@@ -354,6 +460,18 @@ class PolicyService:
                 "side": side,
             }
             return None
+        proposal_adapter_enabled = _env_bool("AUTONOMOUS_STRATEGY_PROPOSAL_ADAPTER_ENABLED", False)
+        strategy_proposals: list[dict[str, object]] = []
+        if proposal_adapter_enabled:
+            strategy_proposals = _serialize_strategy_proposals_from_components(
+                symbol=fc.symbol,
+                components=why_parts,
+                target_notional=target,
+                fallback_side=side,
+                fallback_confidence=fc.confidence,
+                regime=fc.regime,
+                liquidity_regime=fc.liquidity_regime,
+            )
         why_payload: dict[str, object] = {
             "confidence": fc.confidence,
             "regime": fc.regime,
@@ -367,6 +485,9 @@ class PolicyService:
             "strategy_regime_cooldowns": {f"{k[0]}@{k[1]}": v for k, v in sorted(self.strategy_regime_cooldowns.items()) if v > 0},
             "components": why_parts,
         }
+        if proposal_adapter_enabled:
+            why_payload["strategy_proposals"] = strategy_proposals
+            why_payload["strategy_proposals_contract_version"] = "v1"
         if policy_tuning_enabled:
             why_payload["policy_tuning"] = {
                 "enabled": True,

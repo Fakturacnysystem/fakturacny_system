@@ -1,0 +1,22 @@
+RUN_DIR: runs/kraken_ultra_profit_full_throttle                                 
+                                                                                
+-n SYSTEM_STATE:                                                                
+BLOCKED                                                                         
+-n EXECUTION TOPIC:                                                             
+true                                                                            
+-n SUBMITTED ORDERS:                                                            
+0                                                                               
+-n BLOCKED ORDERS:                                                              
+247                                                                             
+                                                                                
+TOP BLOCKERS:                                                                   
+{                                                                               
+  "cooldown_active": {                                                          
+    "count": 3,                                                                 
+    "last_occurrence_ts": 0.0,                                                  
+    "symbol": "XXBTZUSD"                                                        
+  },                                                                            
+  "insufficient_balance": {                                                     
+    "count": 25,                                                                
+    "last_occurrence_ts": 0.0,                                                  
+    "symbol": "ADAEUR"                                                          

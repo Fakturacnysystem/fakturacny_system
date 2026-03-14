@@ -39,6 +39,14 @@ class _TokenBucket:
         self.tokens -= need
         return True
 
+    def refund(self, n: int, now_ts: float) -> None:
+        """Return tokens for internal no-op paths that did not submit upstream."""
+        self._refill(now_ts)
+        give_back = max(0.0, float(n))
+        if give_back <= 0.0:
+            return
+        self.tokens = min(self.capacity, self.tokens + give_back)
+
 
 @dataclass
 class RateBudgetState:
@@ -109,6 +117,16 @@ class RateBudget:
             return False
         return self.private_bucket.try_consume(max(1, int(n)), now)
 
+    def refund_public(self, n: int = 1, *, now_ts: float | None = None) -> None:
+        """Refund public-call budget when no outbound request was sent."""
+        now = time.time() if now_ts is None else float(now_ts)
+        self.public_bucket.refund(max(1, int(n)), now)
+
+    def refund_private(self, n: int = 1, *, now_ts: float | None = None) -> None:
+        """Refund private-call budget when no outbound request was sent."""
+        now = time.time() if now_ts is None else float(now_ts)
+        self.private_bucket.refund(max(1, int(n)), now)
+
     def record_reject(self, kind: str, reason: str, *, now_ts: float | None = None) -> None:
         now = time.time() if now_ts is None else float(now_ts)
         k = str(kind or "").lower()
@@ -142,4 +160,3 @@ class RateBudget:
             circuit_breaker_until_ts=float(self._circuit_breaker_until_ts),
             consecutive_rate_limit_errors=int(self._consecutive_rate_limit_errors),
         )
-

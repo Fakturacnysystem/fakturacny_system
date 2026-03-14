@@ -37,6 +37,11 @@ Default stream prefix: `autobot`
 - audit:
   - `autobot.events.audit`
 
+Consumer groups:
+
+- `live_node` (live runtime consumers)
+- `compute_node` (compute workers)
+
 Envelope fields:
 
 - `task_id`
@@ -61,6 +66,8 @@ Distributed compute is optional at runtime:
 
 - if remote compute is unavailable, live node can use local fallback (configurable)
 - fallback never bypasses risk gates or execution guardrails
+- live mode is manually gated (operator confirmation artifact + `AUTONOMOUS_LIVE_GO=1`)
+- default launcher behavior is paper-safe when manual live gate is not satisfied
 
 ## Deployment Artifacts
 
@@ -72,3 +79,14 @@ Distributed compute is optional at runtime:
 - `scripts/start_live_node.sh`
 - `scripts/start_compute_node.sh`
 - `scripts/start_ultra_profit_cluster.sh`
+- `scripts/validate_deployment_manifests.py`
+
+## Verification Boundaries
+
+Distributed/cloud readiness must be proven in three layers:
+
+- **code/test proof**: contracts and tests pass
+- **host proof**: docker/compose validation succeeds on the current machine
+- **runtime proof**: run artifacts show `compute_bridge.backend=redis_streams` and postgres mirror enabled/healthy
+
+If runtime diagnostics show `backend=local`, the system is in safe fallback mode, not fully proven distributed mode.

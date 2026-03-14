@@ -444,3 +444,122 @@ After:
 - Variant A: **partially implemented** (code and artifacts ready; host docker/runtime infra still required externally).
 - Practical Variant 1: **partially implemented** (live/compute separation and contracts implemented; full cluster runtime blocked in this host by missing docker/redis service runtime).
 - Variant 2: **scaffolded** (service boundaries/contracts prepared; full microservice extraction intentionally deferred).
+
+## 2026-03-09 Distributed Contract Hardening Pass
+
+### What Changed
+
+- Added Redis Streams consumer-group contracts:
+  - `live_node`
+  - `compute_node`
+- Hardened `RedisComputeBridge` to:
+  - initialize stream groups
+  - read result stream via `XREADGROUP`
+  - ACK consumed ranking results
+  - expose consumer-group diagnostics
+- Hardened `RedisComputeWorker` to:
+  - consume `scan`, `forecast`, and `optimize` tasks via `XREADGROUP`
+  - ACK processed/skipped tasks
+  - publish ranking/signal/audit envelopes
+  - keep compute errors non-fatal to live safety path
+- Added non-blocking distributed audit publish path:
+  - `OpsService.audit_event()` writes local audit log and best-effort publishes to `autobot.events.audit`
+- Added deployment manifest validator:
+  - `scripts/validate_deployment_manifests.py`
+  - validates compose/env templates even when Docker CLI is unavailable
+
+### Validation Snapshot
+
+- Compile: pass
+- Targeted tests: `tests/test_distributed_services.py` => `9 passed`
+- Full tests: `335 passed, 1 skipped`
+- Deploy manifest validation: pass
+- Config matrix audit: pass (`13 configs, 0 errors`)
+- Live runtime relaunched in ultra mode and audited:
+  - run dir: `runs/kraken_ultra_profit_full_throttle`
+  - `SYSTEM_STATE=BLOCKED`
+  - hard invariants: no violations
+  - dominant blockers: `cooldown_active`, `no_intent`, `insufficient_balance`
+
+### Remaining Truth
+
+- Distributed architecture is materially improved and wired into the real runtime path.
+- Full distributed cluster validation in this machine remains externally constrained by missing Docker/Redis daemon availability.
+- Live trading throughput remains economically/risk blocked by valid runtime guards, not by broken distributed wiring.
+
+## 2026-03-09 Causal Market Twin Engine Pass
+
+### Architecture Upgrade
+
+Implemented a real runtime `CausalMarketTwinEngine` in:
+- `src/autonomous_investment_robot/services/autonomous_decision/causal_market_twin.py`
+
+Implemented submodules:
+- `RealityStateBuilder`
+- `CausalDriverEstimator`
+- `CounterfactualScenarioEngine`
+- `PathForecastEngine`
+- `ExecutionTwinEngine`
+- `DecisionArbitrationEngine`
+
+Implemented key data models:
+- `MarketTwinSnapshot`
+- `CausalExplanation`
+- `DecisionScenario`
+- `ExecutionScenario`
+- `PathRiskProfile`
+
+### Runtime Integration Points
+
+Wired into real decision runtime:
+- `src/autonomous_investment_robot/services/autonomous_decision/engine.py`
+  - inside `run_decision_algorithm()` before risk finalization / route selection
+  - affects:
+    - entry gating (`counterfactual_no_edge`, `counterfactual_wait_preferred`)
+    - route preference (`maker`/`taker`)
+    - bounded position sizing scale
+    - optional exit override (`partial_close`/`full_close`)
+  - persists bounded snapshots into `engine.model_state`
+  - attaches structured diagnostics via `diagnostics.market_twin`
+
+Orchestrator audit wiring:
+- `src/autonomous_investment_robot/core/orchestrator.py`
+  - adds `signal_age_s` into `DecisionContext`
+  - emits `market_twin_*` fields in `decision_brain_tick`
+
+### Counterfactual MVP Status
+
+Counterfactual Entry Engine MVP is implemented and runtime-active:
+- market entry now
+- limit entry now
+- wait one cadence
+- skip
+
+Per-scenario evaluation includes:
+- expected net edge after costs
+- fill probability
+- slippage/adverse selection proxies
+- interim drawdown/false-breakout/signal-decay risk
+- path quality
+
+### Validation Snapshot
+
+- `python3 -m py_compile` on changed files: pass
+- targeted tests:
+  - `tests/test_causal_market_twin_engine.py`
+  - `tests/test_autonomous_decision_engine.py`
+  - result: pass
+- full suite: `348 passed, 1 skipped`
+- repo validations:
+  - `scripts/verify_harmony.sh`: pass
+  - `scripts/audit_config_matrix.py`: pass
+  - `scripts/validate_deployment_manifests.py`: pass
+- safe runtime path:
+  - `scripts/run_paper.sh`: pass
+  - runtime audit output: `runs/latest_runtime_audit_market_twin.json`
+
+### Known Data Limits (Truthful)
+
+- Causal attribution is probabilistic/heuristic, not deterministic proof.
+- Optional modalities (news/macro/fundamentals/sentiment) are used only when present.
+- Queue-position level execution modeling remains approximate because full L2 queue data is not always available.
