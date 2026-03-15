@@ -1,0 +1,43 @@
+import pytest
+from src.autonomous_investment_robot.services.autonomous_decision.engine import AutonomousMarketPredictionAndDecisionEngine
+
+def test_forecast_return_distribution_basic():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_return": 0.05, "expected_volatility": 0.02}
+    result = engine.forecast_return_distribution(features)
+    assert "mean" in result and "std" in result and "quantiles" in result
+
+def test_build_conformal_prediction_interval():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_return": 0.05, "expected_volatility": 0.02}
+    forecast = engine.forecast_return_distribution(features)
+    lower, upper = engine.build_conformal_prediction_interval(forecast, alpha=0.1)
+    assert lower < upper
+
+def test_forecast_volatility_distribution():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_volatility": 0.03}
+    result = engine.forecast_volatility_distribution(features)
+    assert "mean" in result and "std" in result and "quantiles" in result
+    assert result["mean"] > 0
+
+def test_forecast_drawdown_risk():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_return": 0.01, "expected_volatility": 0.02}
+    result = engine.forecast_drawdown_risk(features)
+    assert "max_drawdown" in result and "quantiles" in result
+    assert 0 <= result["max_drawdown"] <= 1
+
+def test_quantify_prediction_uncertainty():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_return": 0.02, "expected_volatility": 0.01}
+    forecast = engine.forecast_return_distribution(features)
+    uncertainty = engine.quantify_prediction_uncertainty(forecast)
+    assert uncertainty >= 0
+
+def test_score_signal_confidence():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    features = {"expected_return": 0.03, "expected_volatility": 0.01}
+    forecast = engine.forecast_return_distribution(features)
+    score = engine.score_signal_confidence(forecast)
+    assert isinstance(score, float)

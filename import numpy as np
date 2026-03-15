@@ -1,0 +1,329 @@
+import numpy as np
+from typing import Tuple, Dict, Any
+
+class AutonomousMarketPredictionAndDecisionEngine:
+    # ...existing code...
+
+    def nowcast_market_conditions(self, ctx) -> dict:
+        """Nowcast short-term (micro) market conditions."""
+        return {
+            "micro_trend": ctx.market_watch.get("trend_30s_bps", 0.0),
+            "micro_vol": ctx.market_watch.get("realized_vol_2m", 0.0),
+            "spread": ctx.spread_bps,
+        }
+
+    def estimate_market_state(self, ctx) -> dict:
+        """Estimate tactical and strategic market state."""
+        return {
+            "tactical_trend": ctx.market_watch.get("trend_2m_bps", 0.0),
+            "strategic_trend": ctx.market_watch.get("trend_10m_bps", 0.0),
+            "macro_risk_on": ctx.features.get("macro_risk_on", 0.0),
+        }
+
+    def generate_trade_signal(self, ctx) -> dict:
+        """Fuse multi-horizon signals into a trade signal."""
+        micro = self.nowcast_market_conditions(ctx)
+        state = self.estimate_market_state(ctx)
+        # Jednoduchá vážená fúzia (prispôsobte podľa potreby)
+        score = (
+            0.5 * micro["micro_trend"] +
+            0.3 * state["tactical_trend"] +
+            0.2 * state["strategic_trend"]
+        )
+        return {"signal_score": score}
+
+    def decide_trade_entry(self, ctx, signal: dict) -> bool:
+        """Rozhodnutie o vstupe na základe multi-horizon signálu."""
+        return signal["signal_score"] > self.confidence_threshold
+
+    def decide_trade_exit(self, ctx, signal: dict) -> bool:
+        """Rozhodnutie o exite na základe multi-horizon signálu."""
+        return signal["signal_score"] < -self.confidence_threshold
+
+    def manage_open_position(self, ctx, signal: dict) -> str:
+        """Správa otvorenej pozície: hold, add, reduce, close."""
+        if self.decide_trade_exit(ctx, signal):
+            return "close"
+        elif self.decide_trade_entry(ctx, signal):
+            return "add"
+        return "hold"
+
+    def detect_market_regime(self, ctx) -> dict:
+        """Detect current market regime based on multi-horizon features."""
+        regime = {}
+        # Microstructure regime
+        if ctx.spread_bps > 100:
+            regime["microstructure"] = "stress"
+        else:
+            regime["microstructure"] = "normal"
+        # Volatility regime
+        vol = ctx.market_watch.get("realized_vol_2m", 0.0)
+        if vol > 0.08:
+            regime["volatility"] = "high"
+        elif vol < 0.02:
+            regime["volatility"] = "low"
+        else:
+            regime["volatility"] = "normal"
+        # Trend regime
+        trend = ctx.market_watch.get("trend_10m_bps", 0.0)
+        if trend > 50:
+            regime["trend"] = "bull"
+        elif trend < -50:
+            regime["trend"] = "bear"
+        else:
+            regime["trend"] = "sideways"
+        # Liquidity regime
+        liquidity = ctx.features.get("liquidity_pressure", 0.0)
+        regime["liquidity"] = "tight" if liquidity > 0.7 else "normal"
+        # Risk-on/off regime
+        risk_on = ctx.features.get("macro_risk_on", 0.0)
+        regime["risk"] = "risk_on" if risk_on > 0.5 else "risk_off"
+        # Compression/breakout/panic/chop
+        if vol < 0.015 and abs(trend) < 10:
+            regime["structure"] = "compression"
+        elif vol > 0.09 and abs(trend) > 80:
+            regime["structure"] = "breakout"
+        elif vol > 0.12:
+            regime["structure"] = "panic"
+        else:
+            regime["structure"] = "chop"
+        return regime
+
+    def switch_trading_regime(self, ctx, detected_regime: dict) -> str:
+        """Switch trading logic based on detected regime."""
+        if detected_regime.get("structure") == "panic":
+            return "pause"
+        if detected_regime.get("microstructure") == "stress":
+            return "reduce_size"
+        if detected_regime.get("trend") == "bull":
+            return "prefer_long"
+        if detected_regime.get("trend") == "bear":
+            return "hold"
+        return "normal"
+
+    def run_decision_algorithm(self, ctx):
+        signal = self.generate_trade_signal(ctx)
+        entry = self.decide_trade_entry(ctx, signal)
+        exit_ = self.decide_trade_exit(ctx, signal)
+        position_action = self.manage_open_position(ctx, signal)
+        regime = self.detect_market_regime(ctx)
+        regime_action = self.switch_trading_regime(ctx, regime)
+        # ...kombinujte s risk/regime guards, auditujte do diagnostics...
+        # ...vráťte DecisionOutput s multi-horizon diagnostikou...
+
+    def forecast_return_distribution(
+        self, 
+        features: Dict[str, Any], 
+        horizon_s: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Forecast the return distribution over the specified horizon.
+        Returns dict with mean, std, quantiles, and full distribution array.
+        """
+        # Example: Use a normal approximation (replace with model if available)
+        mu = features.get("expected_return", 0.0)
+        sigma = features.get("expected_volatility", 0.01)
+        dist = np.random.normal(mu, sigma, 10000)
+        quantiles = np.percentile(dist, [5, 25, 50, 75, 95])
+        return {
+            "mean": float(np.mean(dist)),
+            "std": float(np.std(dist)),
+            "quantiles": quantiles.tolist(),
+            "distribution": dist.tolist()  # For diagnostics, not for logging
+        }
+
+    def forecast_volatility_distribution(
+        self, 
+        features: Dict[str, Any], 
+        horizon_s: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Forecast the volatility distribution over the specified horizon.
+        Returns dict with mean, std, quantiles, and full distribution array.
+        """
+        sigma = features.get("expected_volatility", 0.01)
+        dist = np.abs(np.random.normal(sigma, sigma * 0.5, 10000))
+        quantiles = np.percentile(dist, [5, 25, 50, 75, 95])
+        return {
+            "mean": float(np.mean(dist)),
+            "std": float(np.std(dist)),
+            "quantiles": quantiles.tolist(),
+            "distribution": dist.tolist()
+        }
+
+    def forecast_drawdown_risk(
+        self, 
+        features: Dict[str, Any], 
+        horizon_s: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Estimate downside/drawdown risk over the specified horizon.
+        Returns dict with max drawdown, expected drawdown, and quantiles.
+        """
+        returns = np.random.normal(
+            features.get("expected_return", 0.0), 
+            features.get("expected_volatility", 0.01), 
+            10000
+        )
+        cum_returns = np.cumprod(1 + returns / 100)
+        drawdowns = 1 - cum_returns / np.maximum.accumulate(cum_returns)
+        max_drawdown = np.max(drawdowns)
+        quantiles = np.percentile(drawdowns, [5, 25, 50, 75, 95])
+        return {
+            "max_drawdown": float(max_drawdown),
+            "quantiles": quantiles.tolist(),
+            "distribution": drawdowns.tolist()
+        }
+
+    def quantify_prediction_uncertainty(
+        self, 
+        forecast: Dict[str, Any]
+    ) -> float:
+        """
+        Quantify uncertainty of a forecast (e.g., std/mean ratio).
+        """
+        mean = forecast.get("mean", 0.0)
+        std = forecast.get("std", 0.0)
+        if abs(mean) > 1e-8:
+            return float(std / abs(mean))
+        return float(std)
+
+    def build_conformal_prediction_interval(
+        self, 
+        forecast: Dict[str, Any], 
+        alpha: float = 0.1
+    ) -> Tuple[float, float]:
+        """
+        Build a conformal prediction interval at (1-alpha) confidence.
+        """
+        lower = np.percentile(forecast["distribution"], 100 * (alpha / 2))
+        upper = np.percentile(forecast["distribution"], 100 * (1 - alpha / 2))
+        return float(lower), float(upper)
+
+    def score_signal_confidence(
+        self, 
+        forecast: Dict[str, Any]
+    ) -> float:
+        """
+        Score signal confidence (e.g., Sharpe-like or quantile separation).
+        """
+        mean = forecast.get("mean", 0.0)
+        std = forecast.get("std", 1e-8)
+        return float(mean / std if std > 1e-8 else 0.0)
+
+    def analyze_order_flow_imbalance(self, ctx) -> float:
+        """Estimate order flow imbalance (OFI) as a proxy for pressure."""
+        buy_vol = ctx.features.get("buy_volume", 0.0)
+        sell_vol = ctx.features.get("sell_volume", 0.0)
+        total = buy_vol + sell_vol
+        if total == 0:
+            return 0.0
+        return (buy_vol - sell_vol) / total
+
+    def model_limit_order_book(self, ctx) -> dict:
+        """Return basic LOB state (stub, extend for full L2 modeling)."""
+        return {
+            "bid_depth": ctx.features.get("bid_depth", 0.0),
+            "ask_depth": ctx.features.get("ask_depth", 0.0),
+            "spread": ctx.spread_bps,
+        }
+
+    def estimate_liquidity_pressure(self, ctx) -> float:
+        """Estimate liquidity pressure (0=loose, 1=tight)."""
+        bid = ctx.features.get("bid_depth", 1.0)
+        ask = ctx.features.get("ask_depth", 1.0)
+        spread = ctx.spread_bps
+        return min(1.0, max(0.0, (spread / 100.0) + (1.0 - min(bid, ask))))
+
+    def estimate_execution_latency_risk(self, ctx) -> float:
+        """Estimate risk from execution latency (stub, extend as needed)."""
+        latency_ms = ctx.features.get("latency_ms", 100)
+        return min(1.0, latency_ms / 1000.0)
+
+    def estimate_transaction_costs(self, ctx) -> float:
+        """Estimate transaction costs in bps."""
+        spread = ctx.spread_bps
+        fee = ctx.features.get("fee_bps", 10.0)
+        slippage = ctx.features.get("slippage_bps", 2.0)
+        return spread + fee + slippage
+
+    def control_slippage(self, ctx, intended_size: float) -> float:
+        """Control slippage by adjusting order size or price."""
+        liquidity = self.estimate_liquidity_pressure(ctx)
+        if liquidity > 0.8:
+            return intended_size * 0.5  # reduce size in tight liquidity
+        return intended_size
+
+    # ...existing code...
+
+def _base_context():
+    class DummyCtx:
+        def __init__(self):
+            self.market_watch = {
+                "trend_30s_bps": 0.0,
+                "trend_2m_bps": 0.0,
+                "trend_10m_bps": 0.0,
+                "realized_vol_2m": 0.0,
+            }
+            self.spread_bps = 0.0
+            self.features = {
+                "macro_risk_on": 0.0,
+                "liquidity_pressure": 0.0,
+                "expected_return": 0.0,
+                "expected_volatility": 0.01,
+            }
+    return DummyCtx()
+
+def test_decision_engine_multi_horizon_signal_fusion():
+    engine = AutonomousMarketPredictionAndDecisionEngine(confidence_threshold=0.5)
+    ctx = _base_context()
+    ctx.market_watch["trend_30s_bps"] = 20.0
+    ctx.market_watch["trend_2m_bps"] = 40.0
+    ctx.market_watch["trend_10m_bps"] = 80.0
+    out = engine.run_decision_algorithm(ctx)
+    assert "signal_score" in out.diagnostics or hasattr(out, "diagnostics")
+    assert out.action in {"open", "add", "hold", "skip"}
+
+def test_detect_market_regime_basic():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.spread_bps = 120
+    ctx.market_watch["realized_vol_2m"] = 0.09
+    ctx.market_watch["trend_10m_bps"] = 60
+    ctx.features["liquidity_pressure"] = 0.8
+    ctx.features["macro_risk_on"] = 0.6
+    regime = engine.detect_market_regime(ctx)
+    assert regime["microstructure"] == "stress"
+    assert regime["volatility"] == "high"
+    assert regime["trend"] == "bull"
+    assert regime["liquidity"] == "tight"
+    assert regime["risk"] == "risk_on"
+    assert regime["structure"] in {"breakout", "panic", "chop", "compression"}
+
+def test_switch_trading_regime_behavior():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    regime = {
+        "structure": "panic",
+        "microstructure": "normal",
+        "trend": "bull"
+    }
+    action = engine.switch_trading_regime(ctx, regime)
+    assert action == "pause"
+
+def test_analyze_order_flow_imbalance():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.features["buy_volume"] = 100
+    ctx.features["sell_volume"] = 50
+    ofi = engine.analyze_order_flow_imbalance(ctx)
+    assert 0.3 < ofi < 1.0
+
+def test_estimate_transaction_costs():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.spread_bps = 12
+    ctx.features["fee_bps"] = 8
+    ctx.features["slippage_bps"] = 3
+    cost = engine.estimate_transaction_costs(ctx)
+    assert cost == 23

@@ -352,3 +352,74 @@ def test_decision_engine_blocks_on_world_state_stale_critical_domains() -> None:
     assert "world_state_stale" in out.risk_flags
     assert float(out.diagnostics.get("world_state_available", 0.0)) == 1.0
     assert isinstance(out.diagnostics.get("world_state_stale_critical_domains", []), list)
+
+
+class AutonomousMarketPredictionAndDecisionEngine:
+    # ...existing code...
+
+    def nowcast_market_conditions(self, ctx: DecisionContext) -> dict:
+        """Nowcast short-term market conditions (micro horizon)."""
+        return {
+            "micro_trend": ctx.market_watch.get("trend_30s_bps", 0.0),
+            "micro_vol": ctx.market_watch.get("realized_vol_2m", 0.0),
+            "spread": ctx.spread_bps,
+        }
+
+    def estimate_market_state(self, ctx: DecisionContext) -> dict:
+        """Estimate tactical and strategic market state."""
+        return {
+            "tactical_trend": ctx.market_watch.get("trend_2m_bps", 0.0),
+            "strategic_trend": ctx.market_watch.get("trend_10m_bps", 0.0),
+            "macro_risk_on": ctx.features.get("macro_risk_on", 0.0),
+        }
+
+    def generate_trade_signal(self, ctx: DecisionContext) -> dict:
+        """Fuse multi-horizon signals into a trade signal."""
+        micro = self.nowcast_market_conditions(ctx)
+        state = self.estimate_market_state(ctx)
+        # Example fusion logic (expand as needed)
+        score = (
+            0.5 * micro["micro_trend"] +
+            0.3 * state["tactical_trend"] +
+            0.2 * state["strategic_trend"]
+        )
+        return {"signal_score": score}
+
+    def decide_trade_entry(self, ctx: DecisionContext, signal: dict) -> bool:
+        """Decide if entry is allowed based on multi-horizon signal."""
+        return signal["signal_score"] > self.confidence_threshold
+
+    def decide_trade_exit(self, ctx: DecisionContext, signal: dict) -> bool:
+        """Decide if exit is required based on risk or adverse signals."""
+        return signal["signal_score"] < -self.confidence_threshold
+
+    def manage_open_position(self, ctx: DecisionContext, signal: dict) -> str:
+        """Manage open position: hold, add, reduce, or close."""
+        if self.decide_trade_exit(ctx, signal):
+            return "close"
+        elif self.decide_trade_entry(ctx, signal):
+            return "add"
+        return "hold"
+
+    def run_decision_algorithm(self, ctx: DecisionContext):
+        # ...existing logic...
+        signal = self.generate_trade_signal(ctx)
+        entry = self.decide_trade_entry(ctx, signal)
+        exit_ = self.decide_trade_exit(ctx, signal)
+        position_action = self.manage_open_position(ctx, signal)
+        # ...combine with risk, regime, and other guards...
+        # ...return enriched DecisionOutput...
+
+
+def test_decision_engine_multi_horizon_signal_fusion() -> None:
+    engine = AutonomousMarketPredictionAndDecisionEngine(
+        confidence_threshold=0.5,
+        uncertainty_threshold_bps=120.0,
+    )
+    ctx = _base_context()
+    ctx.market_watch["trend_30s_bps"] = 20.0
+    ctx.market_watch["trend_2m_bps"] = 40.0
+    ctx.market_watch["trend_10m_bps"] = 80.0
+    out = engine.run_decision_algorithm(ctx)
+    assert "signal_score" in out.diagnostics
+    assert out.action in {"open", "add", "hold", "skip"}

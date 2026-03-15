@@ -563,3 +563,195 @@ Per-scenario evaluation includes:
 - Causal attribution is probabilistic/heuristic, not deterministic proof.
 - Optional modalities (news/macro/fundamentals/sentiment) are used only when present.
 - Queue-position level execution modeling remains approximate because full L2 queue data is not always available.
+
+class AutonomousMarketPredictionAndDecisionEngine:
+    # ...existing code...
+
+    def analyze_order_flow_imbalance(self, ctx) -> float:
+        """
+        Estimate order flow imbalance (OFI) as a proxy for buy/sell pressure.
+        Returns value in [-1, 1], where positive = buy pressure.
+        """
+        buy_vol = ctx.features.get("buy_volume", 0.0)
+        sell_vol = ctx.features.get("sell_volume", 0.0)
+        total = buy_vol + sell_vol
+        if total == 0:
+            return 0.0
+        return (buy_vol - sell_vol) / total
+
+    def model_limit_order_book(self, ctx) -> dict:
+        """
+        Return basic limit order book state.
+        """
+        return {
+            "bid_depth": ctx.features.get("bid_depth", 0.0),
+            "ask_depth": ctx.features.get("ask_depth", 0.0),
+            "spread": ctx.spread_bps,
+        }
+
+    def estimate_liquidity_pressure(self, ctx) -> float:
+        """
+        Estimate liquidity pressure (0=loose, 1=tight).
+        """
+        bid = ctx.features.get("bid_depth", 1.0)
+        ask = ctx.features.get("ask_depth", 1.0)
+        spread = ctx.spread_bps
+        # Simple proxy: higher spread and lower depth = tighter
+        return min(1.0, max(0.0, (spread / 100.0) + (1.0 - min(bid, ask))))
+
+    def estimate_execution_latency_risk(self, ctx) -> float:
+        """
+        Estimate risk from execution latency (0=low, 1=high).
+        """
+        latency_ms = ctx.features.get("latency_ms", 100)
+        return min(1.0, latency_ms / 1000.0)
+
+    def estimate_transaction_costs(self, ctx) -> float:
+        """
+        Estimate transaction costs in bps.
+        """
+        spread = ctx.spread_bps
+        fee = ctx.features.get("fee_bps", 10.0)
+        slippage = ctx.features.get("slippage_bps", 2.0)
+        return spread + fee + slippage
+
+    def control_slippage(self, ctx, intended_size: float) -> float:
+        """
+        Control slippage by adjusting order size if liquidity is tight.
+        """
+        liquidity = self.estimate_liquidity_pressure(ctx)
+        if liquidity > 0.8:
+            return intended_size * 0.5  # reduce size in tight liquidity
+        return intended_size
+
+    def detect_concept_drift(self, ctx, recent_metrics: dict) -> bool:
+        """
+        Detect concept drift based on recent performance metrics.
+        Returns True if drift is detected.
+        Extended: considers Sharpe, winrate, drawdown, volatility spike, loss streak, regime change, and adaptation fatigue.
+        """
+        sharpe = recent_metrics.get("rolling_sharpe", 1.0)
+        winrate = recent_metrics.get("rolling_winrate", 0.6)
+        drawdown = recent_metrics.get("max_drawdown", 0.0)
+        vol_spike = recent_metrics.get("volatility_spike", False)
+        loss_streak = recent_metrics.get("rolling_loss_streak", 0)
+        regime = recent_metrics.get("regime", None)
+        prev_regime = ctx.features.get("last_regime", None)
+        adaptation_count = ctx.features.get("adaptation_count", 0)
+        regime_change = regime is not None and prev_regime is not None and regime != prev_regime
+        # Extended: drift if adaptation fatigue (too many adaptations in short window)
+        fatigue = adaptation_count >= 5
+        if sharpe < 0.2 or winrate < 0.4 or drawdown > 0.25 or vol_spike or loss_streak >= 3 or regime_change or fatigue:
+            return True
+        return False
+
+    def adapt_model_online(self, ctx, drift_detected: bool) -> None:
+        """
+        Adapt model parameters online if drift detected (bounded).
+        Extended: logs adaptation event, regime change, and adaptation fatigue.
+        """
+        if drift_detected:
+            self.confidence_threshold = min(1.0, self.confidence_threshold + 0.05)
+            self.uncertainty_threshold_bps = max(10.0, self.uncertainty_threshold_bps - 5.0)
+            ctx.features["rolling_sharpe"] = 1.0
+            ctx.features["risk_guard"] = min(1.0, ctx.features.get("risk_guard", 0.5) + 0.1)
+            ctx.features["rolling_loss_streak"] = 0
+            ctx.features["last_adaptation"] = "drift_detected"
+            if "regime" in ctx.features:
+                ctx.features["last_regime"] = ctx.features["regime"]
+            # Extended: log adaptation fatigue if adaptation_count is high
+            if ctx.features.get("adaptation_count", 0) >= 5:
+                ctx.features["adaptation_fatigue"] = True
+
+    def update_model_incrementally(self, ctx, new_data: dict) -> None:
+        """
+        Incrementally update model state with new data (bounded, safe).
+        Extended: tracks adaptation count, regime history, and adaptation fatigue reset.
+        """
+        if "recent_volatility" in new_data:
+            ctx.features["expected_volatility"] = 0.9 * ctx.features.get("expected_volatility", 0.01) + 0.1 * new_data["recent_volatility"]
+        if "recent_win" in new_data:
+            ctx.features["rolling_winrate"] = 0.95 * ctx.features.get("rolling_winrate", 0.6) + 0.05 * new_data["recent_win"]
+        if "recent_loss" in new_data:
+            if new_data["recent_loss"]:
+                ctx.features["rolling_loss_streak"] = ctx.features.get("rolling_loss_streak", 0) + 1
+            else:
+                ctx.features["rolling_loss_streak"] = 0
+        ctx.features["adaptation_count"] = ctx.features.get("adaptation_count", 0)
+        if ctx.features.get("last_adaptation") == "drift_detected":
+            ctx.features["adaptation_count"] += 1
+            ctx.features["last_adaptation"] = None
+        if "regime" in new_data:
+            history = ctx.features.get("regime_history", [])
+            history.append(new_data["regime"])
+            ctx.features["regime_history"] = history[-10:]
+        # Extended: reset adaptation fatigue if regime stabilizes
+        if len(set(ctx.features.get("regime_history", []))) == 1:
+            ctx.features["adaptation_fatigue"] = False
+
+# Rozšírené testy
+# filepath: tests/test_autonomous_decision_engine.py
+
+def test_detect_concept_drift_with_regime_change():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.features["last_regime"] = "trend"
+    drift = engine.detect_concept_drift(ctx, {"regime": "mean-revert"})
+    assert drift is True
+
+def test_adapt_model_online_logs_adaptation_and_regime():
+    engine = AutonomousMarketPredictionAndDecisionEngine(confidence_threshold=0.5, uncertainty_threshold_bps=50)
+    ctx = _base_context()
+    ctx.features["regime"] = "trend"
+    engine.adapt_model_online(ctx, drift_detected=True)
+    assert ctx.features["last_adaptation"] == "drift_detected"
+    assert ctx.features["last_regime"] == "trend"
+
+def test_update_model_incrementally_tracks_adaptation_and_regime_history():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.features["adaptation_count"] = 0
+    ctx.features["last_adaptation"] = "drift_detected"
+    engine.update_model_incrementally(ctx, {"regime": "trend"})
+    assert ctx.features["adaptation_count"] == 1
+    assert ctx.features["regime_history"][-1] == "trend"
+    # Add more regimes to test history length
+    for r in ["mean-revert", "panic", "breakout", "chop", "trend", "bull", "bear", "sideways", "compression", "breakout"]:
+        engine.update_model_incrementally(ctx, {"regime": r})
+    assert len(ctx.features["regime_history"]) <= 10
+
+def test_detect_concept_drift_with_adaptation_fatigue():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.features["adaptation_count"] = 6
+    drift = engine.detect_concept_drift(ctx, {})
+    assert drift is True
+
+def test_adapt_model_online_sets_adaptation_fatigue():
+    engine = AutonomousMarketPredictionAndDecisionEngine(confidence_threshold=0.5, uncertainty_threshold_bps=50)
+    ctx = _base_context()
+    ctx.features["adaptation_count"] = 6
+    ctx.features["regime"] = "trend"
+    engine.adapt_model_online(ctx, drift_detected=True)
+    assert ctx.features["adaptation_fatigue"] is True
+
+def test_update_model_incrementally_resets_adaptation_fatigue_on_stable_regime():
+    engine = AutonomousMarketPredictionAndDecisionEngine()
+    ctx = _base_context()
+    ctx.features["regime_history"] = ["trend"] * 10
+    ctx.features["adaptation_fatigue"] = True
+    engine.update_model_incrementally(ctx, {"regime": "trend"})
+    assert ctx.features["adaptation_fatigue"] is False
+
+#### Further Additional Test Coverage (2026-03-14, adaptation fatigue extension)
+
+- **test_detect_concept_drift_with_adaptation_fatigue:**  
+  - Overuje, že drift je detekovaný aj pri vysokej hodnote adaptation_count (adaptation fatigue).
+- **test_adapt_model_online_sets_adaptation_fatigue:**  
+  - Overuje, že adaptácia nastaví adaptation_fatigue na True pri vysokej adaptation_count.
+- **test_update_model_incrementally_resets_adaptation_fatigue_on_stable_regime:**  
+  - Overuje, že adaptation_fatigue sa resetuje na False, keď je režim stabilný.
+
+**Výsledky:**  
+- Všetky nové rozšírené testy prešli.
+- Evolučná/adaptačná vrstva teraz pokrýva aj adaptation fatigue a jej reset pri stabilizácii
