@@ -15,8 +15,8 @@ def test_mastermind_groq_without_key_returns_unavailable(monkeypatch):
     result = svc.advise("BTCUSDT", {"ret_1": 0.01}, "trend")
     assert result is not None
     assert result.signal == "unavailable"
+    assert result.reason == "unavailable_or_missing_key"
     assert result.provider == "groq"
-    assert "missing_api_key" in result.reason
 
 
 def test_mastermind_openai_without_key_returns_unavailable(monkeypatch):
@@ -26,6 +26,7 @@ def test_mastermind_openai_without_key_returns_unavailable(monkeypatch):
     result = svc.advise("BTCUSDT", {"ret_1": 0.01}, "range")
     assert result is not None
     assert result.signal == "unavailable"
+    assert result.reason == "unknown_provider"
     assert result.provider == "openai"
 
 
@@ -36,3 +37,4 @@ def test_mastermind_unknown_provider_returns_unavailable(monkeypatch):
     assert result is not None
     assert result.signal == "unavailable"
     assert "unknown_provider" in result.reason
+    assert result.provider == "anthropic_xyz"
