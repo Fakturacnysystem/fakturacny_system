@@ -23,7 +23,7 @@ def main() -> int:
             settings = RobotSettings.from_file(str(cfg))
         except Exception as exc:  # pragma: no cover - failure path exercised by script run
             message = str(exc)
-            if message.startswith("Live trading blocked until configured:"):
+            if message.startswith("Live trading blocked until configured:") or message.startswith("Live trading blocked: unsupported_doctrine_target_use_kraken_spot"):
                 blocked_expected.append({"config": cfg.name, "reason": message})
                 continue
             failures.append({"config": cfg.name, "error": message})

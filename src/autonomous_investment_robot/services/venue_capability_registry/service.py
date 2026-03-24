@@ -11,6 +11,28 @@ class VenueCapabilityRegistry:
     def __init__(self) -> None:
         self._evidence: dict[str, CapabilityEvidence] = {}
 
+    def _coerce_evidence_dt(self, raw: Any, *, fallback: datetime) -> datetime:
+        if isinstance(raw, datetime):
+            evidence_dt = raw
+        elif isinstance(raw, str):
+            try:
+                evidence_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                evidence_dt = fallback
+        elif isinstance(raw, (int, float)):
+            value = float(raw)
+            if value > 1e12:
+                value /= 1000.0
+            try:
+                evidence_dt = datetime.fromtimestamp(value, tz=fallback.tzinfo)
+            except Exception:
+                evidence_dt = fallback
+        else:
+            evidence_dt = fallback
+        if getattr(evidence_dt, "tzinfo", None) is None:
+            evidence_dt = evidence_dt.replace(tzinfo=timezone.utc)
+        return evidence_dt
+
     def _inspect(
         self,
         *,
@@ -51,15 +73,7 @@ class VenueCapabilityRegistry:
         evidence_ts = integrity.get("ts", now_dt)
         if capability_payload.get("ts") is not None:
             evidence_ts = capability_payload.get("ts")
-        try:
-            if isinstance(evidence_ts, str):
-                evidence_dt = datetime.fromisoformat(evidence_ts)
-            else:
-                evidence_dt = evidence_ts
-        except Exception:
-            evidence_dt = now_dt
-        if getattr(evidence_dt, "tzinfo", None) is None:
-            evidence_dt = evidence_dt.replace(tzinfo=timezone.utc)
+        evidence_dt = self._coerce_evidence_dt(evidence_ts, fallback=now_dt)
         freshness = max(0.0, (now_dt - evidence_dt).total_seconds())
         sequence_ok = bool(capability_payload.get("sequence_ok", integrity.get("sequence_ok", True)))
         checksum_ok = bool(capability_payload.get("checksum_ok", integrity.get("checksum_ok", True)))

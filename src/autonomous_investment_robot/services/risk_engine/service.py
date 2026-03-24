@@ -266,6 +266,18 @@ class RiskEngineService:
             self._set_risk_mode("kill-switch")
             self._enter_cooldown(10)
             return self._decision(False, "balance_state_kill", flatten=True)
+        doctrine_target = intent.why.get("doctrine_target", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("doctrine_target", {}), dict) else {}
+        if (
+            not is_reduce_only
+            and str(intent.side).lower() == "sell"
+            and bool(doctrine_target.get("long_only", False))
+        ):
+            self._set_risk_mode("flatten-only")
+            return self._decision(
+                False,
+                "long_only_sell_block",
+                details={"doctrine_target": doctrine_target},
+            )
         if round_trip_edge_bps is not None and round_trip_edge_bps <= 0.0 and not is_reduce_only:
             self._set_risk_mode("degraded")
             return self._decision(

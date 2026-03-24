@@ -43,11 +43,15 @@ class PolicyService:
         shadow_rival_service: object | None = None,
         decision_doctrine_service: object | None = None,
         long_only: bool = False,
+        target_provider: str = "",
+        product_target: str = "",
     ) -> None:
         self.settings = settings
         self.tco_settings = tco_settings
         self.last_veto_reasons: list[str] = []
         self.last_veto_counts: dict[str, int] = {}
+        self.last_doctrine_filter_reasons: list[str] = []
+        self.last_doctrine_blocked_strategies: list[str] = []
         self.strategy_regime_cooldowns: dict[tuple[str, str], int] = {}
         self.strategy_regime_veto_streaks: dict[tuple[str, str], int] = defaultdict(int)
         self.allocator = BanditAllocator(
@@ -69,6 +73,31 @@ class PolicyService:
         self.shadow_rival_service = ShadowRivalService() if shadow_rival_service is None else shadow_rival_service
         self.decision_doctrine_service = DecisionDoctrineService() if decision_doctrine_service is None else decision_doctrine_service
         self.long_only = bool(long_only)
+        self.target_provider = str(target_provider or "")
+        self.product_target = str(product_target or "")
+
+    def _kraken_spot_doctrine_active(self) -> bool:
+        return bool(self.long_only and self.target_provider == "kraken_spot" and self.product_target == "spot")
+
+    def _apply_doctrine_filter(self, signals: list[StrategySignal]) -> list[StrategySignal]:
+        self.last_doctrine_filter_reasons = []
+        self.last_doctrine_blocked_strategies = []
+        if not self._kraken_spot_doctrine_active():
+            return signals
+
+        blocked_market_neutral = {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry"}
+        filtered: list[StrategySignal] = []
+        for signal in signals:
+            if signal.name in blocked_market_neutral:
+                self.last_doctrine_filter_reasons.append(f"blocked_doctrine_incompatible_strategy:{signal.name}")
+                self.last_doctrine_blocked_strategies.append(signal.name)
+                continue
+            if signal.name in {"trend", "mean_reversion"} and float(signal.target_notional) < 0.0:
+                self.last_doctrine_filter_reasons.append(f"blocked_negative_direction_entry:{signal.name}")
+                self.last_doctrine_blocked_strategies.append(signal.name)
+                continue
+            filtered.append(signal)
+        return filtered
 
     def evaluate_strategies(self, features: dict[str, float], forecast: Forecast) -> list[StrategySignal]:
         out: list[StrategySignal] = []
@@ -79,7 +108,7 @@ class PolicyService:
                 self.strategy_regime_cooldowns[key] = cd - 1
                 continue
             out.append(s.signal(features, forecast.regime, forecast.liquidity_regime))
-        return out
+        return self._apply_doctrine_filter(out)
 
     def _regime_priority_multiplier(self, strategy_name: str, regime: str, liq_regime: str) -> float:
         market_neutral = strategy_name in {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry"}
@@ -136,11 +165,23 @@ class PolicyService:
         self.last_veto_counts = {}
         signals = self.evaluate_strategies(features, fc)
         if not signals:
+            doctrine_filter = {
+                "active": self._kraken_spot_doctrine_active(),
+                "blocked_strategies": list(self.last_doctrine_blocked_strategies),
+                "reasons": list(self.last_doctrine_filter_reasons),
+            }
             return PolicyDecision(
                 symbol=fc.symbol,
                 ts=fc.ts,
                 trade_allowed=False,
-                no_trade=NoTradeDecision(symbol=fc.symbol, ts=fc.ts, reason="no_signals", reasons=["no_signals"]),
+                why={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
+                no_trade=NoTradeDecision(
+                    symbol=fc.symbol,
+                    ts=fc.ts,
+                    reason="kraken_spot_doctrine_filter" if doctrine_filter["reasons"] else "no_signals",
+                    reasons=["no_signals", *doctrine_filter["reasons"]] if doctrine_filter["reasons"] else ["no_signals"],
+                    metadata={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
+                ),
             )
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -259,7 +300,18 @@ class PolicyService:
             "veto_counts": dict(self.last_veto_counts),
             "strategy_regime_cooldowns": {f"{k[0]}@{k[1]}": v for k, v in sorted(self.strategy_regime_cooldowns.items()) if v > 0},
             "components": why_parts,
+            "doctrine_target": {
+                "target_provider": self.target_provider,
+                "product_target": self.product_target,
+                "long_only": self.long_only,
+                "kraken_spot_doctrine_active": self._kraken_spot_doctrine_active(),
+            },
         }
+        if self.last_doctrine_filter_reasons:
+            why["doctrine_filter"] = {
+                "blocked_strategies": list(self.last_doctrine_blocked_strategies),
+                "reasons": list(self.last_doctrine_filter_reasons),
+            }
         if regime_assessment is not None:
             why["regime_assessment"] = {
                 "label": regime_assessment.label,
@@ -847,6 +899,8 @@ class PolicyService:
         legacy_why.pop("spre", None)
         legacy_why.pop("shadow_rival", None)
         legacy_why.pop("decision_doctrine", None)
+        legacy_why.pop("doctrine_target", None)
+        legacy_why.pop("doctrine_filter", None)
         return OrderIntent(
             symbol=decision.symbol,
             side=decision.side,

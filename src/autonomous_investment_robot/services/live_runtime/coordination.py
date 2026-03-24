@@ -107,6 +107,8 @@ class LiveMarketCoordinator:
         shared_venue_limit_governor: Any | None = None,
         event_intelligence_service: Any | None = None,
         market_watch_service: Any | None = None,
+        data_ingestion_service: Any | None = None,
+        reporting: Any | None = None,
     ) -> None:
         self.features_service = features_service
         self.market_data = market_data
@@ -126,6 +128,9 @@ class LiveMarketCoordinator:
         self.shared_venue_limit_governor = shared_venue_limit_governor
         self.event_intelligence_service = event_intelligence_service
         self.market_watch_service = market_watch_service
+        self.data_ingestion_service = data_ingestion_service
+        self.reporting = reporting
+        self._loaded_event_inputs: list[dict[str, Any]] | None = None
 
     def _route_truth_evidence(self, channel: str, payload: Any) -> None:
         route = getattr(self.observability, "route_truth_evidence", None)
@@ -172,6 +177,54 @@ class LiveMarketCoordinator:
         else:
             self.observability.journal("mastermind_journal", payload)
 
+    def _route_signal_interference(self, payload: Any) -> None:
+        route = getattr(self.observability, "route_signal_interference", None)
+        if callable(route):
+            route(payload)
+        else:
+            self.observability.journal("signal_interference_journal", payload)
+
+    def _coerce_feed_dt(self, raw: Any, *, fallback: datetime) -> datetime:
+        if isinstance(raw, datetime):
+            feed_dt = raw
+        elif isinstance(raw, str):
+            try:
+                feed_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                feed_dt = fallback
+        elif isinstance(raw, (int, float)):
+            value = float(raw)
+            if value > 1e12:
+                value /= 1000.0
+            try:
+                feed_dt = datetime.fromtimestamp(value, tz=fallback.tzinfo)
+            except Exception:
+                feed_dt = fallback
+        else:
+            feed_dt = fallback
+        if feed_dt.tzinfo is None:
+            feed_dt = feed_dt.replace(tzinfo=fallback.tzinfo)
+        return feed_dt
+
+    def _event_inputs(self) -> list[dict[str, Any]]:
+        if self._loaded_event_inputs is not None:
+            return self._loaded_event_inputs
+        if self.data_ingestion_service is None:
+            self._loaded_event_inputs = []
+            return self._loaded_event_inputs
+        feed_path = str(getattr(getattr(self.settings.execution, "kraken_spot", None), "event_feed_path", "") or "")
+        self._loaded_event_inputs = self.data_ingestion_service.load_events(feed_path)
+        return self._loaded_event_inputs
+
+    def _events_for_ts(self, ts: datetime) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        for event in self._event_inputs():
+            raw_ts = event.get("ts")
+            event_ts = self._coerce_feed_dt(raw_ts, fallback=ts) if raw_ts is not None else ts
+            if abs((ts - event_ts).total_seconds()) <= 6 * 3600:
+                selected.append(event)
+        return selected
+
     def _market_integrity_evidence(self, *, live: object, book_raw: dict[str, Any], now_dt: datetime, symbol: str, provider_id: str) -> MarketIntegrityEvidence:
         if hasattr(live, "capture_market_integrity_evidence"):
             try:
@@ -187,17 +240,7 @@ class LiveMarketCoordinator:
             except Exception:
                 payload = {}
         feed_ts = payload.get("ts", book_raw.get("ts", book_raw.get("timestamp", book_raw.get("event_time", now_dt))))
-        if isinstance(feed_ts, (int, float)):
-            feed_dt = datetime.fromtimestamp(float(feed_ts), tz=now_dt.tzinfo)
-        elif isinstance(feed_ts, str):
-            try:
-                feed_dt = datetime.fromisoformat(feed_ts)
-            except Exception:
-                feed_dt = now_dt
-        else:
-            feed_dt = feed_ts if isinstance(feed_ts, datetime) else now_dt
-        if feed_dt.tzinfo is None:
-            feed_dt = feed_dt.replace(tzinfo=now_dt.tzinfo)
+        feed_dt = self._coerce_feed_dt(feed_ts, fallback=now_dt)
         age_seconds = max(0.0, (now_dt - feed_dt).total_seconds())
         sequence_ok = bool(payload.get("sequence_ok", book_raw.get("sequence_ok", book_raw.get("sequenceOk", True))))
         checksum_ok = bool(payload.get("checksum_ok", book_raw.get("checksum_ok", book_raw.get("checksumOk", True))))
@@ -346,6 +389,12 @@ class LiveMarketCoordinator:
             raw_events = getattr(connector, "events", None)
         if raw_events is None:
             raw_events = getattr(connector, "event_feed", None)
+        if raw_events is None:
+            raw_events = self._events_for_ts(now_dt)
+        elif isinstance(raw_events, dict):
+            raw_events = [raw_events]
+        elif not isinstance(raw_events, list):
+            raw_events = list(raw_events)
         event_intelligence_report = (
             self.event_intelligence_service.evaluate(
                 symbol=symbol,
@@ -394,6 +443,15 @@ class LiveMarketCoordinator:
         )
         edge_immunity_stage_ms = (time.perf_counter() - edge_started) * 1000.0
         self.observability.journal("quantum_state_journal", quantum_state)
+        interference_report = getattr(quantum_state, "interference_report", None)
+        if interference_report is not None:
+            self._route_signal_interference(
+                {
+                    "symbol": symbol,
+                    "ts": now_dt,
+                    **asdict(interference_report),
+                }
+            )
         self.observability.journal("edge_immunity_journal", edge_immunity_decision)
         self._route_truth_evidence("market_integrity_evidence_journal", integrity_evidence)
         if capability_evidence is not None:
@@ -405,7 +463,28 @@ class LiveMarketCoordinator:
         if event_intelligence_report is not None:
             self._route_event_intelligence(symbol=symbol, ts=now_dt, report=event_intelligence_report)
         if market_watch is not None:
-            self.observability.journal("market_watch_journal", market_watch)
+            route_market_watch = getattr(self.observability, "route_market_watch", None)
+            if callable(route_market_watch):
+                route_market_watch(market_watch)
+            else:
+                self.observability.journal("market_watch_journal", market_watch)
+        if self.reporting is not None:
+            self.reporting.report_market_context(
+                symbol=symbol,
+                harmony=None,
+                market_integrity=market_integrity,
+                provider_capability=provider_capability,
+                market_watch=market_watch,
+                event_status={
+                    "event_count": len(raw_events or []),
+                    "partial": True if event_intelligence_report is None else bool(getattr(event_intelligence_report, "partial", False)),
+                    "source": "connector"
+                    if getattr(connector, "event_candidates", None) is not None
+                    or getattr(connector, "events", None) is not None
+                    or getattr(connector, "event_feed", None) is not None
+                    else "configured_feed",
+                },
+            )
         advisory = self.mastermind.advise(
             symbol,
             features,
@@ -571,6 +650,11 @@ class LiveDecisionCoordinator:
         self.human_escalation_layer = human_escalation_layer
         self.observability = observability
         self.settings = settings
+
+    def _with_execution_plan(self, intent: OrderIntent, execution_plan: Any) -> OrderIntent:
+        why = dict(intent.why) if isinstance(intent.why, dict) else {}
+        why["execution_plan"] = asdict(execution_plan)
+        return OrderIntent(intent.symbol, intent.side, intent.target_notional, why)
 
     def _route(self, kind: str, payload: Any) -> None:
         route = getattr(self.observability, kind, None)
@@ -1078,6 +1162,7 @@ class LiveDecisionCoordinator:
                 )
             self.observability.journal("execution_journal", {"plan": asdict(execution_plan), "forecast": asdict(market.execution_quality), "capital_release": True})
             execution_stage_ms = (time.perf_counter() - execution_started) * 1000.0
+            intent = self._with_execution_plan(intent, execution_plan)
             return LiveDecisionContext(
                 health_snapshot=health_snapshot,
                 meta_governor_decision=meta_governor,
@@ -1231,6 +1316,7 @@ class LiveDecisionCoordinator:
             )
         self.observability.journal("execution_journal", {"plan": asdict(execution_plan), "forecast": asdict(market.execution_quality)})
         execution_stage_ms = (time.perf_counter() - execution_started) * 1000.0
+        adjusted_intent = self._with_execution_plan(adjusted_intent, execution_plan)
         return LiveDecisionContext(
             health_snapshot=health_snapshot,
             meta_governor_decision=meta_governor,

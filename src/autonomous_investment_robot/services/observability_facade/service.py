@@ -67,6 +67,18 @@ class ObservabilityFacade:
         self.base.journal(channel, payload)
         self._route_index(category="truth_evidence", channel=channel, payload=payload)
 
+    def route_signal_interference(self, payload: Any) -> None:
+        self.base.journal("signal_interference_journal", payload)
+        self._route_index(category="signal_interference", channel="signal_interference_journal", payload=payload)
+
+    def route_provider_capability(self, payload: Any) -> None:
+        self.base.journal("provider_capability_journal", payload)
+        self._route_index(category="provider_capability", channel="provider_capability_journal", payload=payload)
+
+    def route_market_watch(self, payload: Any) -> None:
+        self.base.journal("market_watch_journal", payload)
+        self._route_index(category="market_watch", channel="market_watch_journal", payload=payload)
+
     def route_lifecycle(self, payload: Any) -> None:
         self.base.journal("lifecycle_evidence_journal", payload)
         self._route_index(category="lifecycle", channel="lifecycle_evidence_journal", payload=payload)
@@ -90,3 +102,15 @@ class ObservabilityFacade:
     def route_calibration(self, payload: Any) -> None:
         self.base.journal("calibration_profile", payload)
         self._route_index(category="calibration", channel="calibration_profile", payload=payload)
+
+    def route_replay_summary(self, payload: Any) -> None:
+        self.base.journal("kraken_spot_replay_summary", payload)
+        self._route_index(category="replay_summary", channel="kraken_spot_replay_summary", payload=payload)
+
+    def route_operator_summary_bundle(self, payload: Any) -> None:
+        self.base.journal("kraken_spot_operator_summary", payload)
+        self._route_index(category="operator_summary_bundle", channel="kraken_spot_operator_summary", payload=payload)
+
+    def route_activation_manifest(self, channel: str, payload: Any) -> None:
+        self.base.journal(channel, payload)
+        self._route_index(category="activation_manifest", channel=channel, payload=payload)

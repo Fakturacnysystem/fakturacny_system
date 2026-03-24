@@ -50,8 +50,8 @@ def _build_connector() -> KrakenSpotConnector:
 def index() -> Response | str:
     try:
         kraken = _build_connector()
-        balance = kraken.exchange.fetch_balance()
-        totals = balance.get("total", {}) if isinstance(balance, dict) else {}
+        rows = kraken.balances()
+        totals = {str(row.get("asset", "")): float(row.get("balance", 0.0) or 0.0) for row in rows}
         cash = totals.get("EUR", totals.get("ZEUR", 0))
         btc = totals.get("BTC", totals.get("XXBT", 0))
         eth = totals.get("ETH", totals.get("XETH", 0))

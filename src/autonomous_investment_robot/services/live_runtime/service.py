@@ -836,7 +836,7 @@ class LiveLedgerCoordinator:
         new_exposure = current_exposure
         fill_truth_ok = True
         ledger_records = list(getattr(result, "ledger_records", []))
-        if result.status in {"filled_maker", "filled_taker_fallback"}:
+        if result.status in {"filled_maker", "filled_taker_fallback", "filled_marketable_limit"}:
             if not ledger_records:
                 fill_truth_ok = False
                 gap_reasons.append("normalized_fill_missing")

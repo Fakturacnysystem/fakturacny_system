@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+from pathlib import Path
 import time
 
 from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, UNSPECIFIED
@@ -54,6 +55,7 @@ from autonomous_investment_robot.services.models.service import ModelsService
 from autonomous_investment_robot.services.calibration_service.service import CalibrationService
 from autonomous_investment_robot.services.observability_facade.service import ObservabilityFacade
 from autonomous_investment_robot.services.observability_service.service import ObservabilityService
+from autonomous_investment_robot.services.operator_summary.service import OperatorSummaryCoordinator
 from autonomous_investment_robot.services.oms.service import ManagedOrder, OMSService
 from autonomous_investment_robot.services.ops.service import OpsService
 from autonomous_investment_robot.services.paper_runtime.coordination import PaperRuntimeCoordinator
@@ -66,6 +68,7 @@ from autonomous_investment_robot.services.quantum_state_service.service import Q
 from autonomous_investment_robot.services.raw_store.service import RawStoreService
 from autonomous_investment_robot.services.reconciliation.service import ReconciliationService
 from autonomous_investment_robot.services.regime_service.service import RegimeService
+from autonomous_investment_robot.services.replay_reporting.service import ReplayReportingCoordinator
 from autonomous_investment_robot.services.reporting_service.service import ReportingCoordinator
 from autonomous_investment_robot.services.shadow_rival_service.service import ShadowRivalService
 from autonomous_investment_robot.services.shared_venue_limit_governor.service import SharedVenueLimitGovernor
@@ -111,6 +114,8 @@ class RobotOrchestrator:
             spre_engine=SPREEngine(calibration_service=self.calibration),
             shadow_rival_service=ShadowRivalService(calibration_service=self.calibration),
             long_only=bool(settings.doctrine.long_only),
+            target_provider=str(settings.doctrine_target_provider()),
+            product_target=str(settings.doctrine_product_target()),
         )
         self.risk = RiskEngineService(settings.risk, safe_mode=settings.safe_mode_default)
         self.execution = ExecutionService(settings.execution)
@@ -132,6 +137,8 @@ class RobotOrchestrator:
         self.base_observability = ObservabilityService(settings.storage.run_dir, self.ops)
         self.observability = ObservabilityFacade(self.base_observability)
         self.reporting = ReportingCoordinator(observability=self.observability)
+        self.replay_reporting = ReplayReportingCoordinator(settings.storage.run_dir, self.observability)
+        self.operator_summary = OperatorSummaryCoordinator(settings.storage.run_dir, self.observability)
         self.forensics = ForensicsService(settings.storage.run_dir, self.observability)
         self.live_ledger = LiveLedgerCoordinator(self.event_store, self.portfolio, self.observability, self.forensics, self.inventory)
         self.incidents = IncidentPolicy()
@@ -158,6 +165,8 @@ class RobotOrchestrator:
             shared_venue_limit_governor=self.shared_venue_limits,
             event_intelligence_service=self.event_intelligence,
             market_watch_service=self.market_watch,
+            data_ingestion_service=self.ingestion,
+            reporting=self.reporting,
         )
         self.live_decision = LiveDecisionCoordinator(
             health=self.health,
@@ -201,6 +210,7 @@ class RobotOrchestrator:
             settings=self.settings,
             ingestion=self.ingestion,
             qa=self.qa,
+            market_data=self.market_data,
             raw=self.raw,
             event_store=self.event_store,
             features=self.features,
@@ -220,6 +230,12 @@ class RobotOrchestrator:
             inventory=self.inventory,
             profitability=self.profitability,
             reporting=self.reporting,
+            harmony_resolver=self.harmony,
+            market_integrity_service=self.market_integrity,
+            venue_capability_registry=self.venue_capabilities,
+            market_watch_service=self.market_watch,
+            replay_reporting=self.replay_reporting,
+            operator_summary=self.operator_summary,
             quantum_state_service=self.quantum_state,
             edge_immunity_service=self.edge_immunity,
             event_intelligence_service=self.event_intelligence,
@@ -318,6 +334,304 @@ class RobotOrchestrator:
     def _kill_file_path(self) -> str:
         return os.path.join(self.settings.storage.run_dir, "KILL")
 
+    def _doctrine_block_map(self) -> dict[str, list[str]]:
+        return {
+            "strategies": [
+                "DeltaNeutralCarryStrategy",
+                "BasisStrategy",
+                "PairsStatArbStrategy",
+                "CarryStrategy",
+                "negative_directional_entries_from_trend_or_mean_reversion",
+            ],
+            "paths": [
+                "derivatives_perps_configs",
+                "derivatives_perps_launch_scripts",
+                "derivative_live_services",
+                "fresh_sell_entries_without_reduce_only_inventory",
+            ],
+            "provider_product_modes": [
+                "binance_um_perps",
+                "kraken_derivatives",
+                "perps",
+                "short_opening_modes",
+            ],
+        }
+
+    def _write_json_artifact(self, name: str, payload: object) -> str:
+        path = Path(self.settings.storage.run_dir) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        return str(path)
+
+    def _serialize_payload(self, payload: object) -> object:
+        if payload is None:
+            return None
+        try:
+            return json.loads(json.dumps(payload, sort_keys=True, default=lambda value: asdict(value) if hasattr(value, "__dataclass_fields__") else getattr(value, "__dict__", str(value))))
+        except Exception:
+            return str(payload)
+
+    def _jsonl_count(self, name: str) -> int:
+        path = Path(self.settings.storage.run_dir) / f"{name}.jsonl"
+        if not path.exists():
+            return 0
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+    def _live_capability_bundle(self, *, market: object, decision_ctx: object) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+        event_report = getattr(market, "event_intelligence_report", None)
+        event_partial = bool(getattr(event_report, "partial", True)) if event_report is not None else True
+        event_feed_configured = bool(self.settings.kraken_spot_event_feed_path())
+        capabilities: dict[str, dict[str, object]] = {
+            "MarketIntegrityService": {"state": "implemented", "activation_state": "active" if getattr(market, "market_integrity", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(market, "market_integrity", None) is not None else "market_integrity_missing", "exact_unlock_action_required": "" if getattr(market, "market_integrity", None) is not None else "wire_live_market_integrity", "doctrine_conflict": "no"},
+            "VenueCapabilityRegistry": {"state": "implemented", "activation_state": "active" if getattr(market, "provider_capability", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(market, "provider_capability", None) is not None else "provider_capability_missing", "exact_unlock_action_required": "" if getattr(market, "provider_capability", None) is not None else "wire_live_provider_capability", "doctrine_conflict": "no"},
+            "HarmonyConfigResolver": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "QuantumScenarioService": {"state": "implemented", "activation_state": "active" if getattr(market, "quantum_state", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(market, "quantum_state", None) is not None else "quantum_state_missing", "exact_unlock_action_required": "" if getattr(market, "quantum_state", None) is not None else "evaluate_quantum_state", "doctrine_conflict": "no"},
+            "SignalInterferenceEngine": {"state": "implemented", "activation_state": "active" if getattr(getattr(market, "quantum_state", None), "interference_report", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(getattr(market, "quantum_state", None), "interference_report", None) is not None else "signal_interference_missing", "exact_unlock_action_required": "" if getattr(getattr(market, "quantum_state", None), "interference_report", None) is not None else "route_signal_interference", "doctrine_conflict": "no"},
+            "EdgeImmunityService": {"state": "implemented", "activation_state": "active" if getattr(market, "edge_immunity_decision", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(market, "edge_immunity_decision", None) is not None else "edge_immunity_missing", "exact_unlock_action_required": "" if getattr(market, "edge_immunity_decision", None) is not None else "evaluate_edge_immunity", "doctrine_conflict": "no"},
+            "SPREEngine": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "ShadowRivalService": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "CapitalSovereigntyService": {"state": "implemented", "activation_state": "active" if getattr(decision_ctx, "capital_sovereignty_decision", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(decision_ctx, "capital_sovereignty_decision", None) is not None else "capital_sovereignty_missing", "exact_unlock_action_required": "" if getattr(decision_ctx, "capital_sovereignty_decision", None) is not None else "evaluate_capital_sovereignty", "doctrine_conflict": "no"},
+            "PositionMorphingEngine": {"state": "implemented", "activation_state": "active" if self.position_morphing is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if self.position_morphing is not None else "position_morphing_missing", "exact_unlock_action_required": "" if self.position_morphing is not None else "wire_position_morphing", "doctrine_conflict": "no"},
+            "AdaptiveExitAllocator": {"state": "implemented", "activation_state": "active" if self.adaptive_exit_allocator is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if self.adaptive_exit_allocator is not None else "adaptive_exit_missing", "exact_unlock_action_required": "" if self.adaptive_exit_allocator is not None else "wire_adaptive_exit", "doctrine_conflict": "no"},
+            "SyntheticAffectEngine": {"state": "implemented", "activation_state": "active" if getattr(decision_ctx, "synthetic_affect_state", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(decision_ctx, "synthetic_affect_state", None) is not None else "synthetic_affect_missing", "exact_unlock_action_required": "" if getattr(decision_ctx, "synthetic_affect_state", None) is not None else "evaluate_synthetic_affect", "doctrine_conflict": "no"},
+            "EventIntelligenceService": {"state": "implemented", "activation_state": "active_but_partial" if event_partial else "active", "kraken_spot_compatible": "yes", "exact_blocker": "no_live_event_evidence" if event_partial and not event_feed_configured else ("partial_live_event_evidence" if event_partial else ""), "exact_unlock_action_required": "provide_KRAKEN_SPOT_EVENT_FEED_PATH" if event_partial and not event_feed_configured else ("" if not event_partial else "improve_event_feed_quality"), "doctrine_conflict": "no"},
+            "DataProvenanceLedger": {"state": "implemented", "activation_state": "active_but_partial" if event_partial else "active", "kraken_spot_compatible": "yes", "exact_blocker": "no_live_event_evidence" if event_partial and not event_feed_configured else ("partial_live_event_evidence" if event_partial else ""), "exact_unlock_action_required": "provide_KRAKEN_SPOT_EVENT_FEED_PATH" if event_partial and not event_feed_configured else ("" if not event_partial else "improve_event_feed_quality"), "doctrine_conflict": "no"},
+            "ExecutionSimulationSandbox": {"state": "implemented", "activation_state": "active" if getattr(decision_ctx, "execution_simulation_report", None) is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if getattr(decision_ctx, "execution_simulation_report", None) is not None else "execution_simulation_missing", "exact_unlock_action_required": "" if getattr(decision_ctx, "execution_simulation_report", None) is not None else "evaluate_execution_simulation", "doctrine_conflict": "no"},
+            "EpisodicTradeMemory": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "AnalogTradeLookup": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "CounterfactualEvaluator": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "PnLAttributionService": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "LossAutopsyService": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "ObservabilityFacade": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+            "HumanEscalationLayer": {"state": "implemented", "activation_state": "active" if self.human_escalation is not None else "gated", "kraken_spot_compatible": "yes", "exact_blocker": "" if self.human_escalation is not None else "human_escalation_missing", "exact_unlock_action_required": "" if self.human_escalation is not None else "wire_human_escalation", "doctrine_conflict": "no"},
+            "OperatorSummaryCoordinator": {"state": "implemented", "activation_state": "active", "kraken_spot_compatible": "yes", "exact_blocker": "", "exact_unlock_action_required": "", "doctrine_conflict": "no"},
+        }
+        capability_matrix = [{"capability_name": name, **details} for name, details in sorted(capabilities.items())]
+        activated = {name: details for name, details in capabilities.items() if str(details["activation_state"]).startswith("active")}
+        still_gated = {name: details for name, details in capabilities.items() if not str(details["activation_state"]).startswith("active")}
+        return capability_matrix, activated, still_gated
+
+    def _emit_live_runtime_summary(
+        self,
+        *,
+        symbol: str,
+        mode: ExecutionMode,
+        market: object,
+        decision_ctx: object,
+        execution_result: object | None = None,
+        step: int,
+    ) -> str:
+        capability_matrix, activated, still_gated = self._live_capability_bundle(market=market, decision_ctx=decision_ctx)
+        doctrine_blocked = self._doctrine_block_map()
+        artifact_index = {
+            "run_dir": self.settings.storage.run_dir,
+            "step": step,
+            "files": sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*")),
+        }
+        self._write_json_artifact("live_capability_matrix.json", capability_matrix)
+        self._write_json_artifact("live_activated_capabilities.json", activated)
+        self._write_json_artifact("live_still_gated_capabilities.json", still_gated)
+        self._write_json_artifact("live_doctrine_blocked_capabilities.json", doctrine_blocked)
+        self._write_json_artifact("live_artifact_index.json", artifact_index)
+        summary = {
+            "symbol": symbol,
+            "mode": mode.value,
+            "provider_id": self.settings.execution.provider_id,
+            "step": step,
+            "rollout_stage": self.settings.rollout_stage().value,
+            "harmony": self.harmony.resolve(),
+            "live_gate_status": self.settings.live_gate_status(),
+            "market_context": {
+                "market_integrity": self._serialize_payload(getattr(market, "market_integrity", None)),
+                "provider_capability": self._serialize_payload(getattr(market, "provider_capability", None)),
+                "market_watch": self._serialize_payload(getattr(market, "market_watch", None)),
+                "event_intelligence": self._serialize_payload(getattr(market, "event_intelligence_report", None)),
+                "execution_quality": self._serialize_payload(getattr(market, "execution_quality", None)),
+                "forecast": self._serialize_payload(getattr(market, "forecast", None)),
+            },
+            "decision": {
+                "meta_governor": self._serialize_payload(getattr(decision_ctx, "meta_governor_decision", None)),
+                "policy": self._serialize_payload(getattr(decision_ctx, "policy_decision", None)),
+                "risk": self._serialize_payload(getattr(decision_ctx, "risk_decision", None)),
+                "adjusted_intent": self._serialize_payload(getattr(decision_ctx, "adjusted_intent", None)),
+                "execution_plan": self._serialize_payload(getattr(decision_ctx, "execution_plan", None)),
+                "synthetic_affect": self._serialize_payload(getattr(decision_ctx, "synthetic_affect_state", None)),
+                "capital_sovereignty": self._serialize_payload(getattr(decision_ctx, "capital_sovereignty_decision", None)),
+                "position_morph": self._serialize_payload(getattr(decision_ctx, "position_morph_plan", None)),
+                "adaptive_exit": self._serialize_payload(getattr(decision_ctx, "adaptive_exit_allocation", None)),
+                "execution_simulation": self._serialize_payload(getattr(decision_ctx, "execution_simulation_report", None)),
+                "human_escalation": self._serialize_payload(getattr(decision_ctx, "human_escalation_decision", None)),
+            },
+            "execution_result": self._serialize_payload(execution_result),
+            "forensics": {
+                "pnl_attribution_records": self._jsonl_count("pnl_attribution"),
+                "loss_autopsy_records": self._jsonl_count("loss_autopsy"),
+                "analog_trade_lookup_records": self._jsonl_count("analog_trade_lookup"),
+                "counterfactual_review_records": self._jsonl_count("counterfactual_review"),
+                "calibration_profile_records": 1 if (Path(self.settings.storage.run_dir) / "calibration_profile.json").exists() else 0,
+            },
+            "activation": {
+                "activated": sorted(activated.keys()),
+                "still_gated": sorted(still_gated.keys()),
+                "doctrine_blocked": doctrine_blocked,
+            },
+        }
+        return self.operator_summary.emit(summary=summary)
+
+    def _emit_readonly_analysis(self, *, live: object, symbol: str) -> dict[str, object]:
+        if not self.settings.kraken_spot_full_analysis_enabled():
+            return {}
+        now_dt = datetime.now(timezone.utc)
+        market = self.live_market.collect(
+            live=live,
+            symbol=symbol,
+            now_dt=now_dt,
+            prices=[],
+            base_budget=max(float(self.settings.policy.base_risk_budget), 1.0),
+            exposure_notional=0.0,
+        )
+        decision_ctx = self.live_decision.evaluate(
+            symbol=symbol,
+            market=market,
+            exposure_notional=0.0,
+            last_recon_ok=True,
+            live=live,
+            drawdown_pct=0.0,
+            daily_loss_pct=0.0,
+            weekly_loss_pct=0.0,
+            funding_paid_pct=0.0,
+            legacy_policy_why=self._legacy_policy_why,
+            legacy_risk_details=self._legacy_risk_details,
+            reconciliation_report=None,
+        )
+        capabilities = {
+            "MarketIntegrityService": "active",
+            "VenueCapabilityRegistry": "active",
+            "HarmonyConfigResolver": "active",
+            "QuantumScenarioService": "active",
+            "SignalInterferenceEngine": "active",
+            "EdgeImmunityService": "active",
+            "SPREEngine": "active",
+            "ShadowRivalService": "active",
+            "CapitalSovereigntyService": "active",
+            "PositionMorphingEngine": "active",
+            "AdaptiveExitAllocator": "active",
+            "SyntheticAffectEngine": "active",
+            "ExecutionSimulationSandbox": "active",
+            "ObservabilityFacade": "active",
+            "HumanEscalationLayer": "active",
+            "OperatorSummaryCoordinator": "active" if self.settings.kraken_spot_non_live.emit_operator_bundle else "gated",
+            "ReplayReportingCoordinator": "active" if self.settings.kraken_spot_non_live.emit_replay_bundle else "gated",
+            "EventIntelligenceService": "active_but_partial"
+            if getattr(market.event_intelligence_report, "partial", True)
+            else "active",
+        }
+        capability_matrix = [
+            {
+                "capability_name": name,
+                "state": "implemented",
+                "activation_state": status,
+                "kraken_spot_compatible": "yes",
+                "exact_blocker": "no_event_evidence" if name == "EventIntelligenceService" and status == "active_but_partial" else "",
+                "exact_unlock_action_required": "provide_event_fixture_or_recording" if name == "EventIntelligenceService" and status == "active_but_partial" else "",
+                "doctrine_conflict": "no",
+            }
+            for name, status in sorted(capabilities.items())
+        ]
+        activated = {row["capability_name"]: row for row in capability_matrix if str(row["activation_state"]).startswith("active")}
+        still_gated = {row["capability_name"]: row for row in capability_matrix if not str(row["activation_state"]).startswith("active")}
+        artifact_index = {
+            "run_dir": self.settings.storage.run_dir,
+            "profile": self.settings.kraken_spot_non_live.profile,
+            "files": sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*")),
+        }
+        replay_summary = {
+            "symbol": symbol,
+            "mode": self.settings.execution_mode_enum().value,
+            "profile": self.settings.kraken_spot_non_live.profile,
+            "provider_id": self.settings.execution.provider_id,
+            "market_integrity": asdict(market.market_integrity) if market.market_integrity is not None else {},
+            "provider_capability": asdict(market.provider_capability),
+            "market_watch": asdict(market.market_watch) if market.market_watch is not None else {},
+            "event_partial": bool(getattr(market.event_intelligence_report, "partial", True)),
+        }
+        operator_summary = {
+            "symbol": symbol,
+            "mode": self.settings.execution_mode_enum().value,
+            "profile": self.settings.kraken_spot_non_live.profile,
+            "harmony": self.harmony.resolve(),
+            "decision_doctrine": {}
+            if decision_ctx.policy_decision is None
+            else dict(getattr(decision_ctx.policy_decision, "why", {}).get("decision_doctrine", {}) or {}),
+            "capital_strategy": {
+                "capital_sovereignty": None
+                if decision_ctx.capital_sovereignty_decision is None
+                else asdict(decision_ctx.capital_sovereignty_decision),
+                "position_morph": None if decision_ctx.position_morph_plan is None else asdict(decision_ctx.position_morph_plan),
+                "adaptive_exit": None if decision_ctx.adaptive_exit_allocation is None else asdict(decision_ctx.adaptive_exit_allocation),
+            },
+            "market_context": replay_summary,
+            "human_escalation": None if decision_ctx.human_escalation_decision is None else asdict(decision_ctx.human_escalation_decision),
+            "activation": {
+                "activated": sorted(activated.keys()),
+                "still_gated": sorted(still_gated.keys()),
+                "doctrine_blocked": self._doctrine_block_map(),
+            },
+        }
+        result: dict[str, object] = {}
+        if self.settings.kraken_spot_non_live.emit_replay_bundle:
+            result["replay_bundle"] = self.replay_reporting.emit(
+                summary=replay_summary,
+                capability_matrix=capability_matrix,
+                activated=activated,
+                still_gated=still_gated,
+                doctrine_blocked=self._doctrine_block_map(),
+                artifact_index=artifact_index,
+            )
+        if self.settings.kraken_spot_non_live.emit_operator_bundle:
+            result["operator_summary_path"] = self.operator_summary.emit(summary=operator_summary)
+        return result
+
+    def _emit_live_boot_summary(
+        self,
+        *,
+        symbol: str,
+        mode: ExecutionMode,
+        harmony_payload: dict[str, object],
+        preflight_ok: bool,
+        preflight_reason: str,
+        confidence: str,
+        confidence_details: dict[str, object],
+        recovery_decision: RecoveryDecision,
+        ordering_allowed: bool,
+    ) -> str:
+        summary = {
+            "symbol": symbol,
+            "mode": mode.value,
+            "provider_id": self.settings.execution.provider_id,
+            "doctrine": self.settings.config_manifest().get("doctrine", {}),
+            "harmony": harmony_payload,
+            "live_gate_status": self.settings.live_gate_status(),
+            "preflight": {
+                "ok": preflight_ok,
+                "reason": preflight_reason,
+            },
+            "restart_state": {
+                "confidence": confidence,
+                "details": confidence_details,
+                "recovery": asdict(recovery_decision),
+            },
+            "ordering_allowed": ordering_allowed,
+            "capital_protection": {
+                "cost_basis_sell_block": bool(self.settings.doctrine.enforce_cost_basis_sell_block),
+                "net_profit_sell_block": bool(self.settings.doctrine.enforce_net_profit_sell_block),
+                "minimum_sell_net_profit_bps": float(self.settings.doctrine.minimum_sell_net_profit_bps),
+                "block_non_reduce_only_sells": bool(self.settings.doctrine.block_non_reduce_only_sells),
+            },
+            "provider_capability": asdict(self.execution.provider_capability_matrix()),
+        }
+        return self.operator_summary.emit(summary=summary)
+
     def _live_loop(self, live: object, symbol: str, mode: ExecutionMode) -> dict:
         harmony = self.harmony.resolve()
         poll_s = max(1.0, float(harmony.get("order_cadence_s", 5.0) or 5.0))
@@ -331,6 +645,7 @@ class RobotOrchestrator:
         last_mid = None
         steps = 0
         last_recon_ok = True
+        latest_operator_summary_path = ""
 
         self.ops.audit_event(
             "live_loop_start",
@@ -434,6 +749,13 @@ class RobotOrchestrator:
                 legacy_risk_details=self._legacy_risk_details,
                 reconciliation_report=recon_result.report if hasattr(live, "connector") else None,
             )
+            latest_operator_summary_path = self._emit_live_runtime_summary(
+                symbol=symbol,
+                mode=mode,
+                market=market,
+                decision_ctx=decision_ctx,
+                step=steps,
+            )
             health_snapshot = decision_ctx.health_snapshot
             meta_governor = decision_ctx.meta_governor_decision
             meta_control = self.live_control.apply_meta_governor(
@@ -445,10 +767,17 @@ class RobotOrchestrator:
             )
             exposure_notional = meta_control.exposure_notional
             if meta_control.stop_result is not None:
+                meta_control.stop_result.setdefault("operator_summary_path", latest_operator_summary_path)
                 return meta_control.stop_result
             if meta_control.continue_loop:
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             if health_snapshot.action == "halt_and_flatten" and hasattr(live, "flatten_all_positions"):
@@ -458,13 +787,25 @@ class RobotOrchestrator:
                 self.ops.audit_event("flatten", {"reason": flat_reason, "closed": closed, "from": "health_meta_governor"})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
-                return {"status": "stopped", "mode": mode.value, "reason": "health_meta_governor", "steps": steps}
+                return {
+                    "status": "stopped",
+                    "mode": mode.value,
+                    "reason": "health_meta_governor",
+                    "steps": steps,
+                    "operator_summary_path": latest_operator_summary_path,
+                }
             if health_snapshot.action == "halt":
                 self.ops.audit_event("health_halt", {"reasons": health_snapshot.reasons})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             self._maybe_warn_latency("stage_policy_health_ms", decision_ctx.health_stage_ms, self.settings.monitoring.decision_latency_warn_ms)
@@ -494,7 +835,13 @@ class RobotOrchestrator:
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             if (not policy_decision.trade_allowed or policy_decision.side is None) and decision_ctx.adjusted_intent is None:
@@ -514,7 +861,13 @@ class RobotOrchestrator:
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             decision = decision_ctx.risk_decision
@@ -524,7 +877,13 @@ class RobotOrchestrator:
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             self._maybe_warn_latency("stage_risk_ms", decision_ctx.risk_stage_ms, 50.0)
@@ -548,7 +907,13 @@ class RobotOrchestrator:
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
 
@@ -560,7 +925,13 @@ class RobotOrchestrator:
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
-                    return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
                 time.sleep(poll_s)
                 continue
             self._maybe_warn_latency("stage_execution_planning_ms", decision_ctx.execution_stage_ms, 50.0)
@@ -583,7 +954,15 @@ class RobotOrchestrator:
                 current_exposure=exposure_notional,
                 live=live,
             )
-            if result.status in {"filled_maker", "filled_taker_fallback"}:
+            latest_operator_summary_path = self._emit_live_runtime_summary(
+                symbol=symbol,
+                mode=mode,
+                market=market,
+                decision_ctx=decision_ctx,
+                execution_result=result,
+                step=steps,
+            )
+            if result.status in {"filled_maker", "filled_taker_fallback", "filled_marketable_limit"}:
                 exposure_notional = ledger_result.exposure_notional
                 self.ops.inc_metric("orders_submitted_total")
                 if not ledger_result.fill_truth_ok:
@@ -595,13 +974,25 @@ class RobotOrchestrator:
                 self.ops.audit_event("live_killed", {"reason": getattr(live, "kill_reason", "")})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
-                return {"status": "stopped", "mode": mode.value, "reason": getattr(live, "kill_reason", "kill_switch_active"), "steps": steps}
+                return {
+                    "status": "stopped",
+                    "mode": mode.value,
+                    "reason": getattr(live, "kill_reason", "kill_switch_active"),
+                    "steps": steps,
+                    "operator_summary_path": latest_operator_summary_path,
+                }
 
             self.ops.export_prometheus()
             self.ops.export_dashboard_snapshot()
             self._maybe_warn_latency("loop_duration_ms", (time.perf_counter() - loop_started) * 1000.0, self.settings.monitoring.loop_latency_warn_ms)
             if max_steps and steps >= max_steps:
-                return {"status": "ok", "mode": mode.value, "reason": "max_steps_reached", "steps": steps}
+                return {
+                    "status": "ok",
+                    "mode": mode.value,
+                    "reason": "max_steps_reached",
+                    "steps": steps,
+                    "operator_summary_path": latest_operator_summary_path,
+                }
             time.sleep(poll_s)
 
     def boot(self) -> dict:
@@ -615,6 +1006,15 @@ class RobotOrchestrator:
         harmony_payload["paths"] = harmony_paths
         self.raw.write_table("harmony_config", [harmony_payload])
         self.observability.journal("harmony_journal", harmony_payload)
+        mode = self.settings.execution_mode_enum()
+        if mode in {ExecutionMode.LIVE, ExecutionMode.LIVE_TESTNET} and not bool(
+            harmony_payload.get("live_gate_status", {}).get("doctrine_launch_safe", False)
+        ):
+            return {
+                "status": "blocked",
+                "reason": "harmony_doctrine_launch_gate_failed",
+                "details": harmony_payload.get("live_gate_status", {}),
+            }
         capability_matrix = self.execution.provider_capability_matrix()
         self.raw.write_table("provider_capabilities", [asdict(capability_matrix)])
         self.observability.journal("provider_capability_journal", capability_matrix)
@@ -779,18 +1179,39 @@ class RobotOrchestrator:
                     "details": confidence_details,
                 },
             )
+            operator_summary_path = self._emit_live_boot_summary(
+                symbol=symbol,
+                mode=mode,
+                harmony_payload=harmony_payload,
+                preflight_ok=ok_preflight,
+                preflight_reason=reason_preflight,
+                confidence=confidence,
+                confidence_details=confidence_details,
+                recovery_decision=recovery_decision,
+                ordering_allowed=ordering_allowed,
+            )
             if not ok_preflight:
                 self.ops.inc_metric("auth_errors_total")
                 inc = self.incidents.evaluate(self.ops.metrics)
                 if inc is not None:
                     self.notifier.notify(inc.action, inc.reason)
-                return {"status": "blocked", "reason": reason_preflight}
+                return {"status": "blocked", "reason": reason_preflight, "operator_summary_path": operator_summary_path}
             if confidence == "insufficient":
                 if hasattr(live, "enter_flatten_only"):
                     live.enter_flatten_only("restart_state_confidence_insufficient")
-                return {"status": "blocked", "reason": "restart_state_confidence_insufficient", "details": confidence_details}
+                return {
+                    "status": "blocked",
+                    "reason": "restart_state_confidence_insufficient",
+                    "details": confidence_details,
+                    "operator_summary_path": operator_summary_path,
+                }
             if recovery_decision.action in {"halt", "halt_and_flatten"}:
-                return {"status": "blocked", "reason": f"recovery:{recovery_decision.outcome}", "details": asdict(recovery_decision)}
+                return {
+                    "status": "blocked",
+                    "reason": f"recovery:{recovery_decision.outcome}",
+                    "details": asdict(recovery_decision),
+                    "operator_summary_path": operator_summary_path,
+                }
             if confidence == "degraded":
                 self.event_store.append(
                     "risk",
@@ -804,7 +1225,11 @@ class RobotOrchestrator:
                     ),
                 )
             if mode == ExecutionMode.LIVE_READONLY:
-                return {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
-            return self._live_loop(live, symbol=symbol, mode=mode)
+                result = {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
+                result.update(self._emit_readonly_analysis(live=live, symbol=symbol))
+                return result
+            result = self._live_loop(live, symbol=symbol, mode=mode)
+            result.setdefault("operator_summary_path", operator_summary_path)
+            return result
 
         return self.paper_runtime.run(symbol=symbol)

@@ -108,6 +108,7 @@ class KrakenSpotExecutionSettings:
     request_timeout_s: float = 10.0
     rate_limit_rps: float = 3.0
     allow_unknown_permissions: bool = False
+    event_feed_path: str = ""
 
 
 @dataclass
@@ -135,6 +136,7 @@ class LiveUnlockSettings:
     ack_i_understand_risks: bool = False
     require_testnet_passed: bool = True
     canary_required_before_full: bool = True
+    allow_full_live_stage: bool = False
 
 
 @dataclass
@@ -233,6 +235,15 @@ class ReplaySettings:
 
 
 @dataclass
+class KrakenSpotNonLiveSettings:
+    profile: str = "legacy"
+    event_fixture_path: str = ""
+    event_recording_path: str = ""
+    emit_operator_bundle: bool = False
+    emit_replay_bundle: bool = False
+
+
+@dataclass
 class MLOpsSettings:
     retrain_enabled: bool = True
     canary_risk_pct: float = 0.05
@@ -274,6 +285,7 @@ class RobotSettings:
     storage: StorageSettings = field(default_factory=StorageSettings)
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
+    kraken_spot_non_live: KrakenSpotNonLiveSettings = field(default_factory=KrakenSpotNonLiveSettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
     margin: MarginSettings = field(default_factory=MarginSettings)
 
@@ -294,6 +306,13 @@ class RobotSettings:
             safe_mode_default=safe,
             provider_whitelist=providers,
             execution=ExecutionSettings(mode=exec_mode),
+            safety=SafetySettings(
+                live_unlock=LiveUnlockSettings(
+                    enable_live_trading=explicit,
+                    ack_i_understand_risks=ack,
+                    allow_full_live_stage=os.getenv("ENABLE_FULL_LIVE_STAGE", "false").lower() == "true",
+                )
+            ),
         )
 
     @classmethod
@@ -302,18 +321,34 @@ class RobotSettings:
         execution_data = data.get("execution", {})
         safety_data = data.get("safety", {})
         live_unlock_data = safety_data.get("live_unlock", {})
+        env_enable_live = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
+        env_ack_live = os.getenv("ACK_I_UNDERSTAND_RISKS", "false").lower() == "true"
+        env_canary_mode = os.getenv("CANARY_MODE", "false").lower() == "true"
+        env_full_live_stage = os.getenv("ENABLE_FULL_LIVE_STAGE", "false").lower() == "true"
+        env_event_feed_path = os.getenv("KRAKEN_SPOT_EVENT_FEED_PATH", "").strip()
+        requested_mode = str(execution_data.get("mode", data.get("mode", "paper")))
+        requested_provider = str(execution_data.get("provider_id", "binance_um_perps"))
+
+        if requested_mode in {ExecutionMode.LIVE.value, ExecutionMode.LIVE_TESTNET.value} and requested_provider != "kraken_spot":
+            raise ValueError("Live trading blocked: unsupported_doctrine_target_use_kraken_spot")
 
         # Backward compatible with old top-level flags.
         if "enable_live_trading" in data and "enable_live_trading" not in live_unlock_data:
             live_unlock_data["enable_live_trading"] = bool(data.get("enable_live_trading"))
         if "ack_i_understand_risks" in data and "ack_i_understand_risks" not in live_unlock_data:
             live_unlock_data["ack_i_understand_risks"] = bool(data.get("ack_i_understand_risks"))
+        if env_full_live_stage:
+            live_unlock_data["allow_full_live_stage"] = True
+
+        kraken_spot_data = dict(execution_data.get("kraken_spot", {}))
+        if env_event_feed_path:
+            kraken_spot_data["event_feed_path"] = env_event_feed_path
 
         return cls(
             trading_mode=TradingMode(data.get("mode", "paper")),
-            explicit_live_enable=bool(data.get("enable_live_trading", False)),
-            ack_live_risks=bool(data.get("ack_i_understand_risks", False)),
-            canary_mode=bool(data.get("canary_mode", False)),
+            explicit_live_enable=bool(data.get("enable_live_trading", False)) or env_enable_live,
+            ack_live_risks=bool(data.get("ack_i_understand_risks", False)) or env_ack_live,
+            canary_mode=bool(data.get("canary_mode", False)) or env_canary_mode,
             safe_mode_default=bool(data.get("safe_mode_default", True)),
             provider_whitelist=list(data.get("provider_whitelist", [])),
             universe=list(data.get("universe", ["BTCUSDT"])),
@@ -334,7 +369,7 @@ class RobotSettings:
                 slicing_parts=execution_data.get("slicing_parts", 2),
                 binance=BinanceExecutionSettings(**execution_data.get("binance", {})),
                 kraken=KrakenExecutionSettings(**execution_data.get("kraken", {})),
-                kraken_spot=KrakenSpotExecutionSettings(**execution_data.get("kraken_spot", {})),
+                kraken_spot=KrakenSpotExecutionSettings(**kraken_spot_data),
             ),
             safety=SafetySettings(live_unlock=LiveUnlockSettings(**live_unlock_data)),
             policy=PolicySettings(**data.get("policy", {})),
@@ -348,6 +383,7 @@ class RobotSettings:
             storage=StorageSettings(**data.get("storage", {})),
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),
+            kraken_spot_non_live=KrakenSpotNonLiveSettings(**data.get("kraken_spot_non_live", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
             margin=MarginSettings(**data.get("margin", {})),
         )
@@ -367,6 +403,38 @@ class RobotSettings:
         mode = self.execution_mode_enum()
         return mode in {ExecutionMode.LIVE, ExecutionMode.LIVE_TESTNET}
 
+    def doctrine_target_provider(self) -> str:
+        return self.doctrine.target_provider or self.execution.provider_id
+
+    def doctrine_product_target(self) -> str:
+        provider_id = self.doctrine_target_provider()
+        return self.doctrine.product_target or ("spot" if provider_id.endswith("_spot") else "perps")
+
+    def kraken_spot_doctrine_active(self) -> bool:
+        return bool(
+            self.doctrine_target_provider() == "kraken_spot"
+            and self.doctrine_product_target() == "spot"
+            and self.doctrine.long_only
+            and self.doctrine.never_open_new_short_exposure
+        )
+
+    def kraken_spot_non_live_profile(self) -> str:
+        return str(self.kraken_spot_non_live.profile or "legacy")
+
+    def kraken_spot_full_analysis_enabled(self) -> bool:
+        return bool(
+            self.execution.provider_id == "kraken_spot"
+            and self.execution_mode_enum() in {ExecutionMode.PAPER, ExecutionMode.LIVE_READONLY}
+            and self.kraken_spot_doctrine_active()
+            and self.kraken_spot_non_live_profile() == "full_analysis"
+        )
+
+    def full_live_stage_enabled(self) -> bool:
+        return bool(self.safety.live_unlock.allow_full_live_stage)
+
+    def kraken_spot_event_feed_path(self) -> str:
+        return str(self.execution.kraken_spot.event_feed_path or "")
+
     def rollout_stage(self) -> RolloutStage:
         mode = self.execution_mode_enum()
         if mode == ExecutionMode.PAPER:
@@ -384,7 +452,26 @@ class RobotSettings:
 
     def live_gate_status(self) -> dict[str, Any]:
         unlock = self.safety.live_unlock
+        env_enable_live = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
+        env_ack_live = os.getenv("ACK_I_UNDERSTAND_RISKS", "false").lower() == "true"
         provider_id = self.execution.provider_id
+        doctrine_provider = self.doctrine_target_provider()
+        doctrine_product = self.doctrine_product_target()
+        enable_live = bool(unlock.enable_live_trading or self.explicit_live_enable)
+        ack_live = bool(unlock.ack_i_understand_risks or self.ack_live_risks)
+        full_live_stage = bool(unlock.allow_full_live_stage)
+        doctrine_launch_safe = bool(
+            doctrine_provider == "kraken_spot"
+            and doctrine_product == "spot"
+            and self.doctrine.long_only
+            and self.doctrine.never_open_new_short_exposure
+            and self.doctrine.enforce_cost_basis_sell_block
+            and self.doctrine.enforce_net_profit_sell_block
+            and self.doctrine.block_non_reduce_only_sells
+            and float(self.doctrine.minimum_sell_net_profit_bps) >= 120.0
+            and bool(self.harmony.enabled)
+            and bool(self.market_watch.enabled)
+        )
         return {
             "rollout_stage": self.rollout_stage().value,
             "runtime_mode": self.execution_mode_enum().value,
@@ -392,14 +479,39 @@ class RobotSettings:
             "provider_supported": provider_id in SUPPORTED_PROVIDER_IDS,
             "provider_whitelisted": provider_id in self.provider_whitelist,
             "live_ordering_enabled": self.live_ordering_enabled(),
-            "double_unlock_enabled": bool(unlock.enable_live_trading or self.explicit_live_enable) and bool(unlock.ack_i_understand_risks or self.ack_live_risks),
+            "double_unlock_enabled": enable_live and ack_live,
+            "unlock_live_requested": enable_live,
+            "unlock_acknowledged": ack_live,
+            "unlock_sources": {
+                "settings_enable_live_trading": bool(unlock.enable_live_trading),
+                "settings_ack_i_understand_risks": bool(unlock.ack_i_understand_risks),
+                "legacy_top_level_enable_live_trading": bool(self.explicit_live_enable and not env_enable_live),
+                "legacy_top_level_ack_i_understand_risks": bool(self.ack_live_risks and not env_ack_live),
+                "env_enable_live_trading": env_enable_live,
+                "env_ack_i_understand_risks": env_ack_live,
+            },
+            "full_live_stage_enabled": full_live_stage,
+            "full_live_stage_required": bool(
+                self.execution_mode_enum() == ExecutionMode.LIVE
+                and unlock.canary_required_before_full
+                and not self.canary_mode
+            ),
+            "full_live_stage_sources": {
+                "settings_allow_full_live_stage": bool(unlock.allow_full_live_stage and os.getenv("ENABLE_FULL_LIVE_STAGE", "").lower() != "true"),
+                "env_allow_full_live_stage": os.getenv("ENABLE_FULL_LIVE_STAGE", "false").lower() == "true",
+            },
             "margin_enabled": self.margin.enabled,
             "canary_mode": self.canary_mode,
-            "doctrine_target_provider": self.doctrine.target_provider or provider_id,
-            "doctrine_product_target": self.doctrine.product_target or ("spot" if provider_id.endswith("_spot") else "perps"),
+            "doctrine_target_provider": doctrine_provider,
+            "doctrine_product_target": doctrine_product,
             "long_only": bool(self.doctrine.long_only),
             "cost_basis_sell_block": bool(self.doctrine.enforce_cost_basis_sell_block),
             "net_profit_sell_block": bool(self.doctrine.enforce_net_profit_sell_block),
+            "harmony_enabled": bool(self.harmony.enabled),
+            "market_watch_enabled": bool(self.market_watch.enabled),
+            "event_feed_configured": bool(self.kraken_spot_event_feed_path()),
+            "event_feed_path": self.kraken_spot_event_feed_path(),
+            "doctrine_launch_safe": doctrine_launch_safe,
         }
 
     def config_hash(self) -> str:
@@ -438,6 +550,18 @@ class RobotSettings:
                 "entry_degrade_min_depth_notional": self.market_watch.entry_degrade_min_depth_notional,
                 "liquidity_map_min_depth_notional": self.market_watch.liquidity_map_min_depth_notional,
                 "block_new_entries_on_blackout": self.market_watch.block_new_entries_on_blackout,
+            },
+            "kraken_spot_non_live": {
+                "profile": self.kraken_spot_non_live.profile,
+                "event_fixture_path": self.kraken_spot_non_live.event_fixture_path,
+                "event_recording_path": self.kraken_spot_non_live.event_recording_path,
+                "emit_operator_bundle": self.kraken_spot_non_live.emit_operator_bundle,
+                "emit_replay_bundle": self.kraken_spot_non_live.emit_replay_bundle,
+                "full_analysis_enabled": self.kraken_spot_full_analysis_enabled(),
+            },
+            "kraken_spot_live": {
+                "event_feed_path": self.kraken_spot_event_feed_path(),
+                "full_live_stage_enabled": self.full_live_stage_enabled(),
             },
             "live_gate_status": self.live_gate_status(),
             "monitoring": {
@@ -489,6 +613,9 @@ class RobotSettings:
         if mode == ExecutionMode.LIVE_READONLY:
             return
 
+        if mode == ExecutionMode.LIVE and provider_id != "kraken_spot":
+            raise ValueError("Live trading blocked: unsupported_doctrine_target_use_kraken_spot")
+
         missing = []
         enable_live = unlock.enable_live_trading or self.explicit_live_enable
         ack_live = unlock.ack_i_understand_risks or self.ack_live_risks
@@ -514,8 +641,33 @@ class RobotSettings:
         if not api_key or not api_secret:
             missing.append(f"{provider_id}_api_credentials")
 
-        if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode:
-            missing.append("CANARY_MODE")
+        doctrine_guard_required = provider_id == "kraken_spot" or mode == ExecutionMode.LIVE
+        if doctrine_guard_required:
+            doctrine_provider = self.doctrine_target_provider()
+            doctrine_product = self.doctrine_product_target()
+            if doctrine_provider != "kraken_spot":
+                missing.append("doctrine.target_provider=kraken_spot")
+            if doctrine_product != "spot":
+                missing.append("doctrine.product_target=spot")
+            if not self.doctrine.long_only:
+                missing.append("doctrine.long_only")
+            if not self.doctrine.never_open_new_short_exposure:
+                missing.append("doctrine.never_open_new_short_exposure")
+            if not self.doctrine.enforce_cost_basis_sell_block:
+                missing.append("doctrine.enforce_cost_basis_sell_block")
+            if not self.doctrine.enforce_net_profit_sell_block:
+                missing.append("doctrine.enforce_net_profit_sell_block")
+            if not self.doctrine.block_non_reduce_only_sells:
+                missing.append("doctrine.block_non_reduce_only_sells")
+            if float(self.doctrine.minimum_sell_net_profit_bps) < 120.0:
+                missing.append("doctrine.minimum_sell_net_profit_bps>=120")
+            if not self.harmony.enabled:
+                missing.append("harmony.enabled")
+            if not self.market_watch.enabled:
+                missing.append("market_watch.enabled")
+
+        if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode and not unlock.allow_full_live_stage:
+            missing.append("ENABLE_FULL_LIVE_STAGE")
         if mode == ExecutionMode.LIVE and unlock.require_testnet_passed:
             if os.getenv("TESTNET_VALIDATED", "false").lower() != "true":
                 missing.append("TESTNET_VALIDATED")

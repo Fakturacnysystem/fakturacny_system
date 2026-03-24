@@ -1,13 +1,17 @@
-# Autonomous Investment Robot (Perps Intraday)
+# Autonomous Investment Robot
 
-Offline-deterministic paper/replay robot with fail-closed Binance USD-M live execution path.
+Kraken-SPOT-doctrine runtime with fail-closed live gating and fully unlocked paper, replay, and readonly analysis surfaces.
+
+Legacy derivative live services remain in source only as readonly/diagnostic compatibility shims. Order-capable derivative execution is explicitly blocked by doctrine.
 
 ## Safety invariants (hard fail-closed)
 - Live order placement is blocked unless both env flags are true:
   - `ENABLE_LIVE_TRADING=true`
   - `ACK_I_UNDERSTAND_RISKS=true`
+- Full-stage `config.kraken_spot.live_profit.yaml` is additionally blocked unless:
+  - `ENABLE_FULL_LIVE_STAGE=true`
 - Live order placement is blocked unless:
-  - `provider_whitelist` includes `binance_um_perps`
+  - `provider_whitelist` includes `kraken_spot`
   - critical risk + TCO limits are explicit (no `UNSPECIFIED`)
   - API key + secret env vars exist and config validates
 - Any of stale-data, schema mismatch, cross-feed divergence, reconciliation mismatch, auth errors, reject storm, abnormal latency => kill + safe mode + flatten + cooldown.
@@ -47,18 +51,55 @@ Offline-deterministic paper/replay robot with fail-closed Binance USD-M live exe
 - Paper runs now emit structured journals: `config_manifest.jsonl`, `signal_journal.jsonl`, `policy_journal.jsonl`, `execution_journal.jsonl`, and `learning_records.jsonl`.
 - Live runs additionally emit `truth_confidence_journal.jsonl`, `fills_journal.jsonl`, `accounting_truth_journal.jsonl`, `recovery_journal.jsonl`, `reconciliation_journal.jsonl`, `meta_governor_journal.jsonl`, `control_journal.jsonl`, `market_integrity_journal.jsonl`, `market_integrity_evidence_journal.jsonl`, `venue_limit_journal.jsonl`, and `provider_capability_journal.jsonl`.
 - Live and paper runs now emit `quantum_state_journal.jsonl`, `edge_immunity_journal.jsonl`, `mastermind_journal.jsonl`, `spre_journal.jsonl`, `shadow_rival_journal.jsonl`, `decision_doctrine_journal.jsonl`, `execution_simulation_journal.jsonl`, `human_escalation_journal.jsonl`, `analog_trade_lookup.jsonl`, and `counterfactual_review.jsonl`; SPRE/shadow/doctrine/mastermind journals now include action rankings, survival ratio, dominance gap, failure clusters, kill-path evidence, truth strength, partial-truth penalty, regret pressure, or bounded-safe advisory rationale depending on the channel. Paper and live runs can emit `pnl_attribution.jsonl`, `loss_autopsy.jsonl`, `post_trade_summary.jsonl`, `loss_review_summary.jsonl`, `decision_doctrine_summary.jsonl`, and `mastermind_summary.jsonl`.
+- Live runs now also refresh `kraken_spot_operator_summary.json`, `live_capability_matrix.json`, `live_activated_capabilities.json`, `live_still_gated_capabilities.json`, `live_doctrine_blocked_capabilities.json`, and `live_artifact_index.json` during the actual live loop.
 
-## Profiles
-- Paper baseline: `config.paper.yaml`
-- Paper perps intraday: `config.perps_intraday.paper.yaml`
-- Live readonly (no order placement): `config.perps_intraday.live_readonly.yaml`
-- Testnet tiny risk: `config.perps_intraday.testnet.yaml`
-- Live canary: `config.perps_intraday.live_canary.yaml`
-- Live full strict: `config.perps_intraday.live.yaml`
-- Kraken derivatives live readonly (scaffold): `config.kraken_derivatives.live_readonly.yaml`
-- Kraken derivatives testnet (signed adapter implemented; validate with small size first): `config.kraken_derivatives.testnet.yaml`
-- Kraken derivatives live canary (signed adapter implemented; keep strict limits): `config.kraken_derivatives.live_canary.yaml`
-- Kraken derivatives live full (signed adapter implemented; use only after canary stability): `config.kraken_derivatives.live.yaml`
+## Kraken SPOT doctrine profiles
+- Paper baseline: `config.kraken_spot.paper.yaml`
+- Paper full analysis: `config.kraken_spot.paper_full_analysis.yaml`
+- Replay full analysis: `config.kraken_spot.replay_full_analysis.yaml`
+- Readonly full analysis (no order placement): `config.kraken_spot.readonly_analysis.yaml`
+- Kraken SPOT guarded live: `config.kraken_spot.live.yaml`
+- Kraken SPOT higher-notional guarded live: `config.kraken_spot.live_profit.yaml`
+- Both supported Kraken SPOT live configs start in normal risk mode. Hard doctrine, reconciliation, market-integrity, market-watch, and pre-submit capital-protection gates remain authoritative.
+- Doctrine-incompatible derivatives/perps configs remain in the repo, but config-file launch is intentionally blocked.
+
+## Capability activation map
+- Active for Kraken SPOT paper / replay / readonly full analysis:
+  - `MarketIntegrityService`
+  - `VenueCapabilityRegistry`
+  - `HarmonyConfigResolver`
+  - `MarketWatchService`
+  - `QuantumScenarioService`
+  - `SignalInterferenceEngine`
+  - `EdgeImmunityService`
+  - `SPREEngine`
+  - `ShadowRivalService`
+  - `CapitalSovereigntyService`
+  - `PositionMorphingEngine` in spot-compatible entry/de-risk/reduce-only shapes
+  - `AdaptiveExitAllocator`
+  - `SyntheticAffectEngine`
+  - `ExecutionSimulationSandbox`
+  - `HumanEscalationLayer`
+  - `ReplayReportingCoordinator`
+  - `OperatorSummaryCoordinator`
+  - `PnL attribution`, `loss autopsy`, `episodic memory`, `analog lookup`, `counterfactual review`
+- Active but partial unless external event evidence is supplied:
+  - `EventIntelligenceService`
+  - `SourceTrustService`
+  - `FreshnessNoveltyEngine`
+  - `AssetRelevanceMapper`
+  - `MarketImpactInterpreter`
+  - `PricedInProbabilityEngine`
+  - `AdversarialNewsFilter`
+  - `DataProvenanceLedger`
+- Explicitly blocked by doctrine:
+  - derivatives/perps configs and launchers
+  - `DeltaNeutralCarryStrategy`
+  - `BasisStrategy`
+  - `PairsStatArbStrategy`
+  - `CarryStrategy`
+  - negative-direction fresh entries from directional strategies
+  - any non-reduce SELL that is not inventory-backed
 
 ## Binance setup (step-by-step)
 1. Create Binance Futures API key:
@@ -72,6 +113,7 @@ EXCHANGE_API_KEY=...
 EXCHANGE_API_SECRET=...
 ENABLE_LIVE_TRADING=false
 ACK_I_UNDERSTAND_RISKS=false
+ENABLE_FULL_LIVE_STAGE=false
 TESTNET_VALIDATED=false
 ```
 
@@ -91,29 +133,35 @@ source .venv/bin/activate
 
 ## Commands
 ```bash
-PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml --duration-seconds 60
-PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.perps_intraday.live_readonly.yaml --source recordings
-PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken_spot.paper.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken_spot.paper_full_analysis.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot replay-report --config config.kraken_spot.replay_full_analysis.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot ack-review --run-dir runs/<run_id> --reviewer ops --notes "manual review approved"
-PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_derivatives.live_readonly.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
 ```
 
-## Kraken (EEA-friendly alternative) integration status
-- `live-readonly` preflight path is supported via Kraken derivatives provider (`kraken_derivatives`).
-- Core signed REST execution path is implemented for Kraken futures v3 endpoints (`sendorder`, `cancelorder`, `orders/status`, `openorders`, `openpositions`) with fail-closed safety guards in `LiveKrakenService`.
-- `record` is currently implemented only for Binance USDT-M market recorder; Kraken recording path is not yet implemented and fails closed.
-- Exchange response schemas can vary by account/entity; run `testnet -> canary` first and verify order/position reconciliation before any live usage.
+## Requested doctrine status
+- Launch-gated live target: `kraken_spot` only.
+- Product doctrine: `spot` only.
+- Position doctrine: `long_only`.
+- Hard live sell gates:
+  - no non-reduce sell
+  - no sell below authoritative FIFO cost basis
+  - no sell below modeled net profit floor `>= 120 bps`
+- Harmony config resolution and `harmony_report.json` / `harmony_boot_report.json` are emitted into the run directory.
+- MarketWatch blocks or degrades entries on blackout, spread, and liquidity failures.
+- Legacy derivatives `live` / `live_testnet` launch configs remain in the repo for reference and readonly compatibility, but config-file launch is intentionally blocked for this doctrine.
 - Helper scripts:
-  - `./scripts/run_kraken_live_readonly.sh`
-  - `./scripts/run_kraken_testnet.sh`
-  - `./scripts/run_kraken_live_canary.sh`
-  - `./scripts/run_kraken_live.sh`
-  - `./scripts/instant_validate_kraken.sh` (pytest + readonly smoke)
+  - `./scripts/run_kraken_spot_paper.sh`
+  - `./scripts/run_kraken_spot_paper_full_analysis.sh`
+  - `./scripts/run_kraken_spot_replay_full_analysis.sh`
+  - `./scripts/run_kraken_spot_readonly_analysis.sh`
+  - `./scripts/run_kraken_spot_profit_full_throttle.sh`
+  - `./scripts/run_kraken_ultra_profit_full_throttle.sh`
+  - `./scripts/instant_validate_kraken.sh`
 
 ## Emergency stop
 - Soft stop: run with `--kill`.
@@ -137,7 +185,10 @@ python3 -m pytest -q
 ```
 
 ## CI
-- GitHub Actions workflow: `.github/workflows/ci.yml`
+- Standalone workflow template:
+  - `docs/ci_templates/kraken_spot_doctrine_prelive_audit.workflow.yml.template`
+- Place it later at:
+  - `.github/workflows/kraken_spot_doctrine_prelive_audit.yml`
 - Gates:
   - `pytest -q`
   - tracked-file secret signature scan
@@ -159,7 +210,7 @@ python3 -m pytest -q
 PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
 
 # live readonly preflight / preview (no order placement)
-PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 ```
 
 If `python` command does not exist on macOS, use `python3` everywhere (all commands above already do).
@@ -168,36 +219,32 @@ If you need Python 3.12+ and Homebrew install fails, install Python directly fro
 
 ## Amateur runbook (safe rollout + emergency)
 ```bash
-# 1) live-readonly (24-72h) + short recording sample
-PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.perps_intraday.live_readonly.yaml
-PYTHONPATH=src python3 -m autonomous_investment_robot record --config config.perps_intraday.live_readonly.yaml --duration-seconds 60
+# 1) Kraken SPOT paper / replay / readonly analysis
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken_spot.paper_full_analysis.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot replay-report --config config.kraken_spot.replay_full_analysis.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 
-# 2) replay recorded market data offline
-PYTHONPATH=src python3 -m autonomous_investment_robot replay --config config.perps_intraday.live_readonly.yaml --source recordings
+# 2) doctrine-safe Kraken SPOT launch gates
+ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 
-# 3) testnet (opt-in real exchange interaction)
-RUN_TESTNET=1 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.testnet.yaml
-
-# 4) canary (strict limits)
-TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live_canary.yaml
-
-# 5) full live (after canary stability)
-TESTNET_VALIDATED=true ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml
+# 3) higher-notional profile
+ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true ENABLE_FULL_LIVE_STAGE=true \
+KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
 
 # emergency kill / flatten
-PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.perps_intraday.live.yaml --kill
-PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.perps_intraday.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml --kill
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
 ```
 
 Rollout stage mapping used by the runtime:
 - `paper` -> offline deterministic
 - `shadow` -> `live_readonly`
-- `tiny_live` -> `live_testnet`
-- `canary_live` -> additive alias for a canary-style `live` profile
-- `limited_live` -> `live` canary profile
-- `normal_live` -> full `live`
+- `tiny_live` -> canary-sized launch-gated `kraken_spot` profile
+- `limited_live` -> conservative `kraken_spot` live profile
+- `normal_live` -> higher-notional `kraken_spot` live profile
 
 Automatic promotion does not exist. Automatic downgrade does exist when preflight, restart-state confidence, reconciliation, or health checks degrade.
 

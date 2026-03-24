@@ -57,6 +57,12 @@ class HarmonyConfigResolver:
             "order_cadence_s": cadence_s,
             "order_cadence_source": cadence_source,
             "live_gate_status": self.settings.live_gate_status(),
+            "live_activation": {
+                "canary_mode": bool(getattr(self.settings, "canary_mode", False)),
+                "full_live_stage_enabled": bool(getattr(self.settings, "full_live_stage_enabled", lambda: False)()),
+                "event_feed_configured": bool(getattr(self.settings, "kraken_spot_event_feed_path", lambda: "")()),
+                "event_feed_path": str(getattr(self.settings, "kraken_spot_event_feed_path", lambda: "")()),
+            },
             "risk_mode_default": "defensive" if bool(self.settings.safe_mode_default) else "normal",
             "market_watch": {
                 "enabled": bool(getattr(self.settings.market_watch, "enabled", False)),

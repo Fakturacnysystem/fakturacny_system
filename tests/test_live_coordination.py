@@ -8,6 +8,7 @@ from autonomous_investment_robot.core.contracts import RecoveryDecision
 from autonomous_investment_robot.services.alpha_service.service import AlphaService
 from autonomous_investment_robot.services.adaptive_exit_allocator.service import AdaptiveExitAllocator
 from autonomous_investment_robot.services.capital_sovereignty_service.service import CapitalSovereigntyService
+from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.service import Fill
 from autonomous_investment_robot.services.execution.service import ExecutionService
 from autonomous_investment_robot.services.execution_simulation_sandbox.service import ExecutionSimulationSandbox
@@ -103,6 +104,8 @@ def _market_coordinator(tmp_path):
             venue_capability_registry=VenueCapabilityRegistry(),
             shared_venue_limit_governor=SharedVenueLimitGovernor(),
             event_intelligence_service=EventIntelligenceService(),
+            data_ingestion_service=DataIngestionService(),
+            reporting=ReportingCoordinator(observability=observability),
         ),
     )
 
@@ -136,6 +139,7 @@ def test_live_market_coordinator_collects_context_and_journals(tmp_path):
     assert (Path(settings.storage.run_dir) / "signal_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "mastermind_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "quantum_state_journal.jsonl").exists()
+    assert (Path(settings.storage.run_dir) / "signal_interference_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "edge_immunity_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "market_integrity_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "market_integrity_evidence_journal.jsonl").exists()
@@ -149,6 +153,32 @@ def test_live_market_coordinator_collects_context_and_journals(tmp_path):
     assert (Path(settings.storage.run_dir) / "priced_in_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "adversarial_narrative_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "data_provenance_journal.jsonl").exists()
+    assert (Path(settings.storage.run_dir) / "market_context_summary.jsonl").exists()
+
+
+def test_live_market_coordinator_uses_configured_event_feed_when_connector_has_none(tmp_path):
+    settings, coordinator = _market_coordinator(tmp_path)
+    event_path = Path(tmp_path) / "events.json"
+    event_path.write_text(
+        '[{"ts":"2026-03-24T10:00:00+00:00","source":"sec","trust_score":0.9,"novelty":0.4,"relevance":0.9,"symbols":["BTCUSDT"],"impact_score":0.4,"sentiment":0.3}]',
+        encoding="utf-8",
+    )
+    settings.execution.kraken_spot.event_feed_path = str(event_path)
+    live = SimpleNamespace(
+        connector=SimpleNamespace(book_ticker=lambda symbol: {"bidPrice": "130.0", "askPrice": "130.2", "bidQty": "5", "askQty": "5", "symbol": symbol}),
+    )
+
+    context = coordinator.collect(
+        live=live,
+        symbol="BTCUSDT",
+        now_dt=datetime(2026, 3, 24, 10, 30, tzinfo=timezone.utc),
+        prices=[100.0, 110.0, 120.0],
+        base_budget=settings.policy.base_risk_budget,
+        exposure_notional=0.0,
+    )
+
+    assert context.event_intelligence_report is not None
+    assert context.event_intelligence_report.partial is False
 
 
 def test_live_decision_coordinator_builds_intent_and_plan(tmp_path):
@@ -253,6 +283,7 @@ def test_live_decision_coordinator_builds_intent_and_plan(tmp_path):
     assert decision.adjusted_intent is not None
     assert decision.execution_plan is not None
     assert "decision_doctrine" in decision.adjusted_intent.why
+    assert decision.adjusted_intent.why["execution_plan"]["order_style"] == decision.execution_plan.order_style
     assert "global_execution_adjustments" in decision.execution_plan.reasons
     assert decision.synthetic_affect_state is not None
     assert decision.capital_sovereignty_decision is not None

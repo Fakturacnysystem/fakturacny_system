@@ -89,31 +89,16 @@ class LiveKrakenService:
         self.supports_replace = False
         self.supports_expire = True
 
+    def _ordering_supported(self) -> tuple[bool, str]:
+        if self.settings.execution_mode_enum() == ExecutionMode.LIVE_READONLY:
+            return False, "ordering_not_allowed_in_mode:live_readonly"
+        return False, "unsupported_doctrine_target_use_kraken_spot"
+
     def preflight(self) -> tuple[bool, str]:
-        if "kraken_derivatives" not in self.settings.provider_whitelist:
-            return False, "provider_not_whitelisted"
         mode = self.settings.execution_mode_enum()
         if mode == ExecutionMode.LIVE_READONLY:
             return True, "readonly"
-        if not self.connector.has_credentials:
-            return False, "missing_credentials"
-        ok_perm, reason_perm = self.connector.verify_live_permissions()
-        if not ok_perm:
-            return False, reason_perm
-        self._auth_validated = True
-        if self.settings.risk.leverage != 0:
-            return False, "risk_leverage_must_be_zero"
-        info = self.connector.exchange_info() if hasattr(self.connector, "exchange_info") else {}
-        symbols = {str(s.get("symbol", "")).upper() for s in info.get("symbols", []) if isinstance(s, dict)}
-        for symbol in self.settings.universe:
-            if symbols and symbol.upper() not in symbols:
-                return False, f"symbol_missing:{symbol}"
-        if not bool(getattr(self.connector, "supports_live_trading", False)):
-            return False, "kraken_live_trading_not_implemented"
-        balance_ok, balance_reason = self._balance_state_ok()
-        if not balance_ok:
-            return False, f"balance_state_invalid:{balance_reason}"
-        return True, "ok"
+        return False, "unsupported_doctrine_target_use_kraken_spot"
 
     def _client_order_id(self, symbol: str, side: str, ts: float, slice_idx: int = 0) -> str:
         base = f"{self.run_id}|kraken|{symbol}|{side}|{int(ts)}|{slice_idx}"
@@ -462,6 +447,10 @@ class LiveKrakenService:
             return LiveExecutionResult(status="blocked", reason="safe_mode")
         if now < self.cooldown_until_s:
             return LiveExecutionResult(status="blocked", reason="cooldown")
+        ordering_ok, ordering_reason = self._ordering_supported()
+        if not ordering_ok:
+            self.request_kill(ordering_reason)
+            return LiveExecutionResult(status="killed", reason=ordering_reason)
 
         pre_submit_error = self._pre_submit_validate_intent(intent)
         if pre_submit_error is not None:
@@ -569,6 +558,9 @@ class LiveKrakenService:
                 continue
 
     def flatten_all_positions(self, max_attempts: int = 3) -> tuple[bool, str]:
+        ordering_ok, ordering_reason = self._ordering_supported()
+        if not ordering_ok:
+            return False, ordering_reason
         if not self.settings.execution.kraken.reduce_only_on_flatten:
             return False, "flatten_disabled"
         self._cancel_open_orders_best_effort()

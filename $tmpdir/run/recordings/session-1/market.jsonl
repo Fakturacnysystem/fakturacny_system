@@ -1,0 +1,3 @@
+{"stream":"btcusd@aggTrade","data":{"e":"aggTrade","s":"BTC/USD","a":1,"E":1767225600000,"T":1767225600000,"p":"100.5","q":"0.1","m":false}}
+{"stream":"btcusd@aggTrade","data":{"e":"aggTrade","s":"BTC/USD","a":2,"E":1767229200000,"T":1767229200000,"p":"101.0","q":"0.2","m":false}}
+{"stream":"btcusd@aggTrade","data":{"e":"aggTrade","s":"BTC/USD","a":3,"E":1767232800000,"T":1767232800000,"p":"101.5","q":"0.2","m":false}}

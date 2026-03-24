@@ -49,27 +49,29 @@ class KrakenSpotConnector:
         secret_env = api_secret_env or self.settings.api_secret_env
         self._api_key = os.getenv(key_env, "").strip() or os.getenv("KRAKEN_API_KEY", "").strip()
         self._api_secret = os.getenv(secret_env, "").strip() or os.getenv("KRAKEN_API_SECRET", "").strip()
-        if not self._api_key or not self._api_secret:
-            raise KrakenSpotConnectorError("missing_credentials")
         try:
             import ccxt  # type: ignore
         except Exception as exc:  # pragma: no cover
             raise KrakenSpotConnectorError("ccxt_unavailable") from exc
         self._ccxt = ccxt
-        self.exchange = ccxt.kraken(
-            {
-                "apiKey": self._api_key,
-                "secret": self._api_secret,
-                "enableRateLimit": True,
-                "timeout": int(float(self.settings.request_timeout_s) * 1000),
-            }
-        )
+        payload = {
+            "enableRateLimit": True,
+            "timeout": int(float(self.settings.request_timeout_s) * 1000),
+        }
+        if self._api_key and self._api_secret:
+            payload["apiKey"] = self._api_key
+            payload["secret"] = self._api_secret
+        self.exchange = ccxt.kraken(payload)
         self.exchange.options = {**getattr(self.exchange, "options", {}), "createMarketBuyOrderRequiresPrice": False}
         self._markets_loaded = False
 
     @property
     def has_credentials(self) -> bool:
         return bool(self._api_key and self._api_secret)
+
+    def _require_private_access(self) -> None:
+        if not self.has_credentials:
+            raise KrakenSpotConnectorError("missing_credentials")
 
     def _load_markets(self) -> None:
         if not self._markets_loaded:
@@ -187,6 +189,7 @@ class KrakenSpotConnector:
         }
 
     def balances(self) -> list[dict[str, Any]]:
+        self._require_private_access()
         try:
             balance = self.exchange.fetch_balance()
         except Exception as exc:
@@ -279,6 +282,7 @@ class KrakenSpotConnector:
         }
 
     def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        self._require_private_access()
         try:
             orders = self.exchange.fetch_open_orders(symbol)
         except Exception as exc:
@@ -286,6 +290,7 @@ class KrakenSpotConnector:
         return [self._normalize_order(order) for order in orders or [] if isinstance(order, dict)]
 
     def _closed_orders(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        self._require_private_access()
         try:
             orders = self.exchange.fetch_closed_orders(symbol, limit=limit)
         except Exception:
@@ -302,6 +307,7 @@ class KrakenSpotConnector:
         return None
 
     def validate_order_preview(self, *, symbol: str, side: str, amount: float, price: float, post_only: bool = False) -> tuple[bool, str]:
+        self._require_private_access()
         params: dict[str, Any] = {"validate": True, "userref": self._userref(f"validate|{symbol}|{side}|{amount:.8f}|{price:.8f}")}
         if post_only:
             params["postOnly"] = True
@@ -312,6 +318,7 @@ class KrakenSpotConnector:
         return True, "validated"
 
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_private_access()
         symbol = str(payload.get("symbol", ""))
         side = str(payload.get("side", "")).lower()
         amount = float(payload.get("quantity", 0.0) or 0.0)
@@ -339,6 +346,7 @@ class KrakenSpotConnector:
         return self._normalize_order(created, client_order_id=client_order_id)
 
     def cancel_order(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        self._require_private_access()
         order = self.query_order(symbol, client_order_id)
         if order is None:
             raise KrakenSpotConnectorError(f"order_not_found:{client_order_id}")
@@ -349,6 +357,7 @@ class KrakenSpotConnector:
         return self._normalize_order(result if isinstance(result, dict) else {"id": order.get("orderId"), "symbol": symbol, "status": "canceled"}, client_order_id=client_order_id)
 
     def trade_history(self, symbol: str, *, offset: int = 0, limit: int = 50) -> list[KrakenSpotTradeRow]:
+        self._require_private_access()
         market = self._market(symbol)
         market_id = str(market.get("id", ""))
         try:

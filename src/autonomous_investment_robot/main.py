@@ -1,22 +1,27 @@
 from pathlib import Path
 import time
 
-from autonomous_investment_robot.config.settings import RobotSettings
+from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceConnectorError, BinanceUMPerpsConnector
 from autonomous_investment_robot.connectors.cex.kraken_derivatives import KrakenDerivativesConnector
+from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.services.data_ingestion.binance_ws_streams import BinanceWSStreams
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
 from autonomous_investment_robot.services.execution.live_kraken_service import LiveKrakenService
+from autonomous_investment_robot.services.execution.live_kraken_spot_service import LiveKrakenSpotService
 from autonomous_investment_robot.services.human_escalation_layer.service import HumanEscalationLayer
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
 
 
 def run_with_config(config_path: str) -> dict:
-    settings = RobotSettings.from_file(config_path)
-    orchestrator = RobotOrchestrator(settings)
-    return orchestrator.boot()
+    try:
+        settings = RobotSettings.from_file(config_path)
+        orchestrator = RobotOrchestrator(settings)
+        return orchestrator.boot()
+    except Exception as exc:
+        return {"status": "blocked", "reason": str(exc), "config": config_path}
 
 
 def run_replay(config_path: str, source: str = "fixtures", run_id: str | None = None) -> dict:
@@ -40,6 +45,10 @@ def run_replay(config_path: str, source: str = "fixtures", run_id: str | None = 
     engine = ReplayEngine()
     events = engine.from_csv(settings.fixtures.ohlcv_csv, symbol=symbol, venue=source)
     return {"events": len(events), "source": source}
+
+
+def run_replay_report(config_path: str) -> dict:
+    return run_with_config(config_path)
 
 
 def run_record(
@@ -165,12 +174,33 @@ def run_record(
 
 
 def emergency_flatten(config_path: str) -> dict:
-    settings = RobotSettings.from_file(config_path)
+    try:
+        settings = RobotSettings.from_file(config_path)
+    except Exception as exc:
+        return {"status": "blocked", "reason": str(exc), "config": config_path}
+    if settings.execution.provider_id != "kraken_spot":
+        return {
+            "status": "blocked",
+            "reason": "flatten_blocked_unsupported_doctrine_target_use_kraken_spot",
+            "config": config_path,
+        }
+    if settings.execution_mode_enum() != ExecutionMode.LIVE:
+        return {
+            "status": "blocked",
+            "reason": f"flatten_blocked_invalid_mode:{settings.execution_mode_enum().value}",
+            "config": config_path,
+        }
     if settings.execution.provider_id == "kraken_derivatives":
         live = LiveKrakenService(
             settings=settings,
             run_id=settings.storage.run_dir.replace("/", "_"),
             connector=KrakenDerivativesConnector(settings.execution.kraken),
+        )
+    elif settings.execution.provider_id == "kraken_spot":
+        live = LiveKrakenSpotService(
+            settings=settings,
+            run_id=settings.storage.run_dir.replace("/", "_"),
+            connector=KrakenSpotConnector(settings.execution.kraken_spot),
         )
     elif settings.execution.provider_id == "binance_um_perps":
         live = LiveBinanceService(

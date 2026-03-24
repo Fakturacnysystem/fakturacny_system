@@ -71,6 +71,12 @@ class ExecutionService:
         payload = intent.why.get("market_integrity", {})
         return payload if isinstance(payload, dict) else {}
 
+    def _doctrine_target_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("doctrine_target", {})
+        return payload if isinstance(payload, dict) else {}
+
     def _mastermind_payload(self, intent: OrderIntent) -> dict[str, object]:
         if not isinstance(intent.why, dict):
             return {}
@@ -84,6 +90,7 @@ class ExecutionService:
         mastermind = self._mastermind_payload(intent)
         meta_governor = intent.why.get("meta_governor", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("meta_governor", {}), dict) else {}
         human_escalation = intent.why.get("human_escalation", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("human_escalation", {}), dict) else {}
+        doctrine_target = self._doctrine_target_payload(intent)
 
         doctrine_action = str(doctrine.get("recommended_action", "continue") or "continue")
         doctrine_size_multiplier = float(doctrine.get("size_multiplier", 1.0) or 1.0)
@@ -100,6 +107,12 @@ class ExecutionService:
         escalation_action = str(human_escalation.get("action", "continue") or "continue")
 
         hard_block = False
+        if (
+            not reduce_only
+            and str(intent.side).lower() == "sell"
+            and bool(doctrine_target.get("long_only", False))
+        ):
+            hard_block = True
         if not reduce_only and doctrine_action in {"no_trade", "wait"}:
             hard_block = True
         if not reduce_only and simulation_action in {"no_trade", "wait"}:
@@ -133,6 +146,7 @@ class ExecutionService:
             "robustness_score": max(0.0, min(1.0, robustness_score)),
             "preferred_exit_style": preferred_exit_style,
             "mastermind_execution_style": mastermind_execution_style,
+            "doctrine_long_only": bool(doctrine_target.get("long_only", False)),
         }
 
     def forecast_execution_quality(

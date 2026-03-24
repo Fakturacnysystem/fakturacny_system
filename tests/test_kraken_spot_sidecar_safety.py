@@ -21,20 +21,23 @@ def _load_root_module(module_name: str, file_name: str):
     return module
 
 
-def test_kraken_spot_connector_requires_credentials(monkeypatch):
+def test_kraken_spot_connector_private_calls_require_credentials(monkeypatch):
     monkeypatch.delenv("KRAKEN_SPOT_API_KEY", raising=False)
     monkeypatch.delenv("KRAKEN_SPOT_API_SECRET", raising=False)
     monkeypatch.delenv("KRAKEN_API_KEY", raising=False)
     monkeypatch.delenv("KRAKEN_API_SECRET", raising=False)
 
+    connector = KrakenSpotConnector()
+
+    assert connector.has_credentials is False
     with pytest.raises(KrakenSpotConnectorError, match="missing_credentials"):
-        KrakenSpotConnector()
+        connector.balances()
 
 
-def test_kraken_spot_connector_blocks_trading_calls():
+def test_kraken_spot_connector_blocks_margin_calls():
     connector = object.__new__(KrakenSpotConnector)
 
-    with pytest.raises(KrakenSpotTradingBlocked, match="kraken_spot_trading_unsupported_in_tracked_runtime"):
+    with pytest.raises(KrakenSpotTradingBlocked, match="kraken_spot_margin_unsupported_long_only_spot_doctrine"):
         connector.execute_margin_order("BTC/EUR", "buy", 20.0, 3.0)
 
 

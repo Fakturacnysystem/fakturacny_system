@@ -84,3 +84,23 @@ class ReportingCoordinator:
             "mastermind": None if mastermind is None else self._serialize(mastermind),
         }
         return self.build_operator_summary(channel="mastermind_summary", payload=payload)
+
+    def report_market_context(
+        self,
+        *,
+        symbol: str,
+        harmony: Any | None = None,
+        market_integrity: Any | None = None,
+        provider_capability: Any | None = None,
+        market_watch: Any | None = None,
+        event_status: Any | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "symbol": symbol,
+            "harmony": None if harmony is None else self._serialize(harmony),
+            "market_integrity": None if market_integrity is None else self._serialize(market_integrity),
+            "provider_capability": None if provider_capability is None else self._serialize(provider_capability),
+            "market_watch": None if market_watch is None else self._serialize(market_watch),
+            "event_status": None if event_status is None else self._serialize(event_status),
+        }
+        return self.build_operator_summary(channel="market_context_summary", payload=payload)

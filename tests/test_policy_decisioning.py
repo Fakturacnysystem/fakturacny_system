@@ -41,6 +41,17 @@ def _policy() -> PolicyService:
     return svc
 
 
+def _kraken_spot_policy() -> PolicyService:
+    return PolicyService(
+        PolicySettings(confidence_threshold=0.55, base_risk_budget=100.0),
+        AllocatorSettings(),
+        TCOSettings(max_total_cost_bps=100.0, max_impact_bps=100.0),
+        long_only=True,
+        target_provider="kraken_spot",
+        product_target="spot",
+    )
+
+
 def test_evaluate_decision_emits_no_trade_reason_for_low_confidence():
     svc = _policy()
     fc = _forecast(confidence=0.4)
@@ -49,6 +60,53 @@ def test_evaluate_decision_emits_no_trade_reason_for_low_confidence():
     assert decision.no_trade is not None
     assert decision.no_trade.reason == "confidence_guard"
     assert "confidence_guard" in decision.no_trade.reasons
+
+
+def test_kraken_spot_doctrine_filter_removes_market_neutral_strategies() -> None:
+    svc = _kraken_spot_policy()
+    fc = _forecast()
+    signals = svc.evaluate_strategies(
+        {
+            "depth_notional": 1_000_000.0,
+            "funding_rate": 0.0005,
+            "spread_proxy": 0.0,
+            "ret_3": 0.003,
+            "ret_1": -0.002,
+            "mark_price": 100.0,
+            "spot_price_proxy": 99.0,
+            "pairs_zscore": 1.2,
+        },
+        fc,
+    )
+
+    assert signals
+    assert all(signal.name not in {"delta_neutral_carry", "basis", "pairs_stat_arb", "carry"} for signal in signals)
+    assert all(signal.target_notional >= 0.0 for signal in signals)
+
+
+def test_kraken_spot_doctrine_filter_turns_negative_directional_entry_into_no_trade() -> None:
+    svc = _kraken_spot_policy()
+    fc = _forecast()
+    decision = svc.evaluate_decision(
+        fc,
+        {
+            "depth_notional": 1_000_000.0,
+            "funding_rate": 0.0005,
+            "spread_proxy": 0.0,
+            "ret_3": -0.004,
+            "ret_1": 0.003,
+            "mark_price": 100.0,
+            "spot_price_proxy": 99.0,
+            "pairs_zscore": 1.5,
+        },
+        1.0,
+        0.1,
+    )
+
+    assert decision.trade_allowed is False
+    assert decision.no_trade is not None
+    assert decision.no_trade.reason == "kraken_spot_doctrine_filter"
+    assert "blocked_negative_direction_entry:trend" in decision.no_trade.reasons
 
 
 def test_make_intent_remains_compatible_with_structured_decision():

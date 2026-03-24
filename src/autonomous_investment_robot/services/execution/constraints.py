@@ -30,6 +30,19 @@ _VENUE_DEFAULTS: dict[str, dict[str, object]] = {
         "expire_supported": True,
         "confidence": "static_default",
     },
+    "kraken_spot": {
+        "min_order_size": 0.0001,
+        "min_notional": 10.0,
+        "quantity_step": 0.00000001,
+        "price_tick": 0.1,
+        "maker_assumption": "post_only_supported",
+        "taker_assumption": "marketable_limit_or_market",
+        "reduce_only_supported": False,
+        "post_only_supported": True,
+        "replace_supported": False,
+        "expire_supported": True,
+        "confidence": "static_default",
+    },
 }
 
 
@@ -97,6 +110,18 @@ def provider_capability_matrix(provider_id: str) -> ProviderCapabilityMatrix:
             fee_truth_confidence="exchange_history_authoritative_when_available",
             user_stream_confidence="rest_history_only",
             metadata={"proof": "tracked_single_process_scope"},
+        )
+    if provider_id == "kraken_spot":
+        return ProviderCapabilityMatrix(
+            provider_id=provider_id,
+            unrealized_pnl_truth_support="spot_fifo_cost_basis_plus_live_bid",
+            realized_pnl_truth_support="spot_trade_history_fifo_authoritative_when_balances_match",
+            lifecycle_completeness="rest_history_without_replace",
+            replace_supported=False,
+            expire_supported=True,
+            fee_truth_confidence="spot_trade_history_authoritative",
+            user_stream_confidence="rest_history_only",
+            metadata={"proof": "spot_private_trade_history_and_balance"},
         )
     return ProviderCapabilityMatrix(
         provider_id=provider_id,

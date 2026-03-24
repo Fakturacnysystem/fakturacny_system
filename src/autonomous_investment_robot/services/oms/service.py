@@ -23,6 +23,8 @@ class ManagedOrder:
     symbol: str
     side: str
     notional: float
+    reduce_only: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
     state: str = "INTENT"
     fills_notional: float = 0.0
     idempotency_key: str = ""
@@ -98,7 +100,18 @@ class OMSService:
     idempotency_seen: set[str] = field(default_factory=set)
     lifecycle: OmsLifecycleAdapter = field(default_factory=OmsLifecycleAdapter)
 
+    def _doctrine_submit_block(self, order: ManagedOrder) -> str | None:
+        target = order.metadata.get("doctrine_target", {}) if isinstance(order.metadata, dict) else {}
+        if not isinstance(target, dict):
+            target = {}
+        if str(order.side).lower() == "sell" and not bool(order.reduce_only) and bool(target.get("long_only", False)):
+            return "long_only_non_reduce_sell_block"
+        return None
+
     def submit_intent(self, order: ManagedOrder) -> tuple[bool, str]:
+        doctrine_block = self._doctrine_submit_block(order)
+        if doctrine_block is not None:
+            return False, doctrine_block
         if order.idempotency_key in self.idempotency_seen:
             return False, "duplicate_submit"
         self.idempotency_seen.add(order.idempotency_key)

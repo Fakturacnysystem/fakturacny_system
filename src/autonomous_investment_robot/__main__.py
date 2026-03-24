@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from autonomous_investment_robot.main import acknowledge_manual_review, emergency_flatten, request_kill, run_record, run_replay, run_with_config
+from autonomous_investment_robot.main import acknowledge_manual_review, emergency_flatten, request_kill, run_record, run_replay, run_replay_report, run_with_config
 
 
 def main() -> None:
@@ -17,6 +17,9 @@ def main() -> None:
     p_rep.add_argument("--config", default="config.paper.yaml")
     p_rep.add_argument("--source", default="fixtures")
     p_rep.add_argument("--run-id", default=None)
+
+    p_rep_report = sub.add_parser("replay-report")
+    p_rep_report.add_argument("--config", required=True)
 
     p_ro = sub.add_parser("live-readonly")
     p_ro.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
@@ -48,6 +51,8 @@ def main() -> None:
 
     if args.cmd == "replay":
         out = run_replay(args.config, source=args.source, run_id=args.run_id)
+    elif args.cmd == "replay-report":
+        out = run_replay_report(args.config)
     elif args.cmd == "live-readonly":
         out = run_with_config(args.config)
     elif args.cmd == "live":

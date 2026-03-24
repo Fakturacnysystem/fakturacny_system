@@ -1,6 +1,20 @@
 import pytest
 
-from autonomous_investment_robot.config.settings import ExecutionSettings, LiveUnlockSettings, MarginSettings, MonitoringSettings, RiskLimits, RobotSettings, RolloutStage, SafetySettings, StorageSettings, TCOSettings
+from autonomous_investment_robot.config.settings import (
+    DoctrineSettings,
+    ExecutionSettings,
+    HarmonySettings,
+    LiveUnlockSettings,
+    MarginSettings,
+    MarketWatchSettings,
+    MonitoringSettings,
+    RiskLimits,
+    RobotSettings,
+    RolloutStage,
+    SafetySettings,
+    StorageSettings,
+    TCOSettings,
+)
 from autonomous_investment_robot.services.execution.service import ExecutionService
 from autonomous_investment_robot.services.policy.service import OrderIntent
 from autonomous_investment_robot.services.risk_engine.service import RiskEngineService
@@ -159,13 +173,25 @@ def test_execution_service_exposes_provider_capability_matrix():
     assert matrix.replace_supported is False
 
 
-def test_execution_service_fails_closed_on_unsupported_provider():
+def test_execution_service_supports_kraken_spot_provider_defaults():
     svc = ExecutionService(ExecutionSettings(provider_id="kraken_spot"))
 
-    with pytest.raises(ValueError, match="unsupported_provider:kraken_spot"):
+    constraints = svc.venue_constraints("BTC/USD")
+    matrix = svc.provider_capability_matrix()
+
+    assert constraints.provider_id == "kraken_spot"
+    assert constraints.min_notional > 0.0
+    assert matrix.provider_id == "kraken_spot"
+    assert matrix.realized_pnl_truth_support == "spot_trade_history_fifo_authoritative_when_balances_match"
+
+
+def test_execution_service_fails_closed_on_unsupported_provider():
+    svc = ExecutionService(ExecutionSettings(provider_id="coinbase_spot"))
+
+    with pytest.raises(ValueError, match="unsupported_provider:coinbase_spot"):
         svc.venue_constraints("BTC/EUR")
 
-    with pytest.raises(ValueError, match="unsupported_provider:kraken_spot"):
+    with pytest.raises(ValueError, match="unsupported_provider:coinbase_spot"):
         svc.provider_capability_matrix()
 
 
@@ -230,13 +256,25 @@ def test_robot_settings_margin_is_fail_closed_in_non_paper_modes(monkeypatch):
 
 
 def test_robot_settings_rollout_stage_and_live_gate_manifest(monkeypatch):
-    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
-    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
     settings = RobotSettings(
-        provider_whitelist=["binance_um_perps"],
+        provider_whitelist=["kraken_spot"],
         canary_mode=True,
-        execution=ExecutionSettings(mode="live_testnet"),
+        execution=ExecutionSettings(mode="live_testnet", provider_id="kraken_spot"),
         safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True, default_order_cadence_s=5.0),
+        market_watch=MarketWatchSettings(enabled=True),
         risk=_limits(),
         tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
         storage=StorageSettings(run_dir="runs/canary_testnet"),
@@ -247,6 +285,7 @@ def test_robot_settings_rollout_stage_and_live_gate_manifest(monkeypatch):
     assert live_gate["rollout_stage"] == "tiny_live"
     assert live_gate["provider_whitelisted"] is True
     assert live_gate["live_ordering_enabled"] is True
+    assert live_gate["doctrine_launch_safe"] is True
 
     manifest = settings.config_manifest()
     assert manifest["schema_version"] == settings.config_schema_version
@@ -256,10 +295,23 @@ def test_robot_settings_rollout_stage_and_live_gate_manifest(monkeypatch):
 
 
 def test_robot_settings_rejects_unsupported_live_provider():
-    with pytest.raises(ValueError, match="Unsupported execution provider: kraken_spot"):
+    with pytest.raises(ValueError, match="Unsupported execution provider: coinbase_spot"):
         RobotSettings(
-            provider_whitelist=["kraken_spot"],
-            execution=ExecutionSettings(mode="live_testnet", provider_id="kraken_spot"),
+            provider_whitelist=["coinbase_spot"],
+            execution=ExecutionSettings(mode="live_testnet", provider_id="coinbase_spot"),
+            safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+            risk=_limits(),
+            tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+        )
+
+
+def test_robot_settings_blocks_non_spot_order_capable_live_provider(monkeypatch):
+    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
+    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    with pytest.raises(ValueError, match="unsupported_doctrine_target_use_kraken_spot"):
+        RobotSettings(
+            provider_whitelist=["binance_um_perps"],
+            execution=ExecutionSettings(mode="live", provider_id="binance_um_perps"),
             safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
             risk=_limits(),
             tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
@@ -267,23 +319,46 @@ def test_robot_settings_rejects_unsupported_live_provider():
 
 
 def test_robot_settings_config_hash_changes_when_manifest_changes(monkeypatch):
-    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
-    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
-    monkeypatch.setenv("TESTNET_VALIDATED", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
     base = RobotSettings(
-        provider_whitelist=["binance_um_perps"],
+        provider_whitelist=["kraken_spot"],
         canary_mode=True,
-        execution=ExecutionSettings(mode="live", provider_id="binance_um_perps"),
-        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=True)),
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False)),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True, default_order_cadence_s=5.0),
+        market_watch=MarketWatchSettings(enabled=True),
         risk=_limits(),
         tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
         storage=StorageSettings(run_dir="runs/canary_live"),
     )
     changed = RobotSettings(
-        provider_whitelist=["binance_um_perps"],
+        provider_whitelist=["kraken_spot"],
         canary_mode=False,
-        execution=ExecutionSettings(mode="live", provider_id="binance_um_perps"),
-        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=True, canary_required_before_full=False)),
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True, require_testnet_passed=False, canary_required_before_full=False)),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True, default_order_cadence_s=10.0),
+        market_watch=MarketWatchSettings(enabled=True),
         risk=_limits(),
         tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
         storage=StorageSettings(run_dir="runs/prod_live"),

@@ -71,3 +71,21 @@ def test_oms_emits_lifecycle_snapshot_and_cancel_path():
     assert any(item["state"] == "cancel_rejected" for item in snapshot)
     transitions = oms.drain_lifecycle_transitions()
     assert transitions
+
+
+def test_oms_blocks_long_only_non_reduce_sell_submit():
+    oms = OMSService()
+    order = ManagedOrder(
+        order_id="o6",
+        symbol="BTC/USD",
+        side="sell",
+        notional=100,
+        idempotency_key="k6",
+        reduce_only=False,
+        metadata={"doctrine_target": {"provider": "kraken_spot", "product": "spot", "long_only": True}},
+    )
+
+    ok, reason = oms.submit_intent(order)
+
+    assert ok is False
+    assert reason == "long_only_non_reduce_sell_block"

@@ -29,6 +29,34 @@ class IngestedBar:
 
 
 class DataIngestionService:
+    def load_events(self, path: str) -> list[dict]:
+        if not path:
+            return []
+        p = Path(path)
+        if not p.exists():
+            return []
+        text = p.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        if p.suffix.lower() == ".jsonl":
+            out: list[dict] = []
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    out.append(row)
+            return out
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, dict)]
+        if isinstance(payload, dict):
+            items = payload.get("events")
+            if isinstance(items, list):
+                return [row for row in items if isinstance(row, dict)]
+            return [payload]
+        return []
+
     def resolve_recording_run_id(self, run_dir: str, run_id: str | None = None) -> str | None:
         if run_id:
             return run_id
