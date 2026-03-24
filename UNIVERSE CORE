@@ -1,0 +1,949 @@
+Title	Description	Priority	Status	Assignee	Created	Completed	Labels	Estimate
+UNIVERSE CORE Program — End-to-End Build Plan (Phases 1-10)	"Objective:
+Implement the full UNIVERSE CORE roadmap from Phase 1 through Phase 10 for the autonomous investment robot.
+
+Program architecture:
+- UNIVERSE SENSE — data ingestion and normalization
+- UNIVERSE STATE — state estimation and world graph
+- UNIVERSE MISSION — objective selection
+- UNIVERSE PARLIAMENT — strategy competition and selection
+- UNIVERSE EXEC — execution intelligence
+- UNIVERSE SHIELD — risk, safety, and graceful degradation
+- UNIVERSE MEMORY — decision memory, grading, and learning
+- UNIVERSE OPS — audit, cloud, monitoring, replay, deployment governance
+
+
+UNIVERSE MIND is a multi-layer autonomous capital intelligence system that:
+- senses the world through unified market/account/system events
+- estimates state and uncertainty
+- selects a mission based on the current regime and internal health
+- collects competing strategy proposals
+- executes with fee/slippage/liquidity awareness
+- monitors itself continuously
+- learns offline from outcomes and promotes only validated improvements
+
+Global constraints for all phases:
+- do not weaken current hard safety rules, profit floor logic, exposure limits, or manual live gate
+- preserve auditability and diagnostics
+- prefer additive, modular, typed, replay-safe architecture
+- no fake completeness claims
+- all new modules must be testable and production-oriented
+
+
+Global deliverables:
+- complete architecture mapping
+- modular implementation plan across 10 phases
+- explicit dependencies between phases
+- acceptance criteria for each phase
+- test and validation plan for each phase
+- truthful implementation summaries
+
+Definition of done:
+- all phases have issue-level scope, deliverables, dependencies, and acceptance criteria
+- the system is ready to be executed incrementally by Codex without ambiguity"	1	Backlog		2026-03-10		epic, universe-core, program	8
+Phase 1 — Unified Event Fabric (Overview)	"Phase objective:
+Standardize all important runtime information into typed, immutable, versioned, replay-safe events routed through one event fabric. Establish event envelope, taxonomy, registry, bus, middleware, store, dedup, ordering, stale-feed hooks, and world-state projection foundation.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	1	Backlog		2026-03-10		phase-overview, phase-1, universe-core	5
+Phase 2 — World State Graph (Overview)	"Phase objective:
+Build the central state graph that converts event streams into a coherent model of market state, venue state, portfolio state, execution state, infra health, and risk state.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	1	Backlog		2026-03-10		phase-overview, phase-2, universe-core	5
+Phase 3 — Mission Engine (Overview)	"Phase objective:
+Add a dedicated objective-selection layer that chooses what the bot should optimize for right now based on world state, uncertainty, execution quality, and internal stress.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	1	Backlog		2026-03-10		phase-overview, phase-3, universe-core	5
+Phase 4 — Strategy Parliament (Overview)	"Phase objective:
+Refactor strategy selection into a parliament of strategies where each strategy proposes actions and a meta-allocator ranks and selects top-1 or top-N ideas.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-4, universe-core	5
+Phase 5 — Execution Intelligence Layer (Overview)	"Phase objective:
+Insert a smart execution layer between decisions and exchange connectors to choose maker vs taker, sizing, urgency, order types, repricing, and fill control.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-5, universe-core	5
+Phase 6 — Universe Shield (Overview)	"Phase objective:
+Extend risk into a higher-order shield that can gracefully degrade behavior across normal, cautious, defensive, observe-only, and hard-stop modes.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-6, universe-core	5
+Phase 7 — Memory Engine (Overview)	"Phase objective:
+Persist full decision packets and post-trade outcomes so the system can analyze what works by regime, instrument, execution policy, and time-of-day.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-7, universe-core	5
+Phase 8 — Research / Replay Lab (Overview)	"Phase objective:
+Build the controlled promotion pipeline: replay, walk-forward, shadow mode, paper trading, limited live, scaled live.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-8, universe-core	5
+Phase 9 — Cross-Asset Expansion (Overview)	"Phase objective:
+Extend the engine beyond crypto spot toward perps/futures, xStocks, FX, commodities, and later volatility / information overlays.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-9, universe-core	5
+Phase 10 — Universe Ops / Productionization (Overview)	"Phase objective:
+Harden cloud topology, observability, deployment flows, config governance, secrets boundaries, kill-switch operations, and operator tooling.
+
+Key principles:
+- preserve current live safety controls
+- add modular layers without breaking existing working logic
+- every phase must be testable, observable, and auditable
+- each phase should leave the system in a deployable or safely shadowable state
+
+Required outputs:
+- architecture or code changes for the phase
+- tests and validation
+- truthful summary of implemented vs partial vs blocked work
+
+Acceptance criteria:
+- phase scope is implemented or scaffolded cleanly
+- dependencies on prior phases are respected
+- validation results are captured"	2	Backlog		2026-03-10		phase-overview, phase-10, universe-core	5
+Phase 1.1 — Audit existing runtime flows	"Inspect repository structure and map the current market ingest, account state, execution lifecycle, risk flows, telemetry/diagnostics, persistence, and replay/backtest flows.
+
+Deliverables:
+- producer/consumer map
+- existing payload inventory
+- reusable components inventory
+- refactor targets list
+- shadow integration opportunities
+
+Acceptance criteria:
+- clear audit summary exists
+- Kraken feed, account state, execution lifecycle, diagnostics, and persistence locations are identified
+- reuse vs rebuild decisions are explicit"	1	Backlog		2026-03-10		phase-1, audit, architecture	5
+Phase 1.2 — Define event catalog and naming convention	"Create the authoritative event taxonomy using <domain>.<entity>.<action> naming.
+
+Minimum domains:
+- market
+- account
+- execution
+- risk
+- regime
+- mission
+- strategy
+- telemetry
+- system
+
+Required event groups:
+- market.instrument_discovered
+- market.ticker_updated
+- market.trade_print
+- market.book_snapshot
+- market.book_delta
+- market.candle_closed
+- market.funding_updated
+- market.open_interest_updated
+- market.mark_price_updated
+- market.cross_venue_snapshot
+- account.snapshot_updated
+- account.balance_changed
+- account.position_updated
+- account.open_orders_updated
+- account.fee_profile_updated
+- execution.order_intent_created
+- execution.execution_plan_created
+- execution.order_submitted
+- execution.order_acknowledged
+- execution.order_rejected
+- execution.fill_received
+- execution.order_cancelled
+- execution.execution_quality_measured
+- risk.limit_breached
+- risk.guard_triggered
+- risk.mode_changed
+- risk.trade_rejected
+- risk.kill_switch_armed
+- risk.kill_switch_released
+- regime.state_changed
+- regime.global_state_changed
+- mission.objective_selected
+- mission.objective_cancelled
+- mission.objective_escalated
+- strategy.proposal_created
+- strategy.selection_made
+- strategy.no_trade_selected
+- telemetry.latency_measured
+- telemetry.feed_stale
+- telemetry.component_health_changed
+- system.component_started
+- system.component_stopped
+- system.component_degraded
+- system.exception_raised
+
+Acceptance criteria:
+- catalog exists in code and documentation
+- naming validation can be enforced"	1	Backlog		2026-03-10		phase-1, events, schema	8
+Phase 1.3 — Implement EventEnvelope core model	"Implement the standard top-level event envelope with at least:
+event_id, event_type, event_domain, schema_version, source, subject, partition_key, event_time, observed_time, processed_time, correlation_id, causation_id, sequence_no, priority, is_replay, is_snapshot, is_synthetic, producer, trace_id, tags, payload.
+
+Requirements:
+- typed model
+- immutable after publication
+- JSON-safe serialization
+- replay-safe semantics
+
+Acceptance criteria:
+- envelope model exists
+- serialization/deserialization works
+- time semantics are preserved"	1	Backlog		2026-03-10		phase-1, events, core	8
+Phase 1.4 — Implement schema registry and versioning	"Create a central registry mapping event_type to payload schema and metadata.
+
+Requirements:
+- payload validation
+- event type registration
+- schema version support
+- unsupported version handling
+- naming convention enforcement
+- no silent schema drift
+
+Acceptance criteria:
+- invalid payloads are rejected
+- versioning path is explicit
+- tests cover registry behavior"	1	Backlog		2026-03-10		phase-1, schema, registry	5
+Phase 1.5 — Implement market/account/execution/risk/telemetry payload schemas	"Implement typed payload schemas for all core Phase 1 event types.
+
+Requirements:
+- market schemas for trade, ticker, book snapshot, book delta, candle, funding, open interest, mark/index, cross-venue
+- account schemas for snapshot, balances, positions, open orders, fee profile
+- execution schemas for intent, plan, submit, ack, reject, fill, cancel, execution quality
+- risk/regime/mission/strategy/telemetry/system schemas
+
+Acceptance criteria:
+- registry knows all payload types
+- unsupported yet planned flows still have publish-ready contracts"	1	Backlog		2026-03-10		phase-1, schema, events	8
+Phase 1.6 — Implement EventBus and routing patterns	"Implement a central event bus with:
+- publish(event)
+- subscribe(pattern, handler)
+- exact type matching
+- wildcard matching like market.* and *
+- middleware chain
+- replay mode support
+- safe error handling hooks
+
+Acceptance criteria:
+- routing works for exact and wildcard patterns
+- bus can support future source-of-truth role"	1	Backlog		2026-03-10		phase-1, bus, routing	8
+Phase 1.7 — Implement middleware chain	"Add middleware for:
+- schema validation
+- metadata enrichment
+- dedup hook
+- persistence hook
+- metrics hook
+- audit hook
+
+Acceptance criteria:
+- middleware order is deterministic
+- failures are surfaced cleanly
+- audit/persistence hooks are pluggable"	1	Backlog		2026-03-10		phase-1, middleware, observability	5
+Phase 1.8 — Implement partition ordering semantics	"Define and enforce ordering guarantees per partition key rather than globally.
+
+Minimum partitions:
+- symbol / instrument
+- account
+- order lifecycle
+- system/risk partitions where relevant
+
+Acceptance criteria:
+- partition key semantics are explicit
+- tests cover ordering assumptions where practical"	2	Backlog		2026-03-10		phase-1, ordering, events	3
+Phase 1.9 — Implement deduplication and idempotency foundation	"Handle duplicate feed or reconnect scenarios safely.
+
+Requirements:
+- source-aware dedup key rules
+- TTL/LRU dedup cache or equivalent
+- idempotent handler semantics where relevant
+
+Acceptance criteria:
+- duplicate events do not behave like new events
+- tests prove dedup correctness"	1	Backlog		2026-03-10		phase-1, dedup, reliability	5
+Phase 1.10 — Implement dead-letter and failure semantics	"Add non-catastrophic failure handling.
+
+Requirements:
+- retry policy where appropriate
+- dead-letter capture/store
+- distinction between blocking and non-blocking handlers
+- no whole-runtime collapse for non-critical handler errors
+
+Acceptance criteria:
+- dead-letter records are queryable
+- failure behavior is explicit and tested"	1	Backlog		2026-03-10		phase-1, reliability, dead-letter	5
+Phase 1.11 — Implement event store foundation	"Persist event envelopes in a queryable durable store compatible with current repo stack.
+
+Requirements:
+- append-style write path
+- structured reads by event_type, time, subject, partition, correlation, causation
+- JSON-safe payload persistence
+- indexing strategy for future replay and audit
+
+Acceptance criteria:
+- event store writes and reads work
+- storage contract is test covered"	1	Backlog		2026-03-10		phase-1, store, postgres	8
+Phase 1.12 — Implement replay reader foundation	"Create a replay reader that can:
+- fetch events by time window, subject, partition, or correlation
+- republish them with is_replay=true
+- preserve relative ordering within partitions
+
+Acceptance criteria:
+- basic replay mode works
+- replay events are distinguishable from live events"	2	Backlog		2026-03-10		phase-1, replay, store	5
+Phase 1.13 — Implement world-state projection foundation	"Build the initial read model from events.
+
+Minimum projection scope:
+- latest ticker per symbol
+- latest book state per symbol
+- recent trade buffers or compact trade state
+- latest balances and positions
+- latest open orders
+- latest risk mode
+- latest stale/health flags
+
+Acceptance criteria:
+- projection updates from events
+- projection can serve as foundation for later world graph"	1	Backlog		2026-03-10		phase-1, projection, state	8
+Phase 1.14 — Wire Kraken market feeds into unified publish flow	"Connect Kraken market ingest to the event fabric.
+
+Minimum live paths:
+- trade prints
+- ticker updates
+- L2 book snapshot and/or delta as architecture allows
+- candle close events
+
+Requirements:
+- parse -> normalize -> validate -> envelope -> publish
+- shadow-first migration when safe
+- do not break current live safety flow
+
+Acceptance criteria:
+- Kraken market feeds publish through event fabric
+- shadow mode or controlled cutover is available"	1	Backlog		2026-03-10		phase-1, kraken, integration	8
+Phase 1.15 — Eventize account / execution / risk / telemetry core flows	"Route at least one production-relevant path from each category through the event fabric.
+
+Minimums:
+- one account snapshot path
+- one execution lifecycle path (submit, ack/reject, fill)
+- one risk/guard path
+- one telemetry stale/latency path
+
+Acceptance criteria:
+- non-market runtime state is no longer market-only
+- world projection can consume at least one path from each category"	1	Backlog		2026-03-10		phase-1, integration, account, execution, risk, telemetry	8
+Phase 1.16 — Add observability, tests, and truth report for Phase 1	"Deliver comprehensive validation.
+
+Required tests:
+- event envelope serialization
+- schema registry validation
+- naming enforcement
+- bus routing
+- wildcard subscriptions
+- dedup correctness
+- dead-letter behavior
+- event store read/write
+- replay basics
+- projection correctness
+- stale-feed hooks where implemented
+
+Required report:
+- implemented / partial / blocked matrix for all Phase 1 requirements
+
+Acceptance criteria:
+- relevant tests pass
+- validation summary exists
+- no fake completeness claims"	1	Backlog		2026-03-10		phase-1, tests, validation	8
+Phase 2.1 — Design world graph domains and state boundaries	"Define the canonical world graph structure.
+
+Required state domains:
+- market_state
+- venue_state
+- asset_state
+- portfolio_state
+- execution_state
+- infra_state
+- risk_state
+- strategy_state
+
+Acceptance criteria:
+- state domains and ownership are explicit
+- update rules from events are defined"	1	Backlog		2026-03-10		phase-2, architecture, state	5
+Phase 2.2 — Implement market and venue state models	"Build state models for market microstructure and venue health.
+
+Include:
+- best bid/ask/mid/spread
+- depth and imbalance
+- realized volatility windows
+- venue freshness/health
+- funding/mark/index/basis where available
+
+Acceptance criteria:
+- event-driven updates keep state current
+- stale or missing data states are explicit"	1	Backlog		2026-03-10		phase-2, market-state, venue-state	8
+Phase 2.3 — Implement portfolio, execution, and risk state models	"Build current state views for:
+- balances
+- positions
+- exposure
+- avg entry / break-even
+- open orders
+- recent fills
+- execution quality
+- current risk mode and active guards
+
+Acceptance criteria:
+- all states derive from event fabric
+- ready for mission and shield consumption"	1	Backlog		2026-03-10		phase-2, portfolio, execution, risk	8
+Phase 2.4 — Implement state confidence, stability, and transition scoring	"Augment world state with meta-signals:
+- confidence score
+- state stability
+- transition probability
+- unresolved ambiguity flags
+
+Acceptance criteria:
+- confidence/stability are computable and testable
+- later modules can consume them as first-class signals"	2	Backlog		2026-03-10		phase-2, state-estimation, uncertainty	5
+Phase 2.5 — Add query/read APIs for world state graph	"Expose read interfaces so downstream engines can consume coherent current world state without reaching into raw feeds.
+
+Acceptance criteria:
+- strategy/mission/risk modules can request read-only world state
+- APIs are typed and documented in code"	2	Backlog		2026-03-10		phase-2, api, state	3
+Phase 2.6 — Validate and test world graph correctness	"Create tests and validation for:
+- event-to-state updates
+- stale state behavior
+- missing-data behavior
+- transition behavior
+- confidence calculations
+
+Acceptance criteria:
+- core state graph logic is test-covered"	1	Backlog		2026-03-10		phase-2, tests, validation	5
+Phase 3.1 — Define mission taxonomy and objective model	"Implement the mission layer with at least:
+- preserve_capital
+- low_risk_accumulation
+- momentum_extraction
+- mean_reversion_harvest
+- spread_capture
+- carry_extraction
+- inventory_unwind
+- risk_off_defense
+- observation_only
+
+Acceptance criteria:
+- mission objects are typed
+- mission taxonomy is explicit and versionable"	1	Backlog		2026-03-10		phase-3, mission, taxonomy	5
+Phase 3.2 — Implement mission selection engine	"Select mission from current world state, account state, risk state, execution health, and uncertainty.
+
+Example triggers:
+- high uncertainty + widening spread + poor fills + drawdown pressure -> preserve_capital
+- strong directional flow + healthy liquidity + stable regime -> momentum_extraction
+- choppy range + good reversion stats + cheap execution -> mean_reversion_harvest
+
+Acceptance criteria:
+- mission selection is deterministic and explainable
+- reason codes are attached"	1	Backlog		2026-03-10		phase-3, mission, decisioning	8
+Phase 3.3 — Implement mission lifecycle events and state transitions	"Publish mission.objective_selected, mission.objective_cancelled, and mission.objective_escalated.
+
+Acceptance criteria:
+- transitions are auditable
+- current mission is visible in world state"	2	Backlog		2026-03-10		phase-3, mission, events	3
+Phase 3.4 — Add mission guardrails and no-trade behavior	"Mission engine must support explicit no-trade or observation-only outcomes when edge is poor or confidence is low.
+
+Acceptance criteria:
+- mission can reduce or suppress trading
+- interaction with shield is clearly defined"	1	Backlog		2026-03-10		phase-3, mission, safety	5
+Phase 3.5 — Validate mission engine against replay scenarios	"Replay selected periods and confirm mission changes align with regime, liquidity, and internal health conditions.
+
+Acceptance criteria:
+- mission behavior is explainable in historical scenarios
+- pathological flipping is limited"	2	Backlog		2026-03-10		phase-3, replay, validation	5
+Phase 4.1 — Define StrategyProposal interface and common contract	"Create a standard strategy interface:
+propose(world_state, mission, account_state) -> strategy proposal
+
+Each proposal must include:
+- action
+- expected_value
+- confidence
+- risk_cost
+- execution_sensitivity
+- regime_fit
+- slippage_risk
+- expected_hold_time
+- reason_codes
+
+Acceptance criteria:
+- all strategy modules can return normalized proposals"	1	Backlog		2026-03-10		phase-4, strategy, interface	5
+Phase 4.2 — Adapt existing strategies into parliament members	"Wrap or refactor current logic into proposal-generating members.
+
+Minimum members:
+- probabilistic/top-N logic already in bot
+- microstructure momentum
+- mean reversion
+- breakout continuation
+- liquidity sweep reversal
+- no-trade guardian
+- defensive de-risker
+
+Acceptance criteria:
+- existing logic is preserved where useful
+- all members emit comparable proposal objects"	1	Backlog		2026-03-10		phase-4, strategy, migration	8
+Phase 4.3 — Implement Parliament Judge / Meta Allocator	"Rank and select proposals.
+
+Scoring must consider:
+- expected value
+- confidence
+- regime compatibility
+- execution drag
+- slippage risk
+- conflict penalties
+- correlation penalties
+- robustness penalties
+
+Acceptance criteria:
+- judge can select top-1 or top-N
+- final selection is explainable"	1	Backlog		2026-03-10		phase-4, allocator, selection	8
+Phase 4.4 — Implement strategy conflict management and blending rules	"Define when proposals:
+- conflict and one must win
+- can be blended with weights
+- must be vetoed because of mission or shield
+
+Acceptance criteria:
+- mixing rules are explicit
+- conflicting strategies do not leak into uncontrolled execution"	2	Backlog		2026-03-10		phase-4, strategy, allocation	5
+Phase 4.5 — Add strategy performance hooks for later memory engine	"Each strategy proposal/selection path must emit enough metadata for later performance grading.
+
+Acceptance criteria:
+- proposal IDs, selected IDs, rejected IDs, and score components are persisted"	2	Backlog		2026-03-10		phase-4, strategy, memory	3
+Phase 4.6 — Validate parliament behavior in replay and paper mode	"Test selection consistency, proposal scoring, and no-trade behavior in historical and simulated conditions.
+
+Acceptance criteria:
+- parliament does not overtrade by default
+- selection behavior is auditable"	2	Backlog		2026-03-10		phase-4, tests, validation	5
+Phase 5.1 — Define ExecutionPlan contract	"Create a typed execution plan between strategy selection and exchange connectors.
+
+Plan must include:
+- instrument
+- side
+- target size
+- order type
+- maker/taker choice
+- urgency tier
+- max slippage
+- retry policy
+- cancel-replace budget
+- time-to-abort
+- expected fill quality
+- exit doctrine
+
+Acceptance criteria:
+- execution plan is independent from raw strategy proposal"	1	Backlog		2026-03-10		phase-5, execution, contract	5
+Phase 5.2 — Implement maker vs taker decision logic	"Execution must choose order aggressiveness based on:
+- spread
+- queue quality
+- urgency
+- fee drag
+- slippage drag
+- fill probability
+- mission urgency
+- shield mode
+
+Acceptance criteria:
+- maker/taker choice is explicit and explainable
+- no blind fire-and-forget orders"	1	Backlog		2026-03-10		phase-5, execution, liquidity	8
+Phase 5.3 — Implement size slicing and liquidity-aware clipping	"Add dynamic sizing logic based on:
+- available liquidity
+- expected slippage
+- volatility
+- current exposure
+- risk budget
+- execution degradation
+
+Acceptance criteria:
+- size can be clipped or sliced automatically
+- overly toxic executions are avoided"	1	Backlog		2026-03-10		phase-5, execution, sizing	8
+Phase 5.4 — Implement order type, repricing, and timeout logic	"Support:
+- post-only where supported
+- IOC/GTD style logic where supported
+- cancel-replace discipline
+- stale quote rejection
+- timeout / abort rules
+
+Acceptance criteria:
+- order behavior is policy-driven, not ad hoc"	1	Backlog		2026-03-10		phase-5, execution, orders	8
+Phase 5.5 — Implement execution quality measurement	"Measure:
+- slippage
+- effective fee drag
+- fill ratio
+- time to first fill
+- time to complete
+- adverse selection hints
+
+Acceptance criteria:
+- execution outcomes feed telemetry and later memory/shield modules"	2	Backlog		2026-03-10		phase-5, execution, metrics	5
+Phase 5.6 — Validate execution intelligence in replay / paper / shadow mode	"Confirm execution logic prevents positive signals from becoming net-negative after fees and slippage.
+
+Acceptance criteria:
+- expected net result simulation exists
+- execution policies are validated before live use"	1	Backlog		2026-03-10		phase-5, validation, execution	5
+Phase 6.1 — Define Universe Shield modes and escalation matrix	"Implement shield modes:
+- normal
+- cautious
+- defensive
+- observe_only
+- hard_stop
+
+Define triggers, allowed actions, and auto-recovery rules for each mode.
+
+Acceptance criteria:
+- shield modes are explicit
+- escalation and de-escalation rules exist"	1	Backlog		2026-03-10		phase-6, shield, risk	5
+Phase 6.2 — Extend shield beyond classical risk limits	"Add higher-order triggers:
+- model confidence collapse
+- execution degradation
+- stale data
+- venue desync
+- abnormal rejection
+- cross-venue anomaly
+- slippage regime shift
+- strategy underperformance streak
+- unexplained pnl variance
+
+Acceptance criteria:
+- shield sees more than loss/exposure/drawdown"	1	Backlog		2026-03-10		phase-6, shield, safety	8
+Phase 6.3 — Integrate shield with mission, parliament, and execution	"Shield must be able to:
+- veto mission choices
+- suppress or downweight strategy proposals
+- clip size
+- force observation-only mode
+- hard-stop execution
+
+Acceptance criteria:
+- shield is upstream of actual order submission
+- all rejections produce auditable reasons"	1	Backlog		2026-03-10		phase-6, shield, integration	8
+Phase 6.4 — Implement recovery and cooldown behavior	"After a shield event, support:
+- cooldown windows
+- degraded trading mode
+- gradual re-entry
+- manual acknowledgement hooks for severe conditions
+
+Acceptance criteria:
+- the system does not bounce instantly from hard-stop to full risk"	2	Backlog		2026-03-10		phase-6, shield, recovery	5
+Phase 6.5 — Validate shield scenarios	"Simulate stale feeds, fill deterioration, rejection spikes, and drawdown stress.
+
+Acceptance criteria:
+- shield enters expected mode
+- actions taken are logged and testable"	1	Backlog		2026-03-10		phase-6, tests, validation	5
+Phase 7.1 — Define memory record schema	"Persist a decision packet for each meaningful trading decision.
+
+Must include:
+- world_state fingerprint
+- chosen mission
+- candidate proposals
+- selected strategy
+- execution plan
+- actual fills
+- pnl
+- slippage
+- realized regime
+- post-trade evaluation
+
+Acceptance criteria:
+- memory schema is explicit and versioned"	1	Backlog		2026-03-10		phase-7, memory, schema	5
+Phase 7.2 — Implement decision packet persistence	"Persist memory records in a durable queryable form tied to event/correlation IDs.
+
+Acceptance criteria:
+- each executed or rejected decision path can be reconstructed"	1	Backlog		2026-03-10		phase-7, memory, store	8
+Phase 7.3 — Implement post-trade grading	"Compute grades for:
+- mission appropriateness
+- strategy quality
+- execution quality
+- net outcome after fees/slippage
+- risk compliance
+- decision quality vs realized regime
+
+Acceptance criteria:
+- grading is systematic and reproducible"	1	Backlog		2026-03-10		phase-7, grading, evaluation	8
+Phase 7.4 — Build performance memory by regime, asset, and policy	"Analyze what works across:
+- regime
+- strategy
+- execution policy
+- time-of-day
+- asset class
+- slippage profile
+- false positive clusters
+- edge decay
+
+Acceptance criteria:
+- memory can answer regime-to-performance questions"	2	Backlog		2026-03-10		phase-7, analytics, memory	8
+Phase 7.5 — Implement controlled policy update hooks	"Allow memory outputs to influence:
+- strategy weights
+- regime policies
+- whitelist/blacklist
+- sizing policies
+- execution policies
+- kill rules
+
+Constraints:
+- no uncontrolled live self-modification
+- updates must go through offline validation and promotion
+
+Acceptance criteria:
+- policy update path exists but is gated"	2	Backlog		2026-03-10		phase-7, memory, governance	5
+Phase 7.6 — Validate memory and grading integrity	"Confirm that stored decision packets and grades are consistent, queryable, and useful.
+
+Acceptance criteria:
+- samples can be audited end-to-end"	2	Backlog		2026-03-10		phase-7, tests, validation	3
+Phase 8.1 — Build replay engine on top of event store	"Enable offline event-driven replay of historical sessions using the event fabric and world graph.
+
+Acceptance criteria:
+- replay can reproduce state and decisions deterministically enough for analysis"	1	Backlog		2026-03-10		phase-8, replay, research	8
+Phase 8.2 — Implement walk-forward validation pipeline	"Add split logic and evaluation to test strategies and policies on unseen periods.
+
+Acceptance criteria:
+- no single in-sample backtest is treated as sufficient
+- metrics are segmented by regime"	1	Backlog		2026-03-10		phase-8, walk-forward, validation	8
+Phase 8.3 — Implement shadow mode evaluation	"Run candidate logic in parallel without placing live orders.
+
+Acceptance criteria:
+- shadow decisions are logged and comparable to live decisions"	1	Backlog		2026-03-10		phase-8, shadow, validation	5
+Phase 8.4 — Implement paper mode	"Support full order lifecycle simulation without live capital.
+
+Acceptance criteria:
+- paper mode uses realistic fees/slippage assumptions"	1	Backlog		2026-03-10		phase-8, paper-trading, simulation	5
+Phase 8.5 — Define promotion ladder: replay -> shadow -> paper -> limited live -> scaled live	"Create explicit promotion gates for new models, strategies, execution policies, and memory-driven changes.
+
+Acceptance criteria:
+- no new edge reaches scaled live without passing defined gates"	1	Backlog		2026-03-10		phase-8, promotion, governance	5
+Phase 8.6 — Standardize evaluation metrics and reports	"Minimum metrics:
+- net pnl
+- gross pnl
+- pnl after fees
+- drawdown
+- turnover
+- fill ratio
+- slippage cost
+- fee drag
+- pnl per trade
+- hold time
+- regime-segmented performance
+
+Acceptance criteria:
+- reports exist and are comparable across experiments"	2	Backlog		2026-03-10		phase-8, metrics, reports	5
+Phase 9.1 — Design cross-asset expansion architecture	"Prepare adapters and abstractions so UNIVERSE CORE can expand beyond Kraken spot without architectural breakage.
+
+Target waves:
+- crypto perps/futures
+- xStocks / liquid equities
+- FX majors
+- index futures
+- gold / oil / natgas
+- later: vol instruments and event overlays
+
+Acceptance criteria:
+- abstractions do not assume spot-only semantics"	1	Backlog		2026-03-10		phase-9, architecture, multi-asset	5
+Phase 9.2 — Add futures/perps context layer	"Support funding, basis, mark/index, OI, and hedge-aware opportunities.
+
+Acceptance criteria:
+- event/state schemas support derivatives context
+- carry and basis signals become first-class citizens"	1	Backlog		2026-03-10		phase-9, perps, futures	8
+Phase 9.3 — Add xStocks / liquid equities adapter plan	"Define and scaffold the adapter path for xStocks / equities with compatible state, mission, strategy, and execution interfaces.
+
+Acceptance criteria:
+- equities path is architecturally aligned with existing core"	2	Backlog		2026-03-10		phase-9, equities, xstocks	5
+Phase 9.4 — Add FX and commodities adapter plan	"Prepare the next expansion wave:
+- FX majors
+- index futures
+- gold / oil / natgas
+
+Acceptance criteria:
+- adapter and data requirements are defined
+- regime and execution differences are explicit"	2	Backlog		2026-03-10		phase-9, fx, commodities	5
+Phase 9.5 — Add cross-market allocator concept	"Design the capital allocator that can eventually decide where capital should be deployed across universes.
+
+Acceptance criteria:
+- allocator concept respects mission, shield, and portfolio constraints"	2	Backlog		2026-03-10		phase-9, allocator, portfolio	5
+Phase 10.1 — Harden cloud topology and runtime boundaries	"Prepare production deployment topology:
+- live node
+- compute node
+- Redis/Postgres or equivalent durable state
+- worker boundaries
+- clear secrets boundaries
+- operator-safe deployment shape
+
+Acceptance criteria:
+- topology is explicit
+- runtime responsibilities are separated cleanly"	1	Backlog		2026-03-10		phase-10, ops, cloud	8
+Phase 10.2 — Implement configuration governance	"Centralize and harden config for:
+- strategy/mission/shield policies
+- event fabric
+- execution policies
+- venue capabilities
+- stale thresholds
+- replay/paper/live modes
+- promotion gates
+
+Acceptance criteria:
+- one coherent source of truth exists
+- collisions and legacy overrides are minimized"	1	Backlog		2026-03-10		phase-10, config, ops	8
+Phase 10.3 — Build operational observability and runbooks	"Provide:
+- dashboards / health views
+- structured diagnostics
+- incident runbooks
+- kill-switch operating procedure
+- replay / postmortem workflow
+
+Acceptance criteria:
+- operator can understand what the system is doing and why"	1	Backlog		2026-03-10		phase-10, observability, runbook	5
+Phase 10.4 — Harden deployment, rollback, and migration workflows	"Add:
+- safe rollout process
+- rollback plan
+- migration order across phases
+- environment validation checks
+- startup health checks
+
+Acceptance criteria:
+- deployment does not rely on tribal knowledge"	1	Backlog		2026-03-10		phase-10, deployment, reliability	5
+Phase 10.5 — Define final production readiness checklist	"The checklist must cover:
+- safety controls
+- replay validation
+- paper/shadow evidence
+- config validation
+- telemetry health
+- risk/shield readiness
+- execution quality readiness
+- operator readiness
+
+Acceptance criteria:
+- no uncontrolled live activation path remains"	1	Backlog		2026-03-10		phase-10, production-readiness, governance	5
+Phase 10.6 — Final end-to-end truth report	"Create a truthful matrix across Phases 1-10:
+- implemented
+- partial
+- blocked
+- absent
+
+Include:
+- files changed
+- tests run
+- validation results
+- limitations
+- next blockers
+
+Acceptance criteria:
+- report is factual and auditable"	2	Backlog		2026-03-10		phase-10, reporting, governance	3
