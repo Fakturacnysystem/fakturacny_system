@@ -151,6 +151,20 @@ class KrakenSpotConnector:
             "quote": str(market.get("quote", "")),
         }
 
+    def normalize_amount(self, symbol: str, amount: float) -> float:
+        self._load_markets()
+        try:
+            return float(self.exchange.amount_to_precision(symbol, amount))
+        except Exception as exc:
+            raise KrakenSpotConnectorError(f"amount_precision_failed:{exc}") from exc
+
+    def normalize_price(self, symbol: str, price: float) -> float:
+        self._load_markets()
+        try:
+            return float(self.exchange.price_to_precision(symbol, price))
+        except Exception as exc:
+            raise KrakenSpotConnectorError(f"price_precision_failed:{exc}") from exc
+
     def book_ticker(self, symbol: str) -> dict[str, Any]:
         try:
             order_book = self.exchange.fetch_order_book(symbol, limit=1)
