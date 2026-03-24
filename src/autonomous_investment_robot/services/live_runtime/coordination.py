@@ -36,6 +36,7 @@ class LiveMarketContext:
     market_integrity: Any | None = None
     venue_limit_decision: Any | None = None
     event_intelligence_report: Any | None = None
+    market_watch: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class LiveMarketCoordinator:
         venue_capability_registry: Any | None = None,
         shared_venue_limit_governor: Any | None = None,
         event_intelligence_service: Any | None = None,
+        market_watch_service: Any | None = None,
     ) -> None:
         self.features_service = features_service
         self.market_data = market_data
@@ -123,6 +125,7 @@ class LiveMarketCoordinator:
         self.venue_capability_registry = venue_capability_registry
         self.shared_venue_limit_governor = shared_venue_limit_governor
         self.event_intelligence_service = event_intelligence_service
+        self.market_watch_service = market_watch_service
 
     def _route_truth_evidence(self, channel: str, payload: Any) -> None:
         route = getattr(self.observability, "route_truth_evidence", None)
@@ -354,6 +357,18 @@ class LiveMarketCoordinator:
             if self.event_intelligence_service is not None
             else None
         )
+        market_watch = (
+            self.market_watch_service.evaluate(
+                symbol=symbol,
+                ts=now_dt,
+                snapshot=snapshot,
+                forecast=forecast,
+                regime_assessment=regime_assessment,
+                market_integrity=market_integrity,
+            )
+            if self.market_watch_service is not None
+            else None
+        )
         quantum_started = time.perf_counter()
         quantum_state = self.quantum_state_service.evaluate(
             symbol=symbol,
@@ -389,6 +404,8 @@ class LiveMarketCoordinator:
             self.observability.journal("venue_limit_journal", venue_limit_decision)
         if event_intelligence_report is not None:
             self._route_event_intelligence(symbol=symbol, ts=now_dt, report=event_intelligence_report)
+        if market_watch is not None:
+            self.observability.journal("market_watch_journal", market_watch)
         advisory = self.mastermind.advise(
             symbol,
             features,
@@ -437,6 +454,7 @@ class LiveMarketCoordinator:
                 "market_integrity": None if market_integrity is None else asdict(market_integrity),
                 "venue_limit_decision": None if venue_limit_decision is None else asdict(venue_limit_decision),
                 "event_intelligence": None if event_intelligence_report is None else asdict(event_intelligence_report),
+                "market_watch": None if market_watch is None else asdict(market_watch),
                 "portfolio_allocation": asdict(portfolio_allocation),
                 "mastermind": None
                 if advisory is None
@@ -466,6 +484,7 @@ class LiveMarketCoordinator:
             market_integrity=market_integrity,
             venue_limit_decision=venue_limit_decision,
             event_intelligence_report=event_intelligence_report,
+            market_watch=market_watch,
             forecast=forecast,
             regime_assessment=regime_assessment,
             advisory=advisory,
@@ -631,6 +650,7 @@ class LiveDecisionCoordinator:
             market_integrity_status=market.market_integrity,
             provider_capability=market.provider_capability,
             mastermind_advisory=market.advisory,
+            market_watch_report=market.market_watch,
         )
         reserve_state = None
         inventory_state = None
@@ -826,6 +846,7 @@ class LiveDecisionCoordinator:
             market_integrity_status=market.market_integrity,
             provider_capability=market.provider_capability,
             mastermind_advisory=market.advisory,
+            market_watch_report=market.market_watch,
         )
         self.observability.journal("policy_journal", policy_decision)
         spre_payload = getattr(policy_decision, "why", {}).get("spre") if isinstance(getattr(policy_decision, "why", None), dict) else None
@@ -949,6 +970,16 @@ class LiveDecisionCoordinator:
                     "capital_sovereignty": {} if capital_sovereignty_decision is None else asdict(capital_sovereignty_decision),
                     "position_morph": {} if position_morph_plan is None else asdict(position_morph_plan),
                     "adaptive_exit": {} if adaptive_exit_allocation is None else asdict(adaptive_exit_allocation),
+                    "market_watch": {} if market.market_watch is None else asdict(market.market_watch),
+                    "doctrine_target": {
+                        "provider": str(getattr(self.settings.doctrine, "target_provider", "") or self.settings.execution.provider_id),
+                        "product": str(getattr(self.settings.doctrine, "product_target", "") or "spot"),
+                        "long_only": bool(getattr(self.settings.doctrine, "long_only", False)),
+                        "minimum_sell_net_profit_bps": float(getattr(self.settings.doctrine, "minimum_sell_net_profit_bps", 120.0) or 120.0),
+                        "enforce_cost_basis_sell_block": bool(getattr(self.settings.doctrine, "enforce_cost_basis_sell_block", False)),
+                        "enforce_net_profit_sell_block": bool(getattr(self.settings.doctrine, "enforce_net_profit_sell_block", False)),
+                        "block_non_reduce_only_sells": bool(getattr(self.settings.doctrine, "block_non_reduce_only_sells", False)),
+                    },
                     "reduce_only": True,
                 },
             )
@@ -1152,6 +1183,17 @@ class LiveDecisionCoordinator:
                     "size_multiplier": size_multiplier,
                     "forced_risk_mode": getattr(meta_governor, "forced_risk_mode", None),
                 },
+                "market_watch": {} if market.market_watch is None else asdict(market.market_watch),
+                "doctrine_target": {
+                    "provider": str(getattr(self.settings.doctrine, "target_provider", "") or self.settings.execution.provider_id),
+                    "product": str(getattr(self.settings.doctrine, "product_target", "") or "spot"),
+                    "long_only": bool(getattr(self.settings.doctrine, "long_only", False)),
+                    "minimum_sell_net_profit_bps": float(getattr(self.settings.doctrine, "minimum_sell_net_profit_bps", 120.0) or 120.0),
+                    "enforce_cost_basis_sell_block": bool(getattr(self.settings.doctrine, "enforce_cost_basis_sell_block", False)),
+                    "enforce_net_profit_sell_block": bool(getattr(self.settings.doctrine, "enforce_net_profit_sell_block", False)),
+                    "block_non_reduce_only_sells": bool(getattr(self.settings.doctrine, "block_non_reduce_only_sells", False)),
+                },
+                "reduce_only": False,
             },
         )
         execution_started = time.perf_counter()

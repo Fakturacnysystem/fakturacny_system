@@ -87,6 +87,7 @@ class RobotOrchestrator:
         self.models = ModelsService(regime_settings=settings.regime)
         self.market_data = MarketDataService()
         self.market_integrity = MarketIntegrityService()
+        self.market_watch = MarketWatchService(settings)
         self.regime_service = RegimeService(settings.regime)
         self.alpha = AlphaService()
         self.calibration = CalibrationService(settings.storage.run_dir)
@@ -102,12 +103,14 @@ class RobotOrchestrator:
             settings.storage.run_dir,
             ack_ttl_minutes=int(settings.monitoring.manual_review_ack_ttl_minutes),
         )
+        self.harmony = HarmonyConfigResolver(settings)
         self.policy = PolicyService(
             settings.policy,
             settings.allocator,
             settings.tco,
             spre_engine=SPREEngine(calibration_service=self.calibration),
             shadow_rival_service=ShadowRivalService(calibration_service=self.calibration),
+            long_only=bool(settings.doctrine.long_only),
         )
         self.risk = RiskEngineService(settings.risk, safe_mode=settings.safe_mode_default)
         self.execution = ExecutionService(settings.execution)
@@ -154,6 +157,7 @@ class RobotOrchestrator:
             venue_capability_registry=self.venue_capabilities,
             shared_venue_limit_governor=self.shared_venue_limits,
             event_intelligence_service=self.event_intelligence,
+            market_watch_service=self.market_watch,
         )
         self.live_decision = LiveDecisionCoordinator(
             health=self.health,
@@ -315,7 +319,8 @@ class RobotOrchestrator:
         return os.path.join(self.settings.storage.run_dir, "KILL")
 
     def _live_loop(self, live: object, symbol: str, mode: ExecutionMode) -> dict:
-        poll_s = max(1.0, float(os.getenv("AUTONOMOUS_LIVE_POLL_SECONDS", "5")))
+        harmony = self.harmony.resolve()
+        poll_s = max(1.0, float(harmony.get("order_cadence_s", 5.0) or 5.0))
         max_steps = int(os.getenv("AUTONOMOUS_LIVE_LOOP_MAX_STEPS", "0") or "0")
         base_budget = max(float(self.settings.policy.base_risk_budget), 1.0)
         exposure_notional = 0.0
@@ -327,7 +332,16 @@ class RobotOrchestrator:
         steps = 0
         last_recon_ok = True
 
-        self.ops.audit_event("live_loop_start", {"mode": mode.value, "symbol": symbol, "poll_s": poll_s, "max_steps": max_steps})
+        self.ops.audit_event(
+            "live_loop_start",
+            {
+                "mode": mode.value,
+                "symbol": symbol,
+                "poll_s": poll_s,
+                "max_steps": max_steps,
+                "harmony_order_cadence_source": harmony.get("order_cadence_source"),
+            },
+        )
         while True:
             loop_started = time.perf_counter()
             steps += 1
@@ -596,6 +610,11 @@ class RobotOrchestrator:
         config_manifest["config_hash"] = cfg_hash
         self.raw.write_table("config_manifest", [config_manifest])
         self.observability.journal("config_manifest", config_manifest)
+        harmony_paths = self.harmony.write_reports(self.settings.storage.run_dir)
+        harmony_payload = self.harmony.resolve()
+        harmony_payload["paths"] = harmony_paths
+        self.raw.write_table("harmony_config", [harmony_payload])
+        self.observability.journal("harmony_journal", harmony_payload)
         capability_matrix = self.execution.provider_capability_matrix()
         self.raw.write_table("provider_capabilities", [asdict(capability_matrix)])
         self.observability.journal("provider_capability_journal", capability_matrix)
@@ -659,6 +678,12 @@ class RobotOrchestrator:
                     settings=self.settings,
                     run_id=self.settings.storage.run_dir.replace("/", "_"),
                     connector=KrakenDerivativesConnector(self.settings.execution.kraken),
+                )
+            elif self.settings.execution.provider_id == "kraken_spot":
+                live = LiveKrakenSpotService(
+                    settings=self.settings,
+                    run_id=self.settings.storage.run_dir.replace("/", "_"),
+                    connector=KrakenSpotConnector(self.settings.execution.kraken_spot),
                 )
             elif self.settings.execution.provider_id == "binance_um_perps":
                 live = LiveBinanceService(
