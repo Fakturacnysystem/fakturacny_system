@@ -226,6 +226,25 @@ class KrakenDerivativesConnector:
         # Kraken futures leverage is managed by account/position mechanics; we enforce 1x via risk config.
         return {"symbol": symbol, "leverage": leverage, "status": "noop_1x"}
 
+    def balances(self) -> list[dict[str, Any]]:
+        data = self._request("GET", "/derivatives/api/v3/accounts", signed=True)
+        self._raise_if_error(data, "accounts")
+        accounts = data.get("accounts", data.get("balances", [])) if isinstance(data, dict) else []
+        out: list[dict[str, Any]] = []
+        for row in accounts if isinstance(accounts, list) else []:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "asset": str(row.get("currency", row.get("asset", "USD"))),
+                    "balance": str(row.get("balanceValue", row.get("balance", row.get("equity", 0.0)))),
+                    "availableBalance": str(row.get("available", row.get("availableBalance", row.get("free", 0.0)))),
+                    "equity": str(row.get("equity", row.get("balanceValue", row.get("balance", 0.0)))),
+                    "raw": row,
+                }
+            )
+        return out
+
     def _normalize_send_status(self, data: dict[str, Any], fallback_cid: str = "") -> dict[str, Any]:
         send = data.get("sendStatus", data.get("sendstatus", {})) if isinstance(data, dict) else {}
         if not isinstance(send, dict):
@@ -323,6 +342,8 @@ class KrakenDerivativesConnector:
                     "symbol": psym,
                     "positionAmt": str(signed_size),
                     "markPrice": str(p.get("markPrice", p.get("mark", p.get("price", 0.0)))),
+                    "entryPrice": str(p.get("entryPrice", p.get("avgEntryPrice", p.get("avgPrice", p.get("price", 0.0))))),
+                    "unrealizedPnl": p.get("unrealizedPnl", p.get("unrealisedPnl", p.get("floatingPnl"))),
                     "raw": p,
                 }
             )
@@ -349,3 +370,67 @@ class KrakenDerivativesConnector:
                 }
             )
         return out
+
+    def fills(self, *, last_fill_time: int | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if last_fill_time is not None:
+            params["lastFillTime"] = int(last_fill_time)
+        data = self._request("GET", "/derivatives/api/v3/fills", params=params, signed=True)
+        self._raise_if_error(data, "fills")
+        if isinstance(data, dict):
+            if isinstance(data.get("fills"), list):
+                return data["fills"]
+            if isinstance(data.get("elements"), list):
+                return data["elements"]
+            if isinstance(data.get("history"), list):
+                return data["history"]
+        return []
+
+    def execution_events(
+        self,
+        *,
+        since: int | None = None,
+        before: int | None = None,
+        count: int | None = None,
+        sort: str = "desc",
+        continuation_token: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"sort": sort}
+        if since is not None:
+            params["since"] = int(since)
+        if before is not None:
+            params["before"] = int(before)
+        if count is not None:
+            params["count"] = int(count)
+        if continuation_token:
+            params["continuation_token"] = continuation_token
+        data = self._request("GET", "/api/history/v3/executions", params=params, signed=True)
+        self._raise_if_error(data, "history/executions")
+        return data if isinstance(data, dict) else {"events": []}
+
+    def account_log(
+        self,
+        *,
+        since: int | None = None,
+        before: int | None = None,
+        from_id: int | None = None,
+        to_id: int | None = None,
+        sort: str = "desc",
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"sort": sort}
+        if since is not None:
+            params["since"] = int(since)
+        if before is not None:
+            params["before"] = int(before)
+        if from_id is not None:
+            params["from"] = int(from_id)
+        if to_id is not None:
+            params["to"] = int(to_id)
+        data = self._request("GET", "/api/history/v3/account-log", params=params, signed=True)
+        self._raise_if_error(data, "history/account-log")
+        if isinstance(data, dict):
+            if isinstance(data.get("logs"), list):
+                return data["logs"]
+            if isinstance(data.get("elements"), list):
+                return data["elements"]
+        return []

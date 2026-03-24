@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from autonomous_investment_robot.main import emergency_flatten, request_kill, run_record, run_replay, run_with_config
+from autonomous_investment_robot.main import acknowledge_manual_review, emergency_flatten, request_kill, run_record, run_replay, run_with_config
 
 
 def main() -> None:
@@ -22,7 +22,7 @@ def main() -> None:
     p_ro.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
 
     p_live = sub.add_parser("live")
-    p_live.add_argument("--config", default="config.perps_intraday.live.yaml")
+    p_live.add_argument("--config", required=True)
     p_live.add_argument("--kill", action="store_true")
 
     p_record = sub.add_parser("record")
@@ -32,7 +32,13 @@ def main() -> None:
     p_record.add_argument("--poll-interval-seconds", type=float, default=1.0)
 
     p_flatten = sub.add_parser("flatten")
-    p_flatten.add_argument("--config", default="config.perps_intraday.live.yaml")
+    p_flatten.add_argument("--config", required=True)
+
+    p_ack = sub.add_parser("ack-review")
+    p_ack.add_argument("--run-dir", required=True)
+    p_ack.add_argument("--decision-key", default=None)
+    p_ack.add_argument("--reviewer", default="operator")
+    p_ack.add_argument("--notes", default="")
 
     args = parser.parse_args()
     if getattr(args, "kill", False):
@@ -55,6 +61,13 @@ def main() -> None:
         )
     elif args.cmd == "flatten":
         out = emergency_flatten(args.config)
+    elif args.cmd == "ack-review":
+        out = acknowledge_manual_review(
+            args.run_dir,
+            decision_key=args.decision_key,
+            reviewer=args.reviewer,
+            notes=args.notes,
+        )
     else:
         out = run_with_config(args.config)
     print(json.dumps(out, indent=2))

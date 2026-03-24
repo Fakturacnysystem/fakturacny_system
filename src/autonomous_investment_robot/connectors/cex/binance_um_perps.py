@@ -188,6 +188,50 @@ class BinanceUMPerpsConnector:
         params = {"symbol": symbol} if symbol else {}
         return self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
 
+    def user_trades(
+        self,
+        symbol: str,
+        *,
+        order_id: int | str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        from_id: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"symbol": symbol, "limit": max(1, min(int(limit), 1000))}
+        if order_id is not None:
+            params["orderId"] = int(order_id)
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        if from_id is not None:
+            params["fromId"] = int(from_id)
+        return self._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
+
+    def income_history(
+        self,
+        *,
+        symbol: str | None = None,
+        income_type: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        page: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": max(1, min(int(limit), 1000))}
+        if symbol:
+            params["symbol"] = symbol
+        if income_type:
+            params["incomeType"] = income_type
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        if page is not None:
+            params["page"] = int(page)
+        return self._request("GET", "/fapi/v1/income", params=params, signed=True)
+
     def create_listen_key(self) -> dict[str, Any]:
         return self._request("POST", "/fapi/v1/listenKey", signed=True)
 

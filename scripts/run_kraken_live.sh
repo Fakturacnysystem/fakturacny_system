@@ -5,7 +5,7 @@ set -euo pipefail
 require_env KRAKEN_API_KEY
 require_env KRAKEN_API_SECRET
 require_env TESTNET_VALIDATED
-export ENABLE_LIVE_TRADING="${ENABLE_LIVE_TRADING:-true}"
-export ACK_I_UNDERSTAND_RISKS="${ACK_I_UNDERSTAND_RISKS:-true}"
+require_true_env ENABLE_LIVE_TRADING
+require_true_env ACK_I_UNDERSTAND_RISKS
 
 run_robot live --config config.kraken_derivatives.live.yaml

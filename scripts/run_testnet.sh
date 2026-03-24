@@ -4,7 +4,7 @@ set -euo pipefail
 
 require_env EXCHANGE_API_KEY
 require_env EXCHANGE_API_SECRET
-export ENABLE_LIVE_TRADING="${ENABLE_LIVE_TRADING:-true}"
-export ACK_I_UNDERSTAND_RISKS="${ACK_I_UNDERSTAND_RISKS:-true}"
+require_true_env ENABLE_LIVE_TRADING
+require_true_env ACK_I_UNDERSTAND_RISKS
 
 run_robot live --config config.perps_intraday.testnet.yaml

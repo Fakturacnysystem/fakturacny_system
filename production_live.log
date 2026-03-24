@@ -1,0 +1,278 @@
+2026-03-17 01:35:14,487 [INFO] LIVE-MASTER: 🔥 ŠTARTUJEM NA OSTRO - GOD MODE AKTÍVNY
+2026-03-17 01:35:14,507 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:35:24,512 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:35:34,514 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:35:44,520 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:35:54,526 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:36:04,529 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:36:14,536 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: Invalid format specifier ' 'UP/DOWN', 'confidence': 0-100' for object of type 'str'
+2026-03-17 01:36:28,656 [INFO] LIVE-MASTER: 🔥 ŠTARTUJEM NA OSTRO - GOD MODE AKTÍVNY
+2026-03-17 01:36:29,645 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:36:29,655 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:36:29,655 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:36:40,360 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:36:40,361 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:36:40,362 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:36:51,105 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:36:51,105 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:36:51,105 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:02,002 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:02,004 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:02,004 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:12,724 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:12,726 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:12,726 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:23,609 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:23,610 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:23,610 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:34,463 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:34,465 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:34,465 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:45,270 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:45,271 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:45,271 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:37:56,070 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:37:56,071 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:37:56,071 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:38:06,869 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:38:06,871 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:38:06,872 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:38:17,676 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:38:17,677 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:38:17,678 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:38:28,408 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:38:28,411 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:38:28,411 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:38:39,283 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:38:39,284 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:38:39,284 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:38:49,993 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:38:49,994 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:38:49,994 [ERROR] LIVE-MASTER: ⚠️ Runtime chyba: ProfitGate.should_exit() got an unexpected keyword argument 'entry_timestamp'
+2026-03-17 01:39:02,757 [INFO] LIVE-MASTER: 🔥 ŠTARTUJEM NA OSTRO - GOD MODE AKTÍVNY
+2026-03-17 01:39:03,656 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:03,665 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:09,429 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:09,431 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:15,135 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:15,137 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:20,960 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:20,961 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:26,797 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:26,799 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:32,634 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:32,635 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:38,471 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:38,473 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:44,173 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:44,175 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:49,940 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:49,941 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:39:55,670 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:39:55,671 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:01,511 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:01,512 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:07,247 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:07,249 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:13,003 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:13,004 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:18,819 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:18,820 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:24,629 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:24,631 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:30,388 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:30,390 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:36,226 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:36,228 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:42,151 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:42,153 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:47,856 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:47,857 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:53,837 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:53,839 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:40:59,669 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:40:59,670 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:05,511 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:05,512 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:11,246 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:11,247 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:16,980 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:16,981 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:22,817 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:22,819 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:28,561 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:28,562 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:34,275 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:34,277 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:42,379 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:42,380 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:48,114 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:48,116 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:53,815 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:53,816 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:41:59,579 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:41:59,580 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:42:05,315 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:42:05,317 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:42:11,150 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:42:11,151 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:42:16,863 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:42:16,864 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:42:22,618 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:42:22,619 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:42:28,321 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:42:28,321 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:50:51,631 [INFO] LIVE-MASTER: 🔥 ŠTARTUJEM NA OSTRO - GOD MODE AKTÍVNY
+2026-03-17 01:50:52,523 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:50:52,534 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:50:58,309 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:50:58,311 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:04,039 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:04,041 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:09,778 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:09,780 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:15,615 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:15,616 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:21,351 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:21,352 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:27,084 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:27,085 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:32,782 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:32,784 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:38,471 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:38,472 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:44,204 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:44,207 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:50,124 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:50,126 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:51:55,876 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:51:55,878 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:01,798 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:01,799 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:07,532 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:07,533 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:13,369 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:13,370 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:19,190 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:19,192 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:24,940 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:24,942 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:52:30,674 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:52:30,676 [INFO] LIVE-MASTER: 🔮 Oracle predikcia: UP (Istota: 85%)
+2026-03-17 01:56:32,519 [INFO] LIVE-MASTER-MULTI: 🔥 MULTI-ASSET GOD MODE AKTÍVNY (BTC, ETH, SOL)
+2026-03-17 01:56:32,540 [INFO] KrakenSpot: 🔌 Kraken Spot konektor inicializovaný.
+2026-03-17 01:56:36,629 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 72.09 EUR | Aktívne obchody: []
+2026-03-17 01:56:37,563 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:56:37,574 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle BTC/EUR: UP (85%)
+2026-03-17 01:56:37,574 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP BTC/EUR (Confidence 85%)
+2026-03-17 01:56:37,639 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na BTC/EUR: 0.0002299 BTC
+2026-03-17 01:56:37,696 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.0002299 BTC
+2026-03-17 01:56:37,697 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:56:37,697 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre BTC/EUR - PREDÁVAM
+2026-03-17 01:56:40,716 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na BTC/EUR: 0.0002299 BTC
+2026-03-17 01:56:40,770 [INFO] KrakenSpot: ✅ PREDANÉ: 0.0002299 BTC
+2026-03-17 01:56:41,453 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:56:41,454 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle ETH/EUR: UP (85%)
+2026-03-17 01:56:41,455 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP ETH/EUR (Confidence 85%)
+2026-03-17 01:56:41,904 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na ETH/EUR: 0.00734124 BTC
+2026-03-17 01:56:41,970 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00734124 BTC
+2026-03-17 01:56:41,970 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:56:41,970 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre ETH/EUR - PREDÁVAM
+2026-03-17 01:56:44,996 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na ETH/EUR: 0.00734259 BTC
+2026-03-17 01:56:45,058 [INFO] KrakenSpot: ✅ PREDANÉ: 0.00734259 BTC
+2026-03-17 01:56:45,856 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:56:45,858 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle SOL/EUR: UP (85%)
+2026-03-17 01:56:45,858 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP SOL/EUR (Confidence 85%)
+2026-03-17 01:56:46,059 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na SOL/EUR: 0.18100639 BTC
+2026-03-17 01:56:46,116 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.18100639 BTC
+2026-03-17 01:56:46,116 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:56:46,116 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre SOL/EUR - PREDÁVAM
+2026-03-17 01:56:49,156 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na SOL/EUR: 0.29168675 BTC
+2026-03-17 01:56:49,214 [INFO] KrakenSpot: ✅ PREDANÉ: 0.29168675 BTC
+2026-03-17 01:57:04,276 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 80.86 EUR | Aktívne obchody: []
+2026-03-17 01:57:04,968 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:57:04,969 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle BTC/EUR: UP (85%)
+2026-03-17 01:57:04,970 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP BTC/EUR (Confidence 85%)
+2026-03-17 01:57:05,274 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na BTC/EUR: 0.00022954 BTC
+2026-03-17 01:57:05,328 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00022954 BTC
+2026-03-17 01:57:05,328 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:57:05,328 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre BTC/EUR - PREDÁVAM
+2026-03-17 01:57:08,334 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na BTC/EUR: 0.00022954 BTC
+2026-03-17 01:57:08,386 [INFO] KrakenSpot: ✅ PREDANÉ: 0.00022954 BTC
+2026-03-17 01:57:08,959 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:57:08,961 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle ETH/EUR: UP (85%)
+2026-03-17 01:57:08,961 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP ETH/EUR (Confidence 85%)
+2026-03-17 01:57:09,396 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na ETH/EUR: 0.00733754 BTC
+2026-03-17 01:57:09,451 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00733754 BTC
+2026-03-17 01:57:09,452 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:57:09,452 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre ETH/EUR - PREDÁVAM
+2026-03-17 01:57:12,456 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na ETH/EUR: 0.00733754 BTC
+2026-03-17 01:57:12,516 [INFO] KrakenSpot: ✅ PREDANÉ: 0.00733754 BTC
+2026-03-17 01:57:13,119 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:57:13,121 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle SOL/EUR: UP (85%)
+2026-03-17 01:57:13,121 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP SOL/EUR (Confidence 85%)
+2026-03-17 01:57:13,514 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na SOL/EUR: 0.18098455 BTC
+2026-03-17 01:57:13,570 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.18098455 BTC
+2026-03-17 01:57:13,571 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:57:13,571 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre SOL/EUR - PREDÁVAM
+2026-03-17 01:57:16,582 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na SOL/EUR: 0.18098455 BTC
+2026-03-17 01:57:16,639 [INFO] KrakenSpot: ✅ PREDANÉ: 0.18098455 BTC
+2026-03-17 01:57:31,706 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 80.50 EUR | Aktívne obchody: []
+2026-03-17 01:57:32,448 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:57:32,449 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle BTC/EUR: UP (85%)
+2026-03-17 01:57:32,449 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP BTC/EUR (Confidence 85%)
+2026-03-17 01:57:32,715 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na BTC/EUR: 0.00022953 BTC
+2026-03-17 01:57:32,771 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00022953 BTC
+2026-03-17 01:57:32,772 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:57:32,772 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre BTC/EUR - PREDÁVAM
+2026-03-17 01:57:35,797 [INFO] KrakenSpot: 🛒 Posielam MARKET SELL na BTC/EUR: 0.00022953 BTC
+2026-03-17 01:57:35,851 [INFO] KrakenSpot: ✅ PREDANÉ: 0.00022953 BTC
+2026-03-17 01:57:36,456 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 01:57:36,457 [INFO] LIVE-MASTER-MULTI: 🔮 Oracle ETH/EUR: UP (85%)
+2026-03-17 01:57:36,457 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP ETH/EUR (Confidence 85%)
+2026-03-17 01:57:36,884 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na ETH/EUR: 0.00732826 BTC
+2026-03-17 01:57:36,938 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00732826 BTC
+2026-03-17 01:57:36,939 [INFO] ProfitGate: ✅ EXIT SIGNAL: PnL 1.50% >= Target 1.20%
+2026-03-17 01:57:36,939 [WARNING] LIVE-MASTER-MULTI: 🎯 TARGET DOSIAHNUTÝ pre ETH/EUR - PREDÁVAM
+2026-03-17 02:00:22,756 [INFO] LIVE-MASTER-MULTI: 🔥 REAL-TIME PROFIT MODE AKTÍVNY
+2026-03-17 02:00:22,776 [INFO] KrakenSpot: 🔌 Kraken Spot konektor inicializovaný.
+2026-03-17 02:00:26,880 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 65.32 EUR | Aktívne: []
+2026-03-17 02:00:28,677 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 02:00:28,689 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP BTC/EUR pri cene 65625.6 EUR
+2026-03-17 02:00:28,867 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na BTC/EUR: 0.00022861 BTC
+2026-03-17 02:00:28,930 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00022861 BTC
+2026-03-17 02:00:30,606 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 02:00:30,608 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP ETH/EUR pri cene 2052.77 EUR
+2026-03-17 02:00:30,916 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na ETH/EUR: 0.00730719 BTC
+2026-03-17 02:00:30,973 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.00730719 BTC
+2026-03-17 02:00:32,673 [INFO] httpx: HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-17 02:00:32,675 [WARNING] LIVE-MASTER-MULTI: 🚀 NÁKUP SOL/EUR pri cene 83.12 EUR
+2026-03-17 02:00:33,004 [INFO] KrakenSpot: 🛒 Posielam MARKET BUY na SOL/EUR: 0.18050541 BTC
+2026-03-17 02:00:33,058 [INFO] KrakenSpot: ✅ KÚPENÉ: 0.18050541 BTC
+2026-03-17 02:00:48,129 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:00:49,144 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.04%
+2026-03-17 02:00:50,163 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.01%
+2026-03-17 02:00:51,239 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL 0.04%
+2026-03-17 02:01:06,309 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:01:07,326 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.07%
+2026-03-17 02:01:08,346 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.13%
+2026-03-17 02:01:09,405 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL 0.01%
+2026-03-17 02:01:24,491 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:01:25,487 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.12%
+2026-03-17 02:01:26,475 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.13%
+2026-03-17 02:01:27,476 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL 0.00%
+2026-03-17 02:01:42,538 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:01:43,539 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.11%
+2026-03-17 02:01:44,543 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.10%
+2026-03-17 02:01:45,571 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL -0.02%
+2026-03-17 02:02:00,649 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:02:01,645 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.18%
+2026-03-17 02:02:02,642 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.15%
+2026-03-17 02:02:03,670 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL -0.02%
+2026-03-17 02:02:18,757 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 20.14 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:02:19,729 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem BTC/EUR: PnL -0.19%
+2026-03-17 02:02:20,772 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem ETH/EUR: PnL -0.15%
+2026-03-17 02:02:21,759 [INFO] LIVE-MASTER-MULTI: 📊 Sledujem SOL/EUR: PnL -0.02%
+2026-03-17 02:02:46,768 [ERROR] KrakenSpot: ❌ Chyba pri získavaní zostatku: kraken POST https://api.kraken.com/0/private/BalanceEx
+2026-03-17 02:02:46,769 [INFO] LIVE-MASTER-MULTI: 💰 Balance: 0.00 EUR | Aktívne: ['BTC/EUR', 'ETH/EUR', 'SOL/EUR']
+2026-03-17 02:03:41,786 [ERROR] LIVE-MASTER-MULTI: ⚠️ Error: kraken GET https://api.kraken.com/0/public/Ticker?pair=XXBTZEUR

@@ -1,73 +1,113 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from typing import Iterable
+import math
+
+
+def _safe_list(values: Iterable[float]) -> list[float]:
+    out: list[float] = []
+    for v in values:
+        try:
+            fv = float(v)
+            if math.isfinite(fv):
+                out.append(fv)
+        except Exception:
+            pass
+    return out
+
+
+@dataclass
+class DriftDetector:
+    psi_threshold: float = 0.2
+
+    def psi(self, expected: Iterable[float], actual: Iterable[float], bins: int = 10) -> float:
+        exp = _safe_list(expected)
+        act = _safe_list(actual)
+
+        if len(exp) < 2 or len(act) < 2:
+            return 0.0
+
+        all_vals = exp + act
+        lo = min(all_vals)
+        hi = max(all_vals)
+
+        if lo == hi:
+            return 0.0
+
+        step = (hi - lo) / bins
+        if step <= 0:
+            return 0.0
+
+        edges = [lo + i * step for i in range(bins + 1)]
+
+        def bucketize(vals: list[float]) -> list[float]:
+            counts = [0] * bins
+            for v in vals:
+                idx = bins - 1 if v >= edges[-1] else int((v - lo) / step)
+                idx = max(0, min(idx, bins - 1))
+                counts[idx] += 1
+            total = sum(counts) or 1
+            return [max(c / total, 1e-6) for c in counts]
+
+        p = bucketize(exp)
+        q = bucketize(act)
+
+        psi_value = 0.0
+        for pi, qi in zip(p, q):
+            psi_value += (qi - pi) * math.log(qi / pi)
+        return float(psi_value)
 
 
 @dataclass
 class ModelRecord:
     version: str
-    score: float
+    metrics: dict
     canary: bool
-    metrics: dict[str, float] = field(default_factory=dict)
-    artifact_hash: str = ""
-    promoted: bool = False
-    rolled_back: bool = False
+    promoted: bool
+    metadata: dict
+    artifact_hash: str
+    created_at: str
 
 
 class ModelRegistry:
     def __init__(self) -> None:
-        self.models: list[ModelRecord] = [ModelRecord(version="baseline", score=0.0, canary=False, promoted=True)]
+        self._records: dict[str, ModelRecord] = {}
+        self._latest_stable_version: str | None = None
 
-    def register(self, version: str, score: float, canary: bool = True, metrics: dict[str, float] | None = None, artifact_hash: str = "") -> ModelRecord:
-        rec = ModelRecord(version=version, score=score, canary=canary, metrics=metrics or {}, artifact_hash=artifact_hash)
-        self.models.append(rec)
-        return rec
-
-    def latest_stable(self) -> ModelRecord:
-        stable = [m for m in self.models if not m.canary]
-        return stable[-1] if stable else self.models[0]
-
-    def latest_canary(self) -> ModelRecord | None:
-        canaries = [m for m in self.models if m.canary]
-        return canaries[-1] if canaries else None
+    def register(self, version: str, metrics: dict, canary: bool, metadata: dict) -> ModelRecord:
+        payload = {"version": version, "metrics": metrics, "canary": canary, "metadata": metadata}
+        artifact_hash = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        record = ModelRecord(
+            version=version,
+            metrics=dict(metrics),
+            canary=bool(canary),
+            promoted=not bool(canary),
+            metadata=dict(metadata),
+            artifact_hash=artifact_hash,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._records[version] = record
+        if not canary:
+            self._latest_stable_version = version
+        return record
 
     def promote(self, version: str) -> ModelRecord:
-        for i, m in enumerate(self.models):
-            if m.version == version:
-                promoted = ModelRecord(
-                    version=m.version,
-                    score=m.score,
-                    canary=False,
-                    metrics=dict(m.metrics),
-                    artifact_hash=m.artifact_hash,
-                    promoted=True,
-                    rolled_back=False,
-                )
-                self.models.append(promoted)
-                return promoted
-        raise ValueError(f"unknown_model:{version}")
+        if version not in self._records:
+            raise ValueError(f"unknown_model_version:{version}")
+        rec = self._records[version]
+        rec.canary = False
+        rec.promoted = True
+        self._latest_stable_version = version
+        return rec
 
-    def mark_rollback(self, version: str) -> None:
-        for m in self.models:
-            if m.version == version:
-                m.rolled_back = True
-                return
-        raise ValueError(f"unknown_model:{version}")
-
-
-class DriftDetector:
-    def psi(self, reference: list[float], current: list[float]) -> float:
-        if not reference or not current:
-            return 0.0
-        mr = sum(reference) / len(reference)
-        mc = sum(current) / len(current)
-        return abs(mc - mr) / (abs(mr) + 1e-9)
-
-    def performance_drift(self, baseline_net_after_cost_bps: float, current_net_after_cost_bps: float) -> float:
-        denom = abs(baseline_net_after_cost_bps) + 1e-9
-        return (baseline_net_after_cost_bps - current_net_after_cost_bps) / denom
+    def latest_stable(self) -> ModelRecord | None:
+        if self._latest_stable_version is None:
+            return None
+        return self._records.get(self._latest_stable_version)
 
 
 @dataclass
@@ -75,86 +115,87 @@ class CanaryComparison:
     promote: bool
     rollback: bool
     reason: str
-    details: dict[str, float]
+    details: dict = field(default_factory=dict)
 
 
 @dataclass
-class DeployDecision:
+class DeploymentAction:
     action: str
     reason: str
-    risk_multiplier: float
+    throttle: float = 1.0
 
 
 class MLOpsService:
-    def __init__(self, rollback_dd_threshold_pct: float, drift_psi_threshold: float) -> None:
+    """
+    Compatibility layer for orchestrator expectations.
+
+    Exposes:
+    - detector.psi(...)
+    - should_rollback(...)
+    """
+
+    def __init__(self, rollback_dd_threshold_pct: float = 10.0, drift_psi_threshold: float = 0.2) -> None:
+        self.rollback_dd_threshold_pct = float(rollback_dd_threshold_pct)
+        self.drift_psi_threshold = float(drift_psi_threshold)
+        self.detector = DriftDetector(psi_threshold=self.drift_psi_threshold)
         self.registry = ModelRegistry()
-        self.rollback_dd_threshold_pct = rollback_dd_threshold_pct
-        self.drift_psi_threshold = drift_psi_threshold
-        self.detector = DriftDetector()
 
-    def canary_risk_budget(self, total_risk_budget: float, canary_pct: float) -> float:
-        return max(0.0, total_risk_budget * canary_pct)
+    def should_rollback(self, drawdown_pct: float, psi: float | None = None, psi_value: float | None = None) -> bool:
+        try:
+            dd = float(drawdown_pct)
+        except Exception:
+            dd = 0.0
+        try:
+            drift = float(psi if psi is not None else (psi_value if psi_value is not None else 0.0))
+        except Exception:
+            drift = 0.0
 
-    def model_artifact_hash(self, metadata: dict) -> str:
-        payload = json.dumps(metadata, sort_keys=True, default=str)
-        return sha256(payload.encode("utf-8")).hexdigest()
+        return dd >= self.rollback_dd_threshold_pct or drift >= self.drift_psi_threshold
 
-    def register_model(self, version: str, *, metrics: dict[str, float], canary: bool = True, metadata: dict | None = None) -> ModelRecord:
-        artifact_hash = self.model_artifact_hash(metadata or {"version": version, "metrics": metrics})
-        score = float(metrics.get("net_after_costs_bps", metrics.get("score", 0.0)))
-        return self.registry.register(version=version, score=score, canary=canary, metrics=metrics, artifact_hash=artifact_hash)
+    def canary_risk_budget(self, total_risk_budget: float, canary_risk_pct: float) -> float:
+        total = max(0.0, float(total_risk_budget))
+        pct = max(0.0, min(1.0, float(canary_risk_pct)))
+        return total * pct
 
-    def compare_canary(
-        self,
-        *,
-        baseline_metrics: dict[str, float],
-        canary_metrics: dict[str, float],
-        dd_not_worse_tolerance_pct: float = 0.25,
-        slippage_not_worse_tolerance_bps: float = 1.0,
-        funding_not_worse_tolerance_pct: float = 0.05,
-        psi_value: float = 0.0,
-    ) -> CanaryComparison:
-        b_net = float(baseline_metrics.get("net_after_costs_bps", 0.0))
-        c_net = float(canary_metrics.get("net_after_costs_bps", 0.0))
-        b_dd = float(baseline_metrics.get("drawdown_pct", 0.0))
-        c_dd = float(canary_metrics.get("drawdown_pct", 0.0))
-        b_slip = float(baseline_metrics.get("slippage_bps", 0.0))
-        c_slip = float(canary_metrics.get("slippage_bps", 0.0))
-        b_funding = float(baseline_metrics.get("funding_paid_pct", 0.0))
-        c_funding = float(canary_metrics.get("funding_paid_pct", 0.0))
+    def register_model(self, version: str, metrics: dict, canary: bool = True, metadata: dict | None = None) -> ModelRecord:
+        return self.registry.register(version=version, metrics=metrics, canary=canary, metadata=metadata or {})
 
-        net_up = c_net > b_net
-        dd_ok = c_dd <= (b_dd + dd_not_worse_tolerance_pct)
-        slip_ok = c_slip <= (b_slip + slippage_not_worse_tolerance_bps)
-        funding_ok = c_funding <= (b_funding + funding_not_worse_tolerance_pct)
-        drift_ok = psi_value <= self.drift_psi_threshold
+    def promote_canary(self, version: str) -> ModelRecord:
+        return self.registry.promote(version)
 
-        if net_up and dd_ok and slip_ok and funding_ok and drift_ok:
+    def compare_canary(self, baseline_metrics: dict, canary_metrics: dict, psi_value: float) -> CanaryComparison:
+        baseline_net = float(baseline_metrics.get("net_after_costs_bps", 0.0))
+        canary_net = float(canary_metrics.get("net_after_costs_bps", 0.0))
+        baseline_dd = float(baseline_metrics.get("drawdown_pct", 0.0))
+        canary_dd = float(canary_metrics.get("drawdown_pct", 0.0))
+        baseline_slip = max(1e-9, float(baseline_metrics.get("slippage_bps", 0.0)))
+        canary_slip = float(canary_metrics.get("slippage_bps", 0.0))
+        baseline_funding = max(1e-9, float(baseline_metrics.get("funding_paid_pct", 0.0)))
+        canary_funding = float(canary_metrics.get("funding_paid_pct", 0.0))
+
+        if self.should_rollback(drawdown_pct=canary_dd, psi_value=psi_value):
+            return CanaryComparison(
+                promote=False,
+                rollback=True,
+                reason="rollback_canary",
+                details={"drawdown_pct": canary_dd, "psi": psi_value},
+            )
+
+        net_better = canary_net > (baseline_net + 0.2)
+        drawdown_not_worse = canary_dd <= max(baseline_dd + 0.3, baseline_dd * 1.2)
+        slippage_not_worse = canary_slip <= (baseline_slip * 1.4)
+        funding_not_worse = canary_funding <= (baseline_funding * 1.4)
+
+        if net_better and drawdown_not_worse and slippage_not_worse and funding_not_worse:
             return CanaryComparison(
                 promote=True,
                 rollback=False,
                 reason="promote_canary",
                 details={
-                    "baseline_net_after_costs_bps": b_net,
-                    "canary_net_after_costs_bps": c_net,
-                    "psi_value": psi_value,
-                },
-            )
-
-        perf_drift = self.detector.performance_drift(b_net, c_net)
-        severe_dd_worse = c_dd > (b_dd + (2 * dd_not_worse_tolerance_pct))
-        if (not drift_ok) or perf_drift > 0.1 or severe_dd_worse:
-            return CanaryComparison(
-                promote=False,
-                rollback=True,
-                reason="rollback_canary",
-                details={
-                    "performance_drift": perf_drift,
-                    "psi_value": psi_value,
-                    "dd_ok": 1.0 if dd_ok else 0.0,
-                    "severe_dd_worse": 1.0 if severe_dd_worse else 0.0,
-                    "slip_ok": 1.0 if slip_ok else 0.0,
-                    "funding_ok": 1.0 if funding_ok else 0.0,
+                    "net_after_costs_bps_baseline": baseline_net,
+                    "net_after_costs_bps_canary": canary_net,
+                    "drawdown_pct_baseline": baseline_dd,
+                    "drawdown_pct_canary": canary_dd,
                 },
             )
 
@@ -163,25 +204,30 @@ class MLOpsService:
             rollback=False,
             reason="hold_canary",
             details={
-                "performance_drift": perf_drift,
-                "psi_value": psi_value,
+                "net_after_costs_bps_baseline": baseline_net,
+                "net_after_costs_bps_canary": canary_net,
+                "drawdown_pct_baseline": baseline_dd,
+                "drawdown_pct_canary": canary_dd,
+                "slippage_bps_baseline": baseline_slip,
+                "slippage_bps_canary": canary_slip,
+                "funding_paid_pct_baseline": baseline_funding,
+                "funding_paid_pct_canary": canary_funding,
             },
         )
 
-    def promote_canary(self, version: str) -> ModelRecord:
-        return self.registry.promote(version)
+    def deployment_action(self, drawdown_pct: float, psi_value: float, performance_drift: float) -> DeploymentAction:
+        if self.should_rollback(drawdown_pct=drawdown_pct, psi_value=psi_value):
+            return DeploymentAction(action="safe_mode", reason="rollback_trigger", throttle=0.0)
+        if float(performance_drift) >= 0.05:
+            return DeploymentAction(action="throttle", reason="performance_drift", throttle=0.5)
+        return DeploymentAction(action="continue", reason="stable", throttle=1.0)
 
-    def rollback_model(self, version: str) -> None:
-        self.registry.mark_rollback(version)
-
-    def should_rollback(self, drawdown_pct: float, psi_value: float) -> bool:
-        return drawdown_pct > self.rollback_dd_threshold_pct or psi_value > self.drift_psi_threshold
-
-    def deployment_action(self, *, drawdown_pct: float, psi_value: float, performance_drift: float = 0.0) -> DeployDecision:
-        if psi_value > self.drift_psi_threshold or performance_drift > 0.15:
-            return DeployDecision(action="safe_mode", reason="drift_or_perf_degradation", risk_multiplier=0.0)
-        if drawdown_pct > self.rollback_dd_threshold_pct:
-            return DeployDecision(action="rollback", reason="drawdown_limit", risk_multiplier=0.0)
-        if performance_drift > 0.05:
-            return DeployDecision(action="throttle", reason="performance_drift_warning", risk_multiplier=0.5)
-        return DeployDecision(action="keep", reason="healthy", risk_multiplier=1.0)
+    def evaluate(self, drawdown_pct: float, psi: float) -> dict:
+        rollback = self.should_rollback(drawdown_pct, psi)
+        return {
+            "rollback": rollback,
+            "drawdown_pct": float(drawdown_pct),
+            "psi": float(psi),
+            "rollback_dd_threshold_pct": self.rollback_dd_threshold_pct,
+            "drift_psi_threshold": self.drift_psi_threshold,
+        }

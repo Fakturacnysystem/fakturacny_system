@@ -4,10 +4,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 UNSPECIFIED = "UNSPECIFIED"
+SUPPORTED_PROVIDER_IDS = frozenset({"binance_um_perps", "kraken_derivatives", "kraken_spot"})
 
 
 class TradingMode(str, Enum):
@@ -20,6 +22,15 @@ class ExecutionMode(str, Enum):
     LIVE_READONLY = "live_readonly"
     LIVE_TESTNET = "live_testnet"
     LIVE = "live"
+
+
+class RolloutStage(str, Enum):
+    PAPER = "paper"
+    SHADOW = "shadow"
+    TINY_LIVE = "tiny_live"
+    CANARY_LIVE = "canary_live"
+    LIMITED_LIVE = "limited_live"
+    NORMAL_LIVE = "normal_live"
 
 
 @dataclass
@@ -89,6 +100,17 @@ class KrakenExecutionSettings:
 
 
 @dataclass
+class KrakenSpotExecutionSettings:
+    rest_base_url: str = "https://api.kraken.com"
+    ws_public_url: str = "wss://ws.kraken.com/v2"
+    api_key_env: str = "KRAKEN_SPOT_API_KEY"
+    api_secret_env: str = "KRAKEN_SPOT_API_SECRET"
+    request_timeout_s: float = 10.0
+    rate_limit_rps: float = 3.0
+    allow_unknown_permissions: bool = False
+
+
+@dataclass
 class ExecutionSettings:
     mode: str = "paper"
     provider_id: str = "binance_um_perps"
@@ -104,6 +126,7 @@ class ExecutionSettings:
     slicing_parts: int = 2
     binance: BinanceExecutionSettings = field(default_factory=BinanceExecutionSettings)
     kraken: KrakenExecutionSettings = field(default_factory=KrakenExecutionSettings)
+    kraken_spot: KrakenSpotExecutionSettings = field(default_factory=KrakenSpotExecutionSettings)
 
 
 @dataclass
@@ -125,6 +148,39 @@ class PolicySettings:
     estimated_cost_bps: float = 3.0
     safety_buffer_bps: float = 1.0
     base_risk_budget: float = 1000.0
+    min_free_quote_reserve_pct: float = 0.2
+    stale_inventory_hours: float = 12.0
+    capital_release_min_stale_score: float = 0.35
+
+
+@dataclass
+class DoctrineSettings:
+    target_provider: str = ""
+    product_target: str = ""
+    long_only: bool = False
+    never_open_new_short_exposure: bool = False
+    minimum_sell_net_profit_bps: float = 120.0
+    enforce_cost_basis_sell_block: bool = False
+    enforce_net_profit_sell_block: bool = False
+    block_non_reduce_only_sells: bool = False
+
+
+@dataclass
+class HarmonySettings:
+    enabled: bool = False
+    default_order_cadence_s: float = 5.0
+
+
+@dataclass
+class MarketWatchSettings:
+    enabled: bool = False
+    blackout_windows: list[dict[str, str]] = field(default_factory=list)
+    entry_block_max_spread_bps: float = 35.0
+    entry_degrade_max_spread_bps: float = 20.0
+    entry_block_min_depth_notional: float = 10000.0
+    entry_degrade_min_depth_notional: float = 25000.0
+    liquidity_map_min_depth_notional: float = 25000.0
+    block_new_entries_on_blackout: bool = True
 
 
 @dataclass
@@ -154,6 +210,10 @@ class AllocatorSettings:
 @dataclass
 class MonitoringSettings:
     metrics_port: int = 9108
+    decision_latency_warn_ms: float = 250.0
+    reconciliation_lag_warn_ms: float = 1000.0
+    loop_latency_warn_ms: float = 1000.0
+    manual_review_ack_ttl_minutes: int = 240
 
 
 @dataclass
@@ -181,7 +241,17 @@ class MLOpsSettings:
 
 
 @dataclass
+class MarginSettings:
+    enabled: bool = False
+    max_leverage: int = 0
+    isolated_only: bool = True
+    reduce_only_emergency: bool = True
+    require_explicit_opt_in: bool = True
+
+
+@dataclass
 class RobotSettings:
+    config_schema_version: int = 2
     trading_mode: TradingMode = TradingMode.PAPER
     explicit_live_enable: bool = False
     ack_live_risks: bool = False
@@ -194,6 +264,9 @@ class RobotSettings:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     safety: SafetySettings = field(default_factory=SafetySettings)
     policy: PolicySettings = field(default_factory=PolicySettings)
+    doctrine: DoctrineSettings = field(default_factory=DoctrineSettings)
+    harmony: HarmonySettings = field(default_factory=HarmonySettings)
+    market_watch: MarketWatchSettings = field(default_factory=MarketWatchSettings)
     tco: TCOSettings = field(default_factory=TCOSettings)
     regime: RegimeSettings = field(default_factory=RegimeSettings)
     allocator: AllocatorSettings = field(default_factory=AllocatorSettings)
@@ -202,6 +275,7 @@ class RobotSettings:
     fixtures: FixtureSettings = field(default_factory=FixtureSettings)
     replay: ReplaySettings = field(default_factory=ReplaySettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
+    margin: MarginSettings = field(default_factory=MarginSettings)
 
     @classmethod
     def from_env(cls) -> "RobotSettings":
@@ -260,9 +334,13 @@ class RobotSettings:
                 slicing_parts=execution_data.get("slicing_parts", 2),
                 binance=BinanceExecutionSettings(**execution_data.get("binance", {})),
                 kraken=KrakenExecutionSettings(**execution_data.get("kraken", {})),
+                kraken_spot=KrakenSpotExecutionSettings(**execution_data.get("kraken_spot", {})),
             ),
             safety=SafetySettings(live_unlock=LiveUnlockSettings(**live_unlock_data)),
             policy=PolicySettings(**data.get("policy", {})),
+            doctrine=DoctrineSettings(**data.get("doctrine", {})),
+            harmony=HarmonySettings(**data.get("harmony", {})),
+            market_watch=MarketWatchSettings(**data.get("market_watch", {})),
             tco=TCOSettings(**data.get("tco", {})),
             regime=RegimeSettings(**data.get("regime", {})),
             allocator=AllocatorSettings(**data.get("allocator", {})),
@@ -271,6 +349,7 @@ class RobotSettings:
             fixtures=FixtureSettings(**data.get("fixtures", {})),
             replay=ReplaySettings(**data.get("replay", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
+            margin=MarginSettings(**data.get("margin", {})),
         )
 
     def __post_init__(self) -> None:
@@ -287,6 +366,87 @@ class RobotSettings:
     def live_ordering_enabled(self) -> bool:
         mode = self.execution_mode_enum()
         return mode in {ExecutionMode.LIVE, ExecutionMode.LIVE_TESTNET}
+
+    def rollout_stage(self) -> RolloutStage:
+        mode = self.execution_mode_enum()
+        if mode == ExecutionMode.PAPER:
+            return RolloutStage.PAPER
+        if mode == ExecutionMode.LIVE_READONLY:
+            return RolloutStage.SHADOW
+        if mode == ExecutionMode.LIVE_TESTNET:
+            return RolloutStage.TINY_LIVE
+        run_dir = self.storage.run_dir.lower()
+        if self.canary_mode or "canary" in run_dir:
+            return RolloutStage.CANARY_LIVE
+        if float(self.policy.base_risk_budget) <= 100.0:
+            return RolloutStage.LIMITED_LIVE
+        return RolloutStage.NORMAL_LIVE
+
+    def live_gate_status(self) -> dict[str, Any]:
+        unlock = self.safety.live_unlock
+        provider_id = self.execution.provider_id
+        return {
+            "rollout_stage": self.rollout_stage().value,
+            "runtime_mode": self.execution_mode_enum().value,
+            "provider_id": provider_id,
+            "provider_supported": provider_id in SUPPORTED_PROVIDER_IDS,
+            "provider_whitelisted": provider_id in self.provider_whitelist,
+            "live_ordering_enabled": self.live_ordering_enabled(),
+            "double_unlock_enabled": bool(unlock.enable_live_trading or self.explicit_live_enable) and bool(unlock.ack_i_understand_risks or self.ack_live_risks),
+            "margin_enabled": self.margin.enabled,
+            "canary_mode": self.canary_mode,
+            "doctrine_target_provider": self.doctrine.target_provider or provider_id,
+            "doctrine_product_target": self.doctrine.product_target or ("spot" if provider_id.endswith("_spot") else "perps"),
+            "long_only": bool(self.doctrine.long_only),
+            "cost_basis_sell_block": bool(self.doctrine.enforce_cost_basis_sell_block),
+            "net_profit_sell_block": bool(self.doctrine.enforce_net_profit_sell_block),
+        }
+
+    def config_hash(self) -> str:
+        payload = json.dumps(self.config_manifest(), sort_keys=True, default=str)
+        return sha256(payload.encode("utf-8")).hexdigest()
+
+    def config_manifest(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.config_schema_version,
+            "runtime_mode": self.execution_mode_enum().value,
+            "rollout_stage": self.rollout_stage().value,
+            "provider_id": self.execution.provider_id,
+            "universe": list(self.universe),
+            "safe_mode_default": self.safe_mode_default,
+            "margin_enabled": self.margin.enabled,
+            "doctrine": {
+                "target_provider": self.doctrine.target_provider,
+                "product_target": self.doctrine.product_target,
+                "long_only": self.doctrine.long_only,
+                "never_open_new_short_exposure": self.doctrine.never_open_new_short_exposure,
+                "minimum_sell_net_profit_bps": self.doctrine.minimum_sell_net_profit_bps,
+                "enforce_cost_basis_sell_block": self.doctrine.enforce_cost_basis_sell_block,
+                "enforce_net_profit_sell_block": self.doctrine.enforce_net_profit_sell_block,
+                "block_non_reduce_only_sells": self.doctrine.block_non_reduce_only_sells,
+            },
+            "harmony": {
+                "enabled": self.harmony.enabled,
+                "default_order_cadence_s": self.harmony.default_order_cadence_s,
+            },
+            "market_watch": {
+                "enabled": self.market_watch.enabled,
+                "blackout_windows": list(self.market_watch.blackout_windows),
+                "entry_block_max_spread_bps": self.market_watch.entry_block_max_spread_bps,
+                "entry_degrade_max_spread_bps": self.market_watch.entry_degrade_max_spread_bps,
+                "entry_block_min_depth_notional": self.market_watch.entry_block_min_depth_notional,
+                "entry_degrade_min_depth_notional": self.market_watch.entry_degrade_min_depth_notional,
+                "liquidity_map_min_depth_notional": self.market_watch.liquidity_map_min_depth_notional,
+                "block_new_entries_on_blackout": self.market_watch.block_new_entries_on_blackout,
+            },
+            "live_gate_status": self.live_gate_status(),
+            "monitoring": {
+                "decision_latency_warn_ms": self.monitoring.decision_latency_warn_ms,
+                "reconciliation_lag_warn_ms": self.monitoring.reconciliation_lag_warn_ms,
+                "loop_latency_warn_ms": self.monitoring.loop_latency_warn_ms,
+                "manual_review_ack_ttl_minutes": self.monitoring.manual_review_ack_ttl_minutes,
+            },
+        }
 
     def _critical_risk_limits(self) -> list[float | int | str]:
         return [
@@ -313,11 +473,16 @@ class RobotSettings:
         mode = self.execution_mode_enum()
         unlock = self.safety.live_unlock
 
+        if self.margin.enabled and mode != ExecutionMode.PAPER:
+            raise ValueError("Margin live trading blocked until dedicated safety layer is implemented")
+
         if mode == ExecutionMode.PAPER:
             return
 
         # Global live connector guard for non-paper execution modes.
         provider_id = self.execution.provider_id
+        if provider_id not in SUPPORTED_PROVIDER_IDS:
+            raise ValueError(f"Unsupported execution provider: {provider_id}")
         if provider_id not in self.provider_whitelist:
             raise ValueError(f"Live execution blocked: provider_whitelist missing {provider_id}")
 
@@ -338,13 +503,16 @@ class RobotSettings:
         if provider_id == "kraken_derivatives":
             api_key_env = self.execution.kraken.api_key_env
             api_secret_env = self.execution.kraken.api_secret_env
+        elif provider_id == "kraken_spot":
+            api_key_env = self.execution.kraken_spot.api_key_env
+            api_secret_env = self.execution.kraken_spot.api_secret_env
         else:
             api_key_env = self.execution.binance.api_key_env
             api_secret_env = self.execution.binance.api_secret_env
         api_key = os.getenv(api_key_env, "")
         api_secret = os.getenv(api_secret_env, "")
         if not api_key or not api_secret:
-            missing.append("binance_api_credentials")
+            missing.append(f"{provider_id}_api_credentials")
 
         if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode:
             missing.append("CANARY_MODE")

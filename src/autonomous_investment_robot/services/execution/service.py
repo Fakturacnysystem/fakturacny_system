@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from hashlib import sha256
 
 from autonomous_investment_robot.config.settings import ExecutionMode, ExecutionSettings
+from autonomous_investment_robot.core.contracts import ExecutionPlan, ExecutionQualityForecast
+from autonomous_investment_robot.services.execution.constraints import VenueConstraintsNormalizer, provider_capability_matrix
 from autonomous_investment_robot.services.execution.tco import anti_toxic_block, slice_notional
 from autonomous_investment_robot.services.policy.service import OrderIntent
 
@@ -20,6 +23,7 @@ class Fill:
     slippage_cost: float
     latency_ms: int
     status: str
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class ExecutionService:
@@ -27,6 +31,7 @@ class ExecutionService:
         self.settings = settings
         self.fill_seen: set[tuple[str, str, str]] = set()
         self.live_service = None
+        self.constraints = VenueConstraintsNormalizer()
 
     def _paper_taker_fallback_allowed(self, intent: OrderIntent) -> bool:
         comps = intent.why.get("components", []) if isinstance(intent.why, dict) else []
@@ -41,6 +46,264 @@ class ExecutionService:
 
     def attach_live_service(self, live_service: object) -> None:
         self.live_service = live_service
+
+    def venue_constraints(self, symbol: str):
+        return self.constraints.for_provider(self.settings.provider_id, symbol)
+
+    def provider_capability_matrix(self):
+        return provider_capability_matrix(self.settings.provider_id)
+
+    def _doctrine_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("decision_doctrine", {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _execution_simulation_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("execution_simulation", {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _market_integrity_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("market_integrity", {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _mastermind_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("mastermind", {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _global_execution_adjustments(self, intent: OrderIntent, *, reduce_only: bool) -> dict[str, object]:
+        doctrine = self._doctrine_payload(intent)
+        execution_simulation = self._execution_simulation_payload(intent)
+        market_integrity = self._market_integrity_payload(intent)
+        mastermind = self._mastermind_payload(intent)
+        meta_governor = intent.why.get("meta_governor", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("meta_governor", {}), dict) else {}
+        human_escalation = intent.why.get("human_escalation", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("human_escalation", {}), dict) else {}
+
+        doctrine_action = str(doctrine.get("recommended_action", "continue") or "continue")
+        doctrine_size_multiplier = float(doctrine.get("size_multiplier", 1.0) or 1.0)
+        uncertainty_pressure = float(doctrine.get("uncertainty_pressure", 0.0) or 0.0)
+        partial_truth_penalty = float(doctrine.get("partial_truth_penalty", 0.0) or 0.0)
+        execution_survivability = float(doctrine.get("execution_survivability_score", 1.0) or 1.0)
+        robustness_score = float(doctrine.get("robustness_score", 1.0) or 1.0)
+        simulation_action = str(execution_simulation.get("recommended_action", "continue") or "continue")
+        market_integrity_action = str(market_integrity.get("action", "continue") or "continue")
+        mastermind_action = str(mastermind.get("decision", "CONTINUE") or "CONTINUE").lower()
+        mastermind_size_multiplier = float(mastermind.get("size_multiplier", 1.0) or 1.0)
+        mastermind_execution_style = str(mastermind.get("execution_style_bias", "unchanged") or "unchanged")
+        meta_action = str(meta_governor.get("action", "continue") or "continue")
+        escalation_action = str(human_escalation.get("action", "continue") or "continue")
+
+        hard_block = False
+        if not reduce_only and doctrine_action in {"no_trade", "wait"}:
+            hard_block = True
+        if not reduce_only and simulation_action in {"no_trade", "wait"}:
+            hard_block = True
+        if not reduce_only and mastermind_action in {"no_trade", "wait", "hold"}:
+            hard_block = True
+
+        if reduce_only:
+            preferred_exit_style = "passive_limit"
+            if escalation_action == "flatten_only" or meta_action in {"force_halt_and_flatten", "force_flatten_only"}:
+                preferred_exit_style = "marketable_limit"
+            elif market_integrity_action in {"flatten_only", "halt"} or partial_truth_penalty >= 0.70:
+                preferred_exit_style = "marketable_limit"
+        else:
+            preferred_exit_style = "limit"
+            if doctrine_action in {"probe", "trade_smaller"} or simulation_action == "trade_smaller" or mastermind_action in {"probe", "trade_smaller"}:
+                preferred_exit_style = "limit"
+            elif market_integrity_action in {"degrade", "flatten_only"}:
+                preferred_exit_style = "limit"
+
+        return {
+            "hard_block": hard_block,
+            "doctrine_action": doctrine_action,
+            "simulation_action": simulation_action,
+            "market_integrity_action": market_integrity_action,
+            "mastermind_action": mastermind_action,
+            "size_multiplier": max(0.0, min(1.0, min(doctrine_size_multiplier, mastermind_size_multiplier))),
+            "uncertainty_pressure": max(0.0, min(1.0, uncertainty_pressure)),
+            "partial_truth_penalty": max(0.0, min(1.0, partial_truth_penalty)),
+            "execution_survivability_score": max(0.0, min(1.0, execution_survivability)),
+            "robustness_score": max(0.0, min(1.0, robustness_score)),
+            "preferred_exit_style": preferred_exit_style,
+            "mastermind_execution_style": mastermind_execution_style,
+        }
+
+    def forecast_execution_quality(
+        self,
+        intent: OrderIntent,
+        *,
+        depth_notional: float,
+        spread_bps: float,
+        regime: str,
+        liquidity_regime: str,
+    ) -> ExecutionQualityForecast:
+        ts = datetime.now(timezone.utc)
+        passive = self.settings.maker_preference and regime != "PANIC" and liquidity_regime == "GOOD" and spread_bps <= 15.0
+        depth_ratio = min(1.0, max(0.0, depth_notional / max(abs(intent.target_notional) * 10.0, 1.0)))
+        fill_probability = max(0.05, min(0.98, depth_ratio * (0.8 if passive else 0.95) - spread_bps / 200.0 + 0.2))
+        adverse_selection = max(0.0, min(1.0, spread_bps / 50.0 + (0.15 if regime == "PANIC" else 0.0)))
+        expected_speed = int(250 if passive else 100)
+        if liquidity_regime == "THIN":
+            expected_speed *= 4
+        return ExecutionQualityForecast(
+            symbol=intent.symbol,
+            ts=ts,
+            fill_probability=fill_probability,
+            expected_fill_speed_ms=expected_speed,
+            expected_price_quality_bps=max(0.0, spread_bps * (0.5 if passive else 1.2)),
+            adverse_selection_risk=adverse_selection,
+            passive_preferred=passive,
+            reasons={
+                "depth_ratio": depth_ratio,
+                "regime": regime,
+                "liquidity_regime": liquidity_regime,
+            },
+        )
+
+    def build_execution_plan(
+        self,
+        intent: OrderIntent,
+        *,
+        depth_notional: float,
+        spread_bps: float,
+        regime: str,
+        liquidity_regime: str,
+        reduce_only: bool = False,
+    ) -> ExecutionPlan:
+        forecast = self.forecast_execution_quality(
+            intent,
+            depth_notional=depth_notional,
+            spread_bps=spread_bps,
+            regime=regime,
+            liquidity_regime=liquidity_regime,
+        )
+        constraints = self.venue_constraints(intent.symbol)
+        doctrine_adjustments = self._global_execution_adjustments(intent, reduce_only=reduce_only)
+        normalized_notional, constraint_meta = self.constraints.normalize_target_notional(
+            target_notional=float(intent.target_notional),
+            constraints=constraints,
+            reduce_only=reduce_only,
+        )
+        normalized_notional *= float(doctrine_adjustments["size_multiplier"])
+        if bool(doctrine_adjustments["hard_block"]):
+            normalized_notional = 0.0
+        passive = forecast.passive_preferred and self.settings.maker_preference
+        child_orders = max(1, min(self.settings.max_child_orders, self.settings.slicing_parts))
+        order_style = "limit" if passive else "marketable_limit"
+        if spread_bps > 20.0 or liquidity_regime == "THIN":
+            child_orders = max(1, min(child_orders, 2))
+        if (
+            str(doctrine_adjustments["doctrine_action"]) in {"probe", "trade_smaller"}
+            or str(doctrine_adjustments["simulation_action"]) == "trade_smaller"
+            or str(doctrine_adjustments["mastermind_action"]) in {"probe", "trade_smaller"}
+            or float(doctrine_adjustments["uncertainty_pressure"]) >= 0.55
+            or float(doctrine_adjustments["partial_truth_penalty"]) >= 0.40
+            or float(doctrine_adjustments["execution_survivability_score"]) < 0.55
+            or float(doctrine_adjustments["robustness_score"]) < 0.55
+            or str(doctrine_adjustments["market_integrity_action"]) in {"degrade", "flatten_only"}
+            or str(doctrine_adjustments["mastermind_execution_style"]) == "passive_limit"
+        ):
+            passive = True
+            order_style = "limit"
+            child_orders = 1 if str(doctrine_adjustments["doctrine_action"]) == "probe" else max(1, min(child_orders, 2))
+        max_participation_rate = self.settings.max_participation_rate
+        if passive:
+            max_participation_rate = min(
+                max_participation_rate,
+                max(
+                    0.05,
+                    self.settings.max_participation_rate
+                    * max(
+                        0.25,
+                        1.0
+                        - float(doctrine_adjustments["uncertainty_pressure"]) * 0.50
+                        - float(doctrine_adjustments["partial_truth_penalty"]) * 0.35,
+                    ),
+                ),
+            )
+        return ExecutionPlan(
+            symbol=intent.symbol,
+            ts=datetime.now(timezone.utc),
+            side=intent.side,
+            target_notional=normalized_notional,
+            order_style=order_style,
+            passive=passive,
+            child_orders=child_orders,
+            slippage_budget_bps=max(self.settings.slippage_bps, spread_bps * 1.25),
+            max_participation_rate=max_participation_rate,
+            anti_chase_enabled=regime != "PANIC" or passive,
+            reasons={
+                "fill_probability": forecast.fill_probability,
+                "expected_fill_speed_ms": forecast.expected_fill_speed_ms,
+                "expected_price_quality_bps": forecast.expected_price_quality_bps,
+                "venue_constraints": constraints.__dict__,
+                "constraint_adjustment": constraint_meta,
+                "decision_doctrine": self._doctrine_payload(intent),
+                "execution_simulation": self._execution_simulation_payload(intent),
+                "market_integrity": self._market_integrity_payload(intent),
+                "mastermind": self._mastermind_payload(intent),
+                "global_execution_adjustments": doctrine_adjustments,
+            },
+            reduce_only=reduce_only,
+        )
+
+    def build_exit_plan(
+        self,
+        intent: OrderIntent,
+        *,
+        depth_notional: float,
+        spread_bps: float,
+        regime: str,
+        liquidity_regime: str,
+        execution_style: str = "passive_limit",
+    ) -> ExecutionPlan:
+        plan = self.build_execution_plan(
+            intent,
+            depth_notional=depth_notional,
+            spread_bps=spread_bps,
+            regime=regime,
+            liquidity_regime=liquidity_regime,
+            reduce_only=True,
+        )
+        constraints = self.venue_constraints(intent.symbol)
+        normalized_notional, constraint_meta = self.constraints.normalize_target_notional(
+            target_notional=float(intent.target_notional),
+            constraints=constraints,
+            reduce_only=True,
+        )
+        doctrine_adjustments = self._global_execution_adjustments(intent, reduce_only=True)
+        order_style = execution_style
+        if execution_style not in {"passive_limit", "marketable_limit", "limit"}:
+            order_style = "passive_limit"
+        if str(doctrine_adjustments["preferred_exit_style"]) == "marketable_limit":
+            order_style = "marketable_limit"
+        return ExecutionPlan(
+            symbol=plan.symbol,
+            ts=plan.ts,
+            side=plan.side,
+            target_notional=normalized_notional,
+            order_style=order_style,
+            passive=order_style == "passive_limit",
+            child_orders=1 if order_style == "marketable_limit" else max(1, min(plan.child_orders, 2)),
+            slippage_budget_bps=max(plan.slippage_budget_bps, spread_bps),
+            max_participation_rate=plan.max_participation_rate,
+            anti_chase_enabled=plan.anti_chase_enabled,
+            reasons={
+                **plan.reasons,
+                "exit_plan": True,
+                "venue_constraints": constraints.__dict__,
+                "constraint_adjustment": constraint_meta,
+                "global_execution_adjustments": doctrine_adjustments,
+            },
+            reduce_only=True,
+        )
 
     def execute_paper(
         self,

@@ -9,6 +9,7 @@ from autonomous_investment_robot.services.data_ingestion.binance_ws_streams impo
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
 from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
 from autonomous_investment_robot.services.execution.live_kraken_service import LiveKrakenService
+from autonomous_investment_robot.services.human_escalation_layer.service import HumanEscalationLayer
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
 
 
@@ -171,12 +172,14 @@ def emergency_flatten(config_path: str) -> dict:
             run_id=settings.storage.run_dir.replace("/", "_"),
             connector=KrakenDerivativesConnector(settings.execution.kraken),
         )
-    else:
+    elif settings.execution.provider_id == "binance_um_perps":
         live = LiveBinanceService(
             settings=settings,
             run_id=settings.storage.run_dir.replace("/", "_"),
             connector=BinanceUMPerpsConnector(settings.execution.binance),
         )
+    else:
+        return {"status": "blocked", "reason": f"unsupported_provider:{settings.execution.provider_id}"}
     ok, reason = live.preflight()
     if not ok:
         return {"status": "blocked", "reason": reason}
@@ -191,3 +194,20 @@ def request_kill(config_path: str, reason: str = "operator_cli_kill") -> dict:
     marker = run_dir / "KILL"
     marker.write_text(reason + "\n", encoding="utf-8")
     return {"status": "kill_requested", "reason": reason, "kill_file": str(marker)}
+
+
+def acknowledge_manual_review(
+    run_dir: str,
+    *,
+    decision_key: str | None = None,
+    reviewer: str = "operator",
+    notes: str = "",
+) -> dict:
+    layer = HumanEscalationLayer(run_dir)
+    payload = layer.acknowledge(decision_key=decision_key, reviewer=reviewer, notes=notes)
+    return {
+        "status": "acknowledged",
+        "run_dir": run_dir,
+        "decision_key": payload["decision_key"],
+        "reviewer": payload["reviewer"],
+    }

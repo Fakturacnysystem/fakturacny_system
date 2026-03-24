@@ -1,5 +1,5 @@
 {
-  "mode": "paper",
+  "mode": "live",
   "safe_mode_default": false,
   "provider_whitelist": ["binance_um_perps"],
   "universe": ["BTCUSDT"],

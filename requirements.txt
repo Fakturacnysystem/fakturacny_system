@@ -1,8 +1,0 @@
-flask
-flask-sqlalchemy
-flask-wtf
-pandas
-openpyxl
-reportlab
-sqlite3
-email-validator

@@ -89,6 +89,23 @@ def test_open_positions_and_open_orders_normalized(monkeypatch):
     assert oo[0]["clientOrderId"] == "cid1"
 
 
+def test_balances_normalized(monkeypatch):
+    c = _connector(monkeypatch)
+
+    def _fake_request(method, path, params=None, signed=False):  # noqa: ARG001
+        assert path.endswith("/accounts")
+        return {
+            "result": "success",
+            "accounts": [{"currency": "USD", "balanceValue": "123.4", "available": "120.0", "equity": "124.0"}],
+        }
+
+    c._request = _fake_request  # type: ignore[method-assign]
+    out = c.balances()
+    assert out[0]["asset"] == "USD"
+    assert out[0]["balance"] == "123.4"
+    assert out[0]["availableBalance"] == "120.0"
+
+
 def test_verify_live_permissions_requires_override_when_unknown(monkeypatch):
     c = _connector(monkeypatch)
 
@@ -103,3 +120,55 @@ def test_verify_live_permissions_requires_override_when_unknown(monkeypatch):
     c.settings.allow_unknown_permissions = True
     ok2, _ = c.verify_live_permissions()
     assert ok2 is True
+
+
+def test_fills_history_uses_documented_endpoint(monkeypatch):
+    c = _connector(monkeypatch)
+
+    def _fake_request(method, path, params=None, signed=False):  # noqa: ARG001
+        assert method == "GET"
+        assert path == "/derivatives/api/v3/fills"
+        assert signed is True
+        assert params["lastFillTime"] == 1700000000000
+        return {"result": "success", "fills": [{"fillType": "taker"}]}
+
+    c._request = _fake_request  # type: ignore[method-assign]
+
+    rows = c.fills(last_fill_time=1700000000000)
+
+    assert rows[0]["fillType"] == "taker"
+
+
+def test_execution_events_uses_history_v3_endpoint(monkeypatch):
+    c = _connector(monkeypatch)
+
+    def _fake_request(method, path, params=None, signed=False):  # noqa: ARG001
+        assert method == "GET"
+        assert path == "/api/history/v3/executions"
+        assert signed is True
+        assert params["since"] == 1700000000000
+        assert params["count"] == 50
+        return {"events": []}
+
+    c._request = _fake_request  # type: ignore[method-assign]
+
+    out = c.execution_events(since=1700000000000, count=50)
+
+    assert out == {"events": []}
+
+
+def test_account_log_uses_history_v3_endpoint(monkeypatch):
+    c = _connector(monkeypatch)
+
+    def _fake_request(method, path, params=None, signed=False):  # noqa: ARG001
+        assert method == "GET"
+        assert path == "/api/history/v3/account-log"
+        assert signed is True
+        assert params["since"] == 1700000000000
+        return {"logs": [{"execution": "exec-1", "realized_pnl": 2.5}]}
+
+    c._request = _fake_request  # type: ignore[method-assign]
+
+    rows = c.account_log(since=1700000000000)
+
+    assert rows[0]["execution"] == "exec-1"

@@ -1,5 +1,5 @@
 {
-  "mode": "paper",
+  "mode": "live",
   "safe_mode_default": false,
   "provider_whitelist": ["kraken_derivatives"],
   "universe": ["PI_XBTUSD"],

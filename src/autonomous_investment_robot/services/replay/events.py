@@ -52,12 +52,27 @@ class PositionEvent(BaseEvent):
 
 
 @dataclass
+class AccountEvent(BaseEvent):
+    pass
+
+
+@dataclass
 class RiskEvent(BaseEvent):
     pass
 
 
 @dataclass
 class ComplianceEvent(BaseEvent):
+    pass
+
+
+@dataclass
+class TruthEvent(BaseEvent):
+    pass
+
+
+@dataclass
+class RecoveryEvent(BaseEvent):
     pass
 
 
