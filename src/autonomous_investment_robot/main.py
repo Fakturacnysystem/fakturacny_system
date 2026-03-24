@@ -173,7 +173,14 @@ def run_record(
     return out
 
 
-def emergency_flatten(config_path: str) -> dict:
+def emergency_flatten(
+    config_path: str,
+    *,
+    symbol: str | None = None,
+    scope: str = "all",
+    freeze_only: bool = False,
+    reason: str = "operator_cli_flatten",
+) -> dict:
     try:
         settings = RobotSettings.from_file(config_path)
     except Exception as exc:
@@ -210,11 +217,26 @@ def emergency_flatten(config_path: str) -> dict:
         )
     else:
         return {"status": "blocked", "reason": f"unsupported_provider:{settings.execution.provider_id}"}
-    ok, reason = live.preflight()
+    ok, preflight_reason = live.preflight()
     if not ok:
-        return {"status": "blocked", "reason": reason}
+        return {"status": "blocked", "reason": preflight_reason}
+    if freeze_only:
+        if not hasattr(live, "freeze_new_openings"):
+            return {"status": "blocked", "reason": "freeze_only_not_supported"}
+        frozen, freeze_reason = live.freeze_new_openings(reason=reason)
+        return {"status": "ok" if frozen else "error", "reason": freeze_reason, "freeze_only": True}
+    if symbol is not None:
+        if not hasattr(live, "flatten_symbol"):
+            return {"status": "blocked", "reason": "flatten_symbol_not_supported"}
+        closed, close_reason = live.flatten_symbol(symbol, reason=reason)
+        return {"status": "ok" if closed else "error", "reason": close_reason, "scope": "symbol", "symbol": symbol}
+    if scope != "all":
+        if not hasattr(live, "flatten_scope"):
+            return {"status": "blocked", "reason": "flatten_scope_not_supported"}
+        closed, close_reason = live.flatten_scope(scope=scope, symbol=symbol, reason=reason)
+        return {"status": "ok" if closed else "error", "reason": close_reason, "scope": scope, "symbol": symbol}
     closed, close_reason = live.flatten_all_positions()
-    return {"status": "ok" if closed else "error", "reason": close_reason}
+    return {"status": "ok" if closed else "error", "reason": close_reason, "scope": "all"}
 
 
 def request_kill(config_path: str, reason: str = "operator_cli_kill") -> dict:

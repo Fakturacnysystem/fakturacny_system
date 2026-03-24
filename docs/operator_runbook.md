@@ -12,6 +12,7 @@
 | Paper full analysis | config.kraken_spot.paper_full_analysis.yaml | `scripts/run_kraken_spot_paper_full_analysis.sh` | NONE (offline simulation, full stack) |
 | Replay full analysis | config.kraken_spot.replay_full_analysis.yaml | `scripts/run_kraken_spot_replay_full_analysis.sh` | NONE (offline replay, full stack) |
 | Readonly analysis | config.kraken_spot.readonly_analysis.yaml | `scripts/run_kraken_spot_readonly_analysis.sh` | NONE (read-only, no order placement) |
+| Kraken SPOT tiny live | config.kraken_spot.tiny_live.yaml | `scripts/run_kraken_spot_tiny_live.sh` | HIGH (first-money proving mode, smallest live envelope) |
 | Kraken SPOT guarded live | config.kraken_spot.live.yaml | `scripts/run_kraken_spot_profit_full_throttle.sh` | HIGH (launch-gated spot only) |
 | Kraken SPOT higher-notional | config.kraken_spot.live_profit.yaml | `scripts/run_kraken_ultra_profit_full_throttle.sh` | HIGH (launch-gated spot only) |
 
@@ -29,13 +30,34 @@ python3.11 -m venv .venv
 # 2. Copy and fill .env
 cp .env.example .env
 # Edit: KRAKEN_SPOT_API_KEY, KRAKEN_SPOT_API_SECRET
-# Edit: ENABLE_LIVE_TRADING=false (keep false until canary passes)
+# Edit: ENABLE_LIVE_TRADING=false (keep false until tiny_live passes)
 # Edit: ENABLE_FULL_LIVE_STAGE=false (set true only for config.kraken_spot.live_profit.yaml)
+# Optional: KRAKEN_SPOT_EVENT_FEED_PATH=/absolute/path/to/events.jsonl
 source .env
 
 # 3. Run tests to verify environment
 .venv/bin/pytest -q
 ```
+
+---
+
+## Rollout ladder
+
+| Stage | Purpose | Allowed actions | Blocked actions | Rollback target |
+|-------|---------|-----------------|-----------------|-----------------|
+| `read_only_live` | connector, truth, and analytics validation | live data, full decisioning, full reporting | any order placement | stay readonly |
+| `shadow` | visibility-only decision comparison | readonly analysis plus action comparison | any order placement | `read_only_live` |
+| `tiny_live` | first real-money execution proof | opens, reduce-only exits, flatten, freeze-only | high-notional sizing, full-stage envelope | `shadow` |
+| `limited_live` | conservative post-tiny deployment | normal live actions inside conservative envelope | full-stage envelope | `tiny_live` |
+| `normal_live` | full approved live envelope | full doctrine-safe autonomy | doctrine-incompatible paths | `limited_live` |
+
+Tiny live is intentionally stricter than normal live:
+- smaller notional envelope
+- lower order-rate allowance
+- tighter spread and depth gates
+- faster downgrade to no-trade / freeze posture
+
+Promotions remain explicit and manual. Downgrades may happen automatically on truth, reconciliation, market-watch, or health degradation.
 
 ---
 
@@ -69,6 +91,10 @@ Explicitly blocked by doctrine:
 Before switching `ENABLE_LIVE_TRADING=true`:
 
 - [ ] Paper mode passed 48h continuous run without kill-switch trigger
+- [ ] Readonly analysis passed with live market data and emitted operator summary
+- [ ] `tiny_live_readiness_report.json["ready"] == true`
+- [ ] `safety_preflight_live_target.json["ready"] == true`
+- [ ] `rollback_preflight_liveprofit_paper.json["ready"] == true`
 - [ ] Kraken SPOT runtime preflight passes at boot with real API credentials
 - [ ] Reconciliation checks passing (no `reconciliation_mismatch_total > 0`)
 - [ ] Golden replay tests green: `pytest tests/test_replay_golden*.py`
@@ -89,6 +115,19 @@ touch runs/<run_id>/KILL
 # Method 2: Emergency flatten (sends provider-supported reduce-only flatten orders)
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten \
   --config config.kraken_spot.live.yaml
+
+# Method 2a: Freeze new openings only
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten \
+  --config config.kraken_spot.live.yaml \
+  --freeze-only \
+  --reason "operator_freeze_only"
+
+# Method 2b: Flatten a single symbol
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten \
+  --config config.kraken_spot.live.yaml \
+  --scope symbol \
+  --symbol BTC/USD \
+  --reason "operator_symbol_flatten"
 
 # Method 3: Kill process
 kill -SIGTERM <pid>
@@ -119,6 +158,14 @@ cat runs/<run_id>/live_activated_capabilities.json
 cat runs/<run_id>/live_still_gated_capabilities.json
 cat runs/<run_id>/live_doctrine_blocked_capabilities.json
 cat runs/<run_id>/live_artifact_index.json
+cat runs/<run_id>/throughput_diagnostics.json
+cat runs/<run_id>/failure_taxonomy.json
+cat runs/<run_id>/decision_explainability.json
+cat runs/<run_id>/tiny_live_readiness_report.json
+cat runs/<run_id>/safety_preflight_live_target.json
+cat runs/<run_id>/rollback_preflight_liveprofit_paper.json
+cat runs/<run_id>/tiny_live_envelope_summary.json
+cat runs/<run_id>/live_operator_start_procedure.json
 ```
 
 Start the monitoring stack (if Docker available):
@@ -165,14 +212,37 @@ Distributed mode requires:
 ## Rollback
 
 ```bash
-# Rollback to previous config (paper first)
-git stash  # or git checkout <prev-commit>
+# Roll back tiny live to readonly / paper validation
+PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly \
+  --config config.kraken_spot.readonly_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot run \
-  --config config.perps_intraday.paper.yaml --once
+  --config config.kraken_spot.paper_full_analysis.yaml --once
 
 # Verify golden checksums still match
 .venv/bin/pytest tests/test_replay_golden*.py -v
 ```
+
+---
+
+## Tiny live operator start procedure
+
+1. Export:
+   - `KRAKEN_SPOT_API_KEY`
+   - `KRAKEN_SPOT_API_SECRET`
+   - `ENABLE_LIVE_TRADING=true`
+   - `ACK_I_UNDERSTAND_RISKS=true`
+2. Keep `ENABLE_FULL_LIVE_STAGE=false`.
+3. Optional:
+   - `KRAKEN_SPOT_EVENT_FEED_PATH=/absolute/path/to/events.jsonl`
+4. Run readonly first:
+   - `bash scripts/run_kraken_spot_readonly_analysis.sh`
+5. Inspect readiness artifacts in the latest run directory.
+6. Start tiny live:
+   - `bash scripts/run_kraken_spot_tiny_live.sh`
+7. If truth or execution degrades:
+   - `flatten --freeze-only ...`
+   - then `flatten --scope symbol ...` or full flatten if needed
+8. Promote to `config.kraken_spot.live.yaml` only after clean tiny-live execution evidence.
 
 ---
 

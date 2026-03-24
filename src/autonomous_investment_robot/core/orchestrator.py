@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import time
 
-from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, UNSPECIFIED
+from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings, RolloutStage, UNSPECIFIED
 from autonomous_investment_robot.core.contracts import LearningRecord
 from autonomous_investment_robot.core.contracts import RecoveryDecision
 from autonomous_investment_robot.core.truth_ownership import ownership_gaps, ownership_map, validate_ownership_map
@@ -252,6 +252,7 @@ class RobotOrchestrator:
             legacy_risk_details=self._legacy_risk_details,
             legacy_fill_payload=self._legacy_fill_payload,
         )
+        self._live_runtime_diagnostics = self._fresh_live_runtime_diagnostics()
 
     def _legacy_policy_why(self, why: dict) -> dict:
         keys = [
@@ -377,6 +378,234 @@ class RobotOrchestrator:
             return 0
         return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
+    def _fresh_live_runtime_diagnostics(self) -> dict[str, object]:
+        return {
+            "loop_steps": 0,
+            "execution_attempts": 0,
+            "orders_submitted": 0,
+            "orders_rejected": 0,
+            "orders_blocked": 0,
+            "fills": 0,
+            "deduped": 0,
+            "no_intent": 0,
+            "risk_rejected": 0,
+            "meta_governor_blocks": 0,
+            "reconciliation_blocks": 0,
+            "surface_counts": {},
+            "reason_counts": {},
+            "failure_taxonomy": {},
+        }
+
+    def _failure_taxonomy_bucket(self, reason: str) -> str:
+        normalized = str(reason or "").lower()
+        if "stale" in normalized or "book_invalid" in normalized:
+            return "stale_data"
+        if "spread" in normalized:
+            return "spread_explosion"
+        if "reconciliation" in normalized:
+            return "reconciliation_mismatch"
+        if "daily_loss" in normalized:
+            return "daily_loss"
+        if "weekly_loss" in normalized:
+            return "weekly_loss"
+        if "invalid key" in normalized or "missing_credentials" in normalized or "auth" in normalized:
+            return "invalid_auth"
+        if "nonce" in normalized:
+            return "invalid_nonce"
+        if "permission" in normalized:
+            return "permission_denied"
+        if "insufficient_quote" in normalized or "reserve_breach" in normalized:
+            return "insufficient_quote"
+        if "no_trade" in normalized or "edge" in normalized or "round_trip_non_viable" in normalized:
+            return "no_edge_after_costs"
+        if "strategy" in normalized or "shadow_rival" in normalized or "spre" in normalized:
+            return "strategy_gated"
+        if "min_notional" in normalized or "below_min_notional" in normalized:
+            return "exchange_min_notional_failure"
+        if "dedupe" in normalized or "duplicate" in normalized:
+            return "idempotency_duplicate_risk"
+        if "rate_limit" in normalized:
+            return "rate_limit_storm"
+        return "other"
+
+    def _record_live_reason(self, *, reason: str, surface: str) -> None:
+        diagnostics = self._live_runtime_diagnostics
+        surface_counts = diagnostics["surface_counts"]
+        reason_counts = diagnostics["reason_counts"]
+        failure_taxonomy = diagnostics["failure_taxonomy"]
+        surface_counts[surface] = int(surface_counts.get(surface, 0)) + 1
+        if reason:
+            reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+            bucket = self._failure_taxonomy_bucket(reason)
+            failure_taxonomy[bucket] = int(failure_taxonomy.get(bucket, 0)) + 1
+
+    def _throughput_snapshot(self) -> dict[str, object]:
+        diagnostics = self._live_runtime_diagnostics
+        attempts = max(1, int(diagnostics["execution_attempts"]))
+        submissions = int(diagnostics["orders_submitted"])
+        fills = int(diagnostics["fills"])
+        return {
+            **diagnostics,
+            "submission_efficiency": submissions / attempts,
+            "fill_efficiency": fills / max(1, submissions),
+        }
+
+    def _decision_explainability(
+        self,
+        *,
+        market: object,
+        decision_ctx: object,
+        execution_result: object | None = None,
+    ) -> dict[str, object]:
+        policy = getattr(decision_ctx, "policy_decision", None)
+        risk = getattr(decision_ctx, "risk_decision", None)
+        meta = getattr(decision_ctx, "meta_governor_decision", None)
+        doctrine = {}
+        if policy is not None and isinstance(getattr(policy, "why", None), dict):
+            doctrine = dict(policy.why.get("decision_doctrine", {}) or {})
+        action = "no_trade"
+        if execution_result is not None:
+            action = str(getattr(execution_result, "status", "executed") or "executed")
+        elif getattr(decision_ctx, "adjusted_intent", None) is not None:
+            action = f"intent:{getattr(getattr(decision_ctx, 'adjusted_intent', None), 'side', 'unknown')}"
+        elif meta is not None and str(getattr(meta, "action", "continue")) != "continue":
+            action = str(getattr(meta, "action", "continue"))
+        elif policy is not None and not bool(getattr(policy, "trade_allowed", False)):
+            action = str(getattr(getattr(policy, "no_trade", None), "reason", "no_trade") or "no_trade")
+        reasons = []
+        if meta is not None:
+            reasons.extend(list(getattr(meta, "reasons", []) or []))
+        if risk is not None:
+            reasons.append(str(getattr(risk, "reason", "") or ""))
+        if policy is not None and getattr(policy, "no_trade", None) is not None:
+            reasons.extend(list(getattr(policy.no_trade, "reasons", []) or []))
+        if doctrine:
+            reasons.extend(list(doctrine.get("reasons", []) or []))
+        reasons = [reason for reason in reasons if reason]
+        alternatives = {
+            "no_trade_reason": None if getattr(policy, "no_trade", None) is None else str(getattr(policy.no_trade, "reason", "") or ""),
+            "meta_governor_action": None if meta is None else str(getattr(meta, "action", "continue")),
+            "risk_reason": None if risk is None else str(getattr(risk, "reason", "")),
+            "shadow_rival_action": doctrine.get("shadow_action"),
+            "recommended_action": doctrine.get("recommended_action"),
+        }
+        return {
+            "action_state": action,
+            "reason_codes": sorted(set(reasons)),
+            "operator_rationale": {
+                "forecast_regime": str(getattr(getattr(market, "forecast", None), "regime", "")),
+                "market_watch_action": None if getattr(market, "market_watch", None) is None else str(getattr(market.market_watch, "action", "continue")),
+                "market_integrity_action": None if getattr(market, "market_integrity", None) is None else str(getattr(market.market_integrity, "action", "continue")),
+                "doctrine_action": doctrine.get("recommended_action"),
+                "size_multiplier": doctrine.get("size_multiplier"),
+            },
+            "investor_rationale": {
+                "thesis": "buy_only_when_edge_survives_costs_and_truth_is_strong",
+                "capital_protection": "reduce_or_block_under_truth_execution_or_market_weakness",
+                "why_chosen_over_alternatives": alternatives,
+            },
+        }
+
+    def _emit_live_readiness_artifacts(
+        self,
+        *,
+        symbol: str,
+        mode: ExecutionMode,
+        harmony_payload: dict[str, object],
+        preflight_ok: bool,
+        preflight_reason: str,
+        confidence: str,
+        confidence_details: dict[str, object],
+        recovery_decision: RecoveryDecision,
+        ordering_allowed: bool,
+    ) -> dict[str, str]:
+        stage = self.settings.rollout_stage()
+        rollout_profile = self.settings.rollout_profile()
+        config_path = (
+            "config.kraken_spot.tiny_live.yaml"
+            if stage == RolloutStage.TINY_LIVE
+            else "config.kraken_spot.live_profit.yaml"
+            if stage == RolloutStage.NORMAL_LIVE
+            else "config.kraken_spot.live.yaml"
+        )
+        safety_preflight = {
+            "symbol": symbol,
+            "runtime_mode": mode.value,
+            "rollout_stage": stage.value,
+            "provider_id": self.settings.execution.provider_id,
+            "doctrine_launch_safe": bool(harmony_payload.get("live_gate_status", {}).get("doctrine_launch_safe", False)),
+            "preflight_ok": preflight_ok,
+            "preflight_reason": preflight_reason,
+            "restart_state_confidence": confidence,
+            "recovery_action": recovery_decision.action,
+            "ordering_allowed": ordering_allowed,
+            "market_watch_enabled": bool(self.settings.market_watch.enabled),
+            "harmony_enabled": bool(self.settings.harmony.enabled),
+            "capital_protection": {
+                "cost_basis_sell_block": bool(self.settings.doctrine.enforce_cost_basis_sell_block),
+                "net_profit_sell_block": bool(self.settings.doctrine.enforce_net_profit_sell_block),
+                "minimum_sell_net_profit_bps": float(self.settings.doctrine.minimum_sell_net_profit_bps),
+            },
+            "safety_ready": bool(
+                preflight_ok
+                and ordering_allowed
+                and confidence not in {"insufficient", "degraded"}
+                and recovery_decision.action == "continue"
+            ),
+            "details": confidence_details,
+        }
+        rollback_preflight = {
+            "symbol": symbol,
+            "rollout_stage": stage.value,
+            "rollback_target": rollout_profile["rollback_target"],
+            "paper_target_config": "config.kraken_spot.paper_full_analysis.yaml",
+            "readonly_target_config": "config.kraken_spot.readonly_analysis.yaml",
+            "kill_file": self._kill_file_path(),
+            "flatten_command": f"python3 -m autonomous_investment_robot flatten --config {config_path}",
+            "rollback_ready": True,
+            "reasons": [],
+        }
+        tiny_live_readiness = {
+            "symbol": symbol,
+            "stage": stage.value,
+            "ready": bool(stage.value == "tiny_live") and bool(safety_preflight["safety_ready"]),
+            "purpose": rollout_profile["purpose"],
+            "promotion_prerequisites": list(rollout_profile["promotion_prerequisites"]),
+            "rollback_target": rollout_profile["rollback_target"],
+            "blocking_reasons": [] if safety_preflight["safety_ready"] else [preflight_reason, f"restart_state:{confidence}", f"recovery:{recovery_decision.action}"],
+        }
+        tiny_live_envelope = {
+            "symbol": symbol,
+            "rollout_stage": stage.value,
+            "base_risk_budget": float(self.settings.policy.base_risk_budget),
+            "max_position_notional": float(self.settings.risk.max_position_notional),
+            "max_exposure_notional": float(self.settings.risk.max_exposure_notional),
+            "max_orders_per_min": int(self.settings.risk.max_orders_per_min),
+            "max_spread_bps": float(self.settings.risk.max_spread_bps),
+            "min_depth_notional": float(self.settings.risk.min_depth_notional),
+            "maker_timeout_s": int(self.settings.execution.maker_timeout_s),
+            "full_live_stage_required": bool(self.settings.live_gate_status().get("full_live_stage_required", False)),
+            "double_unlock_required": True,
+            "rollback_target": rollout_profile["rollback_target"],
+            "aggression_envelope": rollout_profile["aggression_envelope"],
+        }
+        start_procedure = {
+            "config": config_path,
+            "required_env": ["ENABLE_LIVE_TRADING=true", "ACK_I_UNDERSTAND_RISKS=true", "KRAKEN_SPOT_API_KEY=...", "KRAKEN_SPOT_API_SECRET=..."],
+            "optional_env": ["KRAKEN_SPOT_EVENT_FEED_PATH=/absolute/path/to/events.jsonl"],
+            "readonly_validation": "bash scripts/run_kraken_spot_readonly_analysis.sh",
+            "tiny_live_start": "bash scripts/run_kraken_spot_tiny_live.sh",
+            "emergency_freeze": f"python3 -m autonomous_investment_robot flatten --config {config_path} --freeze-only --reason operator_freeze",
+            "emergency_flatten": f"python3 -m autonomous_investment_robot flatten --config {config_path} --scope all --reason operator_flatten",
+        }
+        return {
+            "safety_preflight_live_target": self._write_json_artifact("safety_preflight_live_target.json", safety_preflight),
+            "rollback_preflight_liveprofit_paper": self._write_json_artifact("rollback_preflight_liveprofit_paper.json", rollback_preflight),
+            "tiny_live_readiness_report": self._write_json_artifact("tiny_live_readiness_report.json", tiny_live_readiness),
+            "tiny_live_envelope_summary": self._write_json_artifact("tiny_live_envelope_summary.json", tiny_live_envelope),
+            "live_operator_start_procedure": self._write_json_artifact("live_operator_start_procedure.json", start_procedure),
+        }
+
     def _live_capability_bundle(self, *, market: object, decision_ctx: object) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], dict[str, dict[str, object]]]:
         event_report = getattr(market, "event_intelligence_report", None)
         event_partial = bool(getattr(event_report, "partial", True)) if event_report is not None else True
@@ -423,6 +652,12 @@ class RobotOrchestrator:
     ) -> str:
         capability_matrix, activated, still_gated = self._live_capability_bundle(market=market, decision_ctx=decision_ctx)
         doctrine_blocked = self._doctrine_block_map()
+        throughput = self._throughput_snapshot()
+        explainability = self._decision_explainability(
+            market=market,
+            decision_ctx=decision_ctx,
+            execution_result=execution_result,
+        )
         artifact_index = {
             "run_dir": self.settings.storage.run_dir,
             "step": step,
@@ -432,6 +667,10 @@ class RobotOrchestrator:
         self._write_json_artifact("live_activated_capabilities.json", activated)
         self._write_json_artifact("live_still_gated_capabilities.json", still_gated)
         self._write_json_artifact("live_doctrine_blocked_capabilities.json", doctrine_blocked)
+        self._write_json_artifact("throughput_diagnostics.json", throughput)
+        self._write_json_artifact("failure_taxonomy.json", throughput.get("failure_taxonomy", {}))
+        self._write_json_artifact("decision_explainability.json", explainability)
+        artifact_index["files"] = sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*"))
         self._write_json_artifact("live_artifact_index.json", artifact_index)
         summary = {
             "symbol": symbol,
@@ -475,6 +714,10 @@ class RobotOrchestrator:
                 "still_gated": sorted(still_gated.keys()),
                 "doctrine_blocked": doctrine_blocked,
             },
+            "throughput": throughput,
+            "failure_taxonomy": throughput.get("failure_taxonomy", {}),
+            "explainability": explainability,
+            "rollout_profile": self.settings.rollout_profile(),
         }
         return self.operator_summary.emit(summary=summary)
 
@@ -604,6 +847,7 @@ class RobotOrchestrator:
         confidence_details: dict[str, object],
         recovery_decision: RecoveryDecision,
         ordering_allowed: bool,
+        artifact_paths: dict[str, str] | None = None,
     ) -> str:
         summary = {
             "symbol": symbol,
@@ -629,6 +873,8 @@ class RobotOrchestrator:
                 "block_non_reduce_only_sells": bool(self.settings.doctrine.block_non_reduce_only_sells),
             },
             "provider_capability": asdict(self.execution.provider_capability_matrix()),
+            "rollout_profile": self.settings.rollout_profile(),
+            "artifact_paths": artifact_paths or {},
         }
         return self.operator_summary.emit(summary=summary)
 
@@ -660,6 +906,7 @@ class RobotOrchestrator:
         while True:
             loop_started = time.perf_counter()
             steps += 1
+            self._live_runtime_diagnostics["loop_steps"] = steps
             now_ts = time.time()
             now_dt = datetime.fromtimestamp(now_ts, tz=timezone.utc)
             stop_result = self.live_control.check_kill_file(
@@ -686,9 +933,11 @@ class RobotOrchestrator:
                     _, bid_raw, ask_raw = message.split(":", 2)
                     self.ops.audit_event("book_invalid", {"symbol": symbol, "bid": float(bid_raw), "ask": float(ask_raw)})
                     self.ops.inc_metric("book_invalid_total")
+                    self._record_live_reason(reason="book_invalid", surface="market_data")
                 else:
                     self.ops.audit_event("book_error", {"symbol": symbol, "error": message})
                     self.ops.inc_metric("book_errors_total")
+                    self._record_live_reason(reason=message, surface="market_data")
                 self.ops.export_prometheus()
                 time.sleep(poll_s)
                 continue
@@ -767,9 +1016,12 @@ class RobotOrchestrator:
             )
             exposure_notional = meta_control.exposure_notional
             if meta_control.stop_result is not None:
+                self._live_runtime_diagnostics["meta_governor_blocks"] = int(self._live_runtime_diagnostics["meta_governor_blocks"]) + 1
                 meta_control.stop_result.setdefault("operator_summary_path", latest_operator_summary_path)
                 return meta_control.stop_result
             if meta_control.continue_loop:
+                self._live_runtime_diagnostics["meta_governor_blocks"] = int(self._live_runtime_diagnostics["meta_governor_blocks"]) + 1
+                self._record_live_reason(reason=str(getattr(meta_governor, "action", "continue")), surface="meta_governor")
                 if max_steps and steps >= max_steps:
                     return {
                         "status": "ok",
@@ -781,6 +1033,7 @@ class RobotOrchestrator:
                 time.sleep(poll_s)
                 continue
             if health_snapshot.action == "halt_and_flatten" and hasattr(live, "flatten_all_positions"):
+                self._record_live_reason(reason="health_halt_and_flatten", surface="health")
                 closed, flat_reason = live.flatten_all_positions()
                 if closed:
                     exposure_notional = 0.0
@@ -795,6 +1048,7 @@ class RobotOrchestrator:
                     "operator_summary_path": latest_operator_summary_path,
                 }
             if health_snapshot.action == "halt":
+                self._record_live_reason(reason="health_halt", surface="health")
                 self.ops.audit_event("health_halt", {"reasons": health_snapshot.reasons})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
@@ -832,6 +1086,8 @@ class RobotOrchestrator:
 
             policy_decision = decision_ctx.policy_decision
             if policy_decision is None:
+                self._live_runtime_diagnostics["no_intent"] = int(self._live_runtime_diagnostics["no_intent"]) + 1
+                self._record_live_reason(reason="policy_decision_missing", surface="policy")
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
                 if max_steps and steps >= max_steps:
@@ -845,7 +1101,10 @@ class RobotOrchestrator:
                 time.sleep(poll_s)
                 continue
             if (not policy_decision.trade_allowed or policy_decision.side is None) and decision_ctx.adjusted_intent is None:
+                self._live_runtime_diagnostics["no_intent"] = int(self._live_runtime_diagnostics["no_intent"]) + 1
                 self.ops.inc_metric("orders_rejected_total")
+                no_trade_reason = policy_decision.no_trade.reason if policy_decision.no_trade is not None else "no_trade"
+                self._record_live_reason(reason=no_trade_reason, surface="policy")
                 self.ops.audit_event(
                     "heartbeat",
                     {
@@ -853,7 +1112,7 @@ class RobotOrchestrator:
                         "mid": mid,
                         "spread_bps": spread_bps,
                         "equity": equity,
-                        "reason": policy_decision.no_trade.reason if policy_decision.no_trade is not None else "no_trade",
+                        "reason": no_trade_reason,
                         "regime": market.forecast.regime,
                         "liq_regime": market.forecast.liquidity_regime,
                     },
@@ -872,6 +1131,8 @@ class RobotOrchestrator:
                 continue
             decision = decision_ctx.risk_decision
             if decision is None:
+                self._live_runtime_diagnostics["risk_rejected"] = int(self._live_runtime_diagnostics["risk_rejected"]) + 1
+                self._record_live_reason(reason="risk_decision_missing", surface="risk")
                 self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": "risk_decision_missing", "details": {}})
                 self.ops.export_prometheus()
@@ -894,6 +1155,8 @@ class RobotOrchestrator:
             self.ops.set_metric("risk_mode", float({"normal": 0, "cautious": 1, "degraded": 2, "defensive": 3, "flatten-only": 4, "kill-switch": 5}.get(self.risk.state.risk_mode, 0)))
 
             if not decision.allowed:
+                self._live_runtime_diagnostics["risk_rejected"] = int(self._live_runtime_diagnostics["risk_rejected"]) + 1
+                self._record_live_reason(reason=str(decision.reason), surface="risk")
                 self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": decision.reason, "details": decision.details})
                 if decision.flatten and hasattr(live, "flatten_all_positions"):
@@ -920,6 +1183,8 @@ class RobotOrchestrator:
             adjusted = decision_ctx.adjusted_intent
             plan = decision_ctx.execution_plan
             if adjusted is None or plan is None:
+                self._live_runtime_diagnostics["orders_blocked"] = int(self._live_runtime_diagnostics["orders_blocked"]) + 1
+                self._record_live_reason(reason="execution_plan_missing", surface="execution")
                 self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": "execution_plan_missing", "details": decision.details})
                 self.ops.export_prometheus()
@@ -940,11 +1205,14 @@ class RobotOrchestrator:
                 "orders",
                 make_event(OrderIntentEvent, "ORDER_INTENT", symbol, provider_id, self.event_store.next_seq("orders"), asdict(adjusted), idempotency_key=live_idem),
             )
+            self._live_runtime_diagnostics["execution_attempts"] = int(self._live_runtime_diagnostics["execution_attempts"]) + 1
             result = self.execution.execute_live(adjusted)
             self.ops.audit_event(
                 "live_exec",
                 {"status": result.status, "reason": result.reason, "symbol": adjusted.symbol, "side": adjusted.side, "notional": adjusted.target_notional},
             )
+            if getattr(result, "reason", ""):
+                self._record_live_reason(reason=str(result.reason), surface="execution")
             ledger_result = self.live_ledger.apply_execution_result(
                 symbol=symbol,
                 provider_id=provider_id,
@@ -965,10 +1233,19 @@ class RobotOrchestrator:
             if result.status in {"filled_maker", "filled_taker_fallback", "filled_marketable_limit"}:
                 exposure_notional = ledger_result.exposure_notional
                 self.ops.inc_metric("orders_submitted_total")
+                self._live_runtime_diagnostics["orders_submitted"] = int(self._live_runtime_diagnostics["orders_submitted"]) + 1
+                self._live_runtime_diagnostics["fills"] = int(self._live_runtime_diagnostics["fills"]) + 1
                 if not ledger_result.fill_truth_ok:
                     self.ops.inc_metric("live_fill_truth_gap_total")
+                    self._record_live_reason(reason="live_fill_truth_gap", surface="truth_confidence")
             elif result.status in {"rejected", "blocked", "killed"}:
                 self.ops.inc_metric("orders_rejected_total")
+                if result.status == "blocked":
+                    self._live_runtime_diagnostics["orders_blocked"] = int(self._live_runtime_diagnostics["orders_blocked"]) + 1
+                else:
+                    self._live_runtime_diagnostics["orders_rejected"] = int(self._live_runtime_diagnostics["orders_rejected"]) + 1
+            elif result.status == "deduped":
+                self._live_runtime_diagnostics["deduped"] = int(self._live_runtime_diagnostics["deduped"]) + 1
 
             if getattr(live, "killed", False):
                 self.ops.audit_event("live_killed", {"reason": getattr(live, "kill_reason", "")})
@@ -1094,7 +1371,10 @@ class RobotOrchestrator:
             else:
                 return {"status": "blocked", "reason": f"unsupported_provider:{self.settings.execution.provider_id}"}
             self.execution.attach_live_service(live)
-            ok_preflight, reason_preflight = live.preflight()
+            try:
+                ok_preflight, reason_preflight = live.preflight()
+            except Exception as exc:
+                ok_preflight, reason_preflight = False, str(exc)
             readonly_without_credentials = bool(
                 mode == ExecutionMode.LIVE_READONLY
                 and not bool(getattr(getattr(live, "connector", None), "has_credentials", False))
@@ -1115,12 +1395,28 @@ class RobotOrchestrator:
                     reasons=["signed_boot_recovery_skipped"],
                 )
                 exchange_balance_total = None
-            else:
+            elif ok_preflight:
                 boot_state = self.live_recovery.boot_state(live=live, symbol=symbol)
                 confidence, confidence_details = boot_state.confidence, boot_state.details
                 recovery_decision = boot_state.recovery_decision
                 exchange_state = self.live_state.exchange_state(live, symbol)
                 exchange_balance_total = exchange_state.balance_total
+            else:
+                confidence = "insufficient"
+                confidence_details = {
+                    "confidence": "insufficient",
+                    "reason": "preflight_failed",
+                    "preflight_reason": reason_preflight,
+                }
+                recovery_decision = RecoveryDecision(
+                    symbol=symbol,
+                    ts=datetime.now(timezone.utc),
+                    outcome="preflight_failed",
+                    action="halt",
+                    confidence="insufficient",
+                    reasons=[reason_preflight],
+                )
+                exchange_balance_total = None
             self.event_store.append(
                 "account",
                 make_event(
@@ -1147,6 +1443,17 @@ class RobotOrchestrator:
                 and confidence != "insufficient"
                 and recovery_decision.action not in {"degrade", "flatten_only", "halt", "halt_and_flatten"}
                 and mode != ExecutionMode.LIVE_READONLY
+            )
+            readiness_artifacts = self._emit_live_readiness_artifacts(
+                symbol=symbol,
+                mode=mode,
+                harmony_payload=harmony_payload,
+                preflight_ok=ok_preflight,
+                preflight_reason=reason_preflight,
+                confidence=confidence,
+                confidence_details=confidence_details,
+                recovery_decision=recovery_decision,
+                ordering_allowed=ordering_allowed,
             )
             self.event_store.append(
                 "truth",
@@ -1189,14 +1496,17 @@ class RobotOrchestrator:
                 confidence_details=confidence_details,
                 recovery_decision=recovery_decision,
                 ordering_allowed=ordering_allowed,
+                artifact_paths=readiness_artifacts,
             )
             if not ok_preflight:
+                self._record_live_reason(reason=reason_preflight, surface="preflight")
                 self.ops.inc_metric("auth_errors_total")
                 inc = self.incidents.evaluate(self.ops.metrics)
                 if inc is not None:
                     self.notifier.notify(inc.action, inc.reason)
                 return {"status": "blocked", "reason": reason_preflight, "operator_summary_path": operator_summary_path}
             if confidence == "insufficient":
+                self._record_live_reason(reason="restart_state_confidence_insufficient", surface="truth_confidence")
                 if hasattr(live, "enter_flatten_only"):
                     live.enter_flatten_only("restart_state_confidence_insufficient")
                 return {
@@ -1206,6 +1516,7 @@ class RobotOrchestrator:
                     "operator_summary_path": operator_summary_path,
                 }
             if recovery_decision.action in {"halt", "halt_and_flatten"}:
+                self._record_live_reason(reason=f"recovery:{recovery_decision.outcome}", surface="recovery")
                 return {
                     "status": "blocked",
                     "reason": f"recovery:{recovery_decision.outcome}",
@@ -1228,6 +1539,7 @@ class RobotOrchestrator:
                 result = {"status": "ok", "mode": mode.value, "reason": "live_preflight_passed"}
                 result.update(self._emit_readonly_analysis(live=live, symbol=symbol))
                 return result
+            self._live_runtime_diagnostics = self._fresh_live_runtime_diagnostics()
             result = self._live_loop(live, symbol=symbol, mode=mode)
             result.setdefault("operator_summary_path", operator_summary_path)
             return result

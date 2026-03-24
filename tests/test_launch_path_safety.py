@@ -95,6 +95,16 @@ def test_order_capable_launch_scripts_require_explicit_true_unlock_env(
     ("script_name", "env_updates", "expected_error"),
     [
         (
+            "run_kraken_spot_tiny_live.sh",
+            {
+                "KRAKEN_SPOT_API_KEY": "k",
+                "KRAKEN_SPOT_API_SECRET": "s",
+                "ENABLE_LIVE_TRADING": "false",
+                "ACK_I_UNDERSTAND_RISKS": "true",
+            },
+            "Env var must be set to true: ENABLE_LIVE_TRADING",
+        ),
+        (
             "run_kraken_spot_profit_full_throttle.sh",
             {
                 "KRAKEN_SPOT_API_KEY": "k",
@@ -142,6 +152,45 @@ def test_emergency_flatten_blocks_unsupported_derivative_config() -> None:
 
     assert result["status"] == "blocked"
     assert result["reason"] == "flatten_blocked_unsupported_doctrine_target_use_kraken_spot"
+
+
+def test_flatten_cli_supports_symbol_scope_and_freeze_only(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+
+    class FakeLive:
+        def preflight(self):
+            return True, "ok"
+
+        def freeze_new_openings(self, reason="freeze"):
+            return True, reason
+
+        def flatten_symbol(self, symbol, reason="flatten"):
+            return True, f"{reason}:{symbol}"
+
+    monkeypatch.setattr("autonomous_investment_robot.main.LiveKrakenSpotService", lambda settings, run_id, connector: FakeLive())
+    monkeypatch.setattr("autonomous_investment_robot.main.KrakenSpotConnector", lambda settings: object())
+
+    freeze = emergency_flatten(
+        "config.kraken_spot.tiny_live.yaml",
+        freeze_only=True,
+        reason="operator_freeze",
+    )
+    flatten = emergency_flatten(
+        "config.kraken_spot.tiny_live.yaml",
+        symbol="BTC/USD",
+        reason="operator_symbol_flatten",
+    )
+
+    assert freeze["status"] == "ok"
+    assert freeze["freeze_only"] is True
+    assert freeze["reason"] == "operator_freeze"
+    assert flatten["status"] == "ok"
+    assert flatten["scope"] == "symbol"
+    assert flatten["symbol"] == "BTC/USD"
+    assert flatten["reason"] == "operator_symbol_flatten:BTC/USD"
 
 
 def test_script_helper_honors_python_bin_override() -> None:

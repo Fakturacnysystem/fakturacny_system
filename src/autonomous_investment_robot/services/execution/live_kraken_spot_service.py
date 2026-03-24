@@ -82,6 +82,7 @@ class LiveKrakenSpotService:
         self._book_repeat_count = 0
         self._auth_validated = False
         self._private_api_healthy = True
+        self._flatten_history: list[dict[str, Any]] = []
         self.user_stream_connected = False
         self.supports_replace = False
         self.supports_expire = True
@@ -205,6 +206,21 @@ class LiveKrakenSpotService:
         self.flatten_only = True
         self.safe_mode = True
         self.kill_reason = reason
+
+    def freeze_new_openings(self, reason: str = "operator_freeze_only") -> tuple[bool, str]:
+        ordering_ok, ordering_reason = self._ordering_authorized()
+        if not ordering_ok:
+            return False, ordering_reason
+        self.enter_flatten_only(reason)
+        self._flatten_history.append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "action": "freeze_only",
+                "reason": reason,
+                "scope": "all",
+            }
+        )
+        return True, reason
 
     def _status_rank(self, status: str) -> int:
         ranks = {
@@ -972,14 +988,35 @@ class LiveKrakenSpotService:
             except Exception:
                 continue
 
-    def flatten_all_positions(self, max_attempts: int = 3) -> tuple[bool, str]:
+    def flatten_symbol(self, symbol: str, max_attempts: int = 3, reason: str = "flatten_symbol") -> tuple[bool, str]:
+        if symbol not in self.settings.universe:
+            return False, f"flatten_symbol_not_in_universe:{symbol}"
+        return self._flatten_symbols([symbol], max_attempts=max_attempts, reason=reason)
+
+    def flatten_scope(
+        self,
+        *,
+        scope: str = "all",
+        symbol: str | None = None,
+        max_attempts: int = 3,
+        reason: str = "flatten_scope",
+    ) -> tuple[bool, str]:
+        if scope == "symbol":
+            if not symbol:
+                return False, "flatten_scope_symbol_required"
+            return self.flatten_symbol(symbol, max_attempts=max_attempts, reason=reason)
+        if scope not in {"all", "portfolio"}:
+            return False, f"flatten_scope_unsupported:{scope}"
+        return self._flatten_symbols(list(self.settings.universe), max_attempts=max_attempts, reason=reason)
+
+    def _flatten_symbols(self, symbols: list[str], max_attempts: int = 3, reason: str = "flatten_all_positions") -> tuple[bool, str]:
         ordering_ok, ordering_reason = self._ordering_authorized()
         if not ordering_ok:
             return False, ordering_reason
         self._cancel_open_orders_best_effort()
         for _ in range(max_attempts):
             non_zero: list[tuple[str, float]] = []
-            for symbol in self.settings.universe:
+            for symbol in symbols:
                 try:
                     bal = self.connector.base_balance(symbol)
                 except Exception:
@@ -1007,13 +1044,36 @@ class LiveKrakenSpotService:
                     continue
             time.sleep(0.5)
         for symbol in self.settings.universe:
+            if symbol not in symbols:
+                continue
             try:
                 bal = self.connector.base_balance(symbol)
             except Exception:
                 continue
             if float(bal.get("free", 0.0) or 0.0) > 1e-9:
+                self._flatten_history.append(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "action": "flatten_failed",
+                        "reason": reason,
+                        "scope": "symbol" if len(symbols) == 1 else "all",
+                        "symbols": list(symbols),
+                    }
+                )
                 return False, "flatten_failed"
+        self._flatten_history.append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "action": "flattened",
+                "reason": reason,
+                "scope": "symbol" if len(symbols) == 1 else "all",
+                "symbols": list(symbols),
+            }
+        )
         return True, "flat"
+
+    def flatten_all_positions(self, max_attempts: int = 3) -> tuple[bool, str]:
+        return self._flatten_symbols(list(self.settings.universe), max_attempts=max_attempts, reason="flatten_all_positions")
 
     def emergency_kill_and_flatten(self, max_attempts: int = 3) -> tuple[bool, str]:
         self.request_kill("emergency")

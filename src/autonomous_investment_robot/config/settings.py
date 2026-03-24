@@ -268,6 +268,7 @@ class RobotSettings:
     ack_live_risks: bool = False
     canary_mode: bool = False
     safe_mode_default: bool = True
+    rollout_stage_override: str = ""
     provider_whitelist: list[str] = field(default_factory=list)
     universe: list[str] = field(default_factory=lambda: ["BTCUSDT"])
     timeframe: str = "1h"
@@ -304,6 +305,7 @@ class RobotSettings:
             ack_live_risks=ack,
             canary_mode=canary,
             safe_mode_default=safe,
+            rollout_stage_override=os.getenv("ROBOT_ROLLOUT_STAGE_OVERRIDE", "").strip(),
             provider_whitelist=providers,
             execution=ExecutionSettings(mode=exec_mode),
             safety=SafetySettings(
@@ -350,6 +352,7 @@ class RobotSettings:
             ack_live_risks=bool(data.get("ack_i_understand_risks", False)) or env_ack_live,
             canary_mode=bool(data.get("canary_mode", False)) or env_canary_mode,
             safe_mode_default=bool(data.get("safe_mode_default", True)),
+            rollout_stage_override=str(data.get("rollout_stage", os.getenv("ROBOT_ROLLOUT_STAGE_OVERRIDE", "") or "") or "").strip(),
             provider_whitelist=list(data.get("provider_whitelist", [])),
             universe=list(data.get("universe", ["BTCUSDT"])),
             timeframe=data.get("timeframe", "1h"),
@@ -435,8 +438,17 @@ class RobotSettings:
     def kraken_spot_event_feed_path(self) -> str:
         return str(self.execution.kraken_spot.event_feed_path or "")
 
+    def rollout_stage_configured(self) -> RolloutStage | None:
+        raw = str(self.rollout_stage_override or "").strip()
+        if not raw:
+            return None
+        return RolloutStage(raw)
+
     def rollout_stage(self) -> RolloutStage:
         mode = self.execution_mode_enum()
+        configured = self.rollout_stage_configured()
+        if configured is not None:
+            return configured
         if mode == ExecutionMode.PAPER:
             return RolloutStage.PAPER
         if mode == ExecutionMode.LIVE_READONLY:
@@ -450,6 +462,80 @@ class RobotSettings:
             return RolloutStage.LIMITED_LIVE
         return RolloutStage.NORMAL_LIVE
 
+    def rollout_profile(self) -> dict[str, Any]:
+        stage = self.rollout_stage()
+        mode = self.execution_mode_enum()
+        base = {
+            "resolved_stage": stage.value,
+            "runtime_mode": mode.value,
+            "base_risk_budget": float(self.policy.base_risk_budget),
+            "max_position_notional": float(self.risk.max_position_notional if self.risk.max_position_notional != UNSPECIFIED else 0.0),
+            "max_exposure_notional": float(self.risk.max_exposure_notional if self.risk.max_exposure_notional != UNSPECIFIED else 0.0),
+            "max_orders_per_min": int(self.risk.max_orders_per_min if self.risk.max_orders_per_min != UNSPECIFIED else 0),
+            "max_spread_bps": float(self.risk.max_spread_bps if self.risk.max_spread_bps != UNSPECIFIED else 0.0),
+            "min_depth_notional": float(self.risk.min_depth_notional if self.risk.min_depth_notional != UNSPECIFIED else 0.0),
+            "safe_mode_default": bool(self.safe_mode_default),
+            "canary_mode": bool(self.canary_mode),
+            "full_live_stage_enabled": self.full_live_stage_enabled(),
+        }
+        profiles: dict[RolloutStage, dict[str, Any]] = {
+            RolloutStage.PAPER: {
+                "purpose": "simulation_only",
+                "allowed_actions": ["paper_trade", "journal", "report"],
+                "blocked_actions": ["live_order_submission"],
+                "aggression_envelope": "simulation",
+                "downgrade_triggers": ["paper_truth_gap"],
+                "promotion_prerequisites": ["paper_replay_green"],
+                "rollback_target": "paper",
+            },
+            RolloutStage.SHADOW: {
+                "purpose": "live_data_full_analytics_no_execution",
+                "allowed_actions": ["live_data_ingestion", "decisioning", "analytics", "report"],
+                "blocked_actions": ["live_order_submission"],
+                "aggression_envelope": "no_opening_allowed",
+                "downgrade_triggers": ["market_integrity_degrade", "truth_confidence_gap"],
+                "promotion_prerequisites": ["preflight_ok", "operator_summary_visible", "market_watch_active"],
+                "rollback_target": "paper",
+            },
+            RolloutStage.TINY_LIVE: {
+                "purpose": "first_real_money_truth_and_execution_validation",
+                "allowed_actions": ["buy_entries", "reduce_only_sells", "flatten", "freeze_new_open"],
+                "blocked_actions": ["full_stage_sizing", "doctrine_incompatible_paths"],
+                "aggression_envelope": "tiny_size_probe_only",
+                "downgrade_triggers": ["truth_degrade", "reconciliation_gap", "market_watch_block", "market_integrity_degrade"],
+                "promotion_prerequisites": ["manual_promotion", "tiny_live_readiness_report.ready", "rollback_preflight_ready"],
+                "rollback_target": "shadow",
+            },
+            RolloutStage.CANARY_LIVE: {
+                "purpose": "legacy_canary_live_probe",
+                "allowed_actions": ["buy_entries", "reduce_only_sells", "flatten", "freeze_new_open"],
+                "blocked_actions": ["full_stage_sizing", "doctrine_incompatible_paths"],
+                "aggression_envelope": "small_probe_only",
+                "downgrade_triggers": ["truth_degrade", "reconciliation_gap", "market_watch_block", "market_integrity_degrade"],
+                "promotion_prerequisites": ["manual_promotion", "canary_metrics_clean"],
+                "rollback_target": "shadow",
+            },
+            RolloutStage.LIMITED_LIVE: {
+                "purpose": "restricted_real_money_live",
+                "allowed_actions": ["buy_entries", "reduce_only_sells", "flatten", "freeze_new_open"],
+                "blocked_actions": ["full_stage_sizing"],
+                "aggression_envelope": "reduced_size",
+                "downgrade_triggers": ["truth_degrade", "market_watch_degrade", "execution_health_bad"],
+                "promotion_prerequisites": ["manual_promotion", "tiny_live_passed"],
+                "rollback_target": "tiny_live",
+            },
+            RolloutStage.NORMAL_LIVE: {
+                "purpose": "full_doctrine_live_with_hard_guards",
+                "allowed_actions": ["buy_entries", "reduce_only_sells", "flatten", "freeze_new_open"],
+                "blocked_actions": ["short_opening", "unsafe_sell_paths"],
+                "aggression_envelope": "full_safe_autonomy",
+                "downgrade_triggers": ["truth_degrade", "market_watch_degrade", "reconciliation_gap", "market_integrity_degrade"],
+                "promotion_prerequisites": ["manual_promotion", "ENABLE_FULL_LIVE_STAGE"],
+                "rollback_target": "limited_live",
+            },
+        }
+        return {**base, **profiles.get(stage, profiles[RolloutStage.LIMITED_LIVE])}
+
     def live_gate_status(self) -> dict[str, Any]:
         unlock = self.safety.live_unlock
         env_enable_live = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
@@ -460,6 +546,7 @@ class RobotSettings:
         enable_live = bool(unlock.enable_live_trading or self.explicit_live_enable)
         ack_live = bool(unlock.ack_i_understand_risks or self.ack_live_risks)
         full_live_stage = bool(unlock.allow_full_live_stage)
+        resolved_stage = self.rollout_stage()
         doctrine_launch_safe = bool(
             doctrine_provider == "kraken_spot"
             and doctrine_product == "spot"
@@ -494,7 +581,7 @@ class RobotSettings:
             "full_live_stage_required": bool(
                 self.execution_mode_enum() == ExecutionMode.LIVE
                 and unlock.canary_required_before_full
-                and not self.canary_mode
+                and resolved_stage == RolloutStage.NORMAL_LIVE
             ),
             "full_live_stage_sources": {
                 "settings_allow_full_live_stage": bool(unlock.allow_full_live_stage and os.getenv("ENABLE_FULL_LIVE_STAGE", "").lower() != "true"),
@@ -512,6 +599,7 @@ class RobotSettings:
             "event_feed_configured": bool(self.kraken_spot_event_feed_path()),
             "event_feed_path": self.kraken_spot_event_feed_path(),
             "doctrine_launch_safe": doctrine_launch_safe,
+            "rollout_profile": self.rollout_profile(),
         }
 
     def config_hash(self) -> str:
@@ -523,6 +611,8 @@ class RobotSettings:
             "schema_version": self.config_schema_version,
             "runtime_mode": self.execution_mode_enum().value,
             "rollout_stage": self.rollout_stage().value,
+            "rollout_stage_override": self.rollout_stage_override,
+            "rollout_profile": self.rollout_profile(),
             "provider_id": self.execution.provider_id,
             "universe": list(self.universe),
             "safe_mode_default": self.safe_mode_default,
@@ -667,10 +757,22 @@ class RobotSettings:
                 missing.append("market_watch.enabled")
 
         if mode == ExecutionMode.LIVE and unlock.canary_required_before_full and not self.canary_mode and not unlock.allow_full_live_stage:
-            missing.append("ENABLE_FULL_LIVE_STAGE")
+            if self.rollout_stage() == RolloutStage.NORMAL_LIVE:
+                missing.append("ENABLE_FULL_LIVE_STAGE")
         if mode == ExecutionMode.LIVE and unlock.require_testnet_passed:
             if os.getenv("TESTNET_VALIDATED", "false").lower() != "true":
                 missing.append("TESTNET_VALIDATED")
+
+        configured_rollout = self.rollout_stage_configured()
+        if configured_rollout is not None:
+            if mode == ExecutionMode.PAPER and configured_rollout != RolloutStage.PAPER:
+                missing.append("rollout_stage_override_invalid_for_paper")
+            if mode == ExecutionMode.LIVE_READONLY and configured_rollout != RolloutStage.SHADOW:
+                missing.append("rollout_stage_override_invalid_for_live_readonly")
+            if mode == ExecutionMode.LIVE_TESTNET and configured_rollout != RolloutStage.TINY_LIVE:
+                missing.append("rollout_stage_override_invalid_for_live_testnet")
+            if mode == ExecutionMode.LIVE and configured_rollout in {RolloutStage.PAPER, RolloutStage.SHADOW}:
+                missing.append("rollout_stage_override_invalid_for_live")
 
         if missing:
             raise ValueError(f"Live trading blocked until configured: {missing}")

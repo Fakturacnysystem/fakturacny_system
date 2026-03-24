@@ -34,6 +34,8 @@ def main() -> int:
                 "mode": settings.execution_mode_enum().value,
                 "provider": settings.execution.provider_id,
                 "stage": settings.rollout_stage().value,
+                "rollout_profile": settings.rollout_profile(),
+                "doctrine_launch_safe": bool(settings.live_gate_status().get("doctrine_launch_safe", False)),
             }
         )
     print(json.dumps({"loaded": loaded, "blocked_expected": blocked_expected, "failures": failures}, indent=2, sort_keys=True))

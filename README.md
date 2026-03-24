@@ -101,27 +101,29 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
   - negative-direction fresh entries from directional strategies
   - any non-reduce SELL that is not inventory-backed
 
-## Binance setup (step-by-step)
-1. Create Binance Futures API key:
-- Futures enabled.
+## Kraken SPOT live setup
+1. Create Kraken SPOT API credentials:
+- Spot trading enabled.
 - Withdrawals disabled.
 - IP allowlist strongly recommended.
 
-2. Configure `.env`:
+2. Configure runtime env:
 ```bash
-EXCHANGE_API_KEY=...
-EXCHANGE_API_SECRET=...
+KRAKEN_SPOT_API_KEY=...
+KRAKEN_SPOT_API_SECRET=...
 ENABLE_LIVE_TRADING=false
 ACK_I_UNDERSTAND_RISKS=false
 ENABLE_FULL_LIVE_STAGE=false
-TESTNET_VALIDATED=false
+ROBOT_ROLLOUT_STAGE_OVERRIDE=
+KRAKEN_SPOT_EVENT_FEED_PATH=
 ```
 
-3. Rollout path (must be sequential):
-1. `live-readonly` for 24-72h with recordings.
-2. `live_testnet` for 3-7 days with tiny notionals.
-3. `live_canary` for 1-2 weeks at 1-5% risk.
-4. `live` full strict after stability.
+3. Controlled rollout ladder:
+1. `read_only_live` via `config.kraken_spot.readonly_analysis.yaml`
+2. `shadow` via readonly analysis plus full decision visibility
+3. `tiny_live` via `config.kraken_spot.tiny_live.yaml`
+4. `limited_live` via `config.kraken_spot.live.yaml`
+5. `normal_live` via `config.kraken_spot.live_profit.yaml` with `ENABLE_FULL_LIVE_STAGE=true`
 
 ## Create a new local environment
 ```bash
@@ -138,6 +140,7 @@ PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken
 PYTHONPATH=src python3 -m autonomous_investment_robot replay-report --config config.kraken_spot.replay_full_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot ack-review --run-dir runs/<run_id> --reviewer ops --notes "manual review approved"
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
@@ -159,6 +162,7 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
   - `./scripts/run_kraken_spot_paper_full_analysis.sh`
   - `./scripts/run_kraken_spot_replay_full_analysis.sh`
   - `./scripts/run_kraken_spot_readonly_analysis.sh`
+  - `./scripts/run_kraken_spot_tiny_live.sh`
   - `./scripts/run_kraken_spot_profit_full_throttle.sh`
   - `./scripts/run_kraken_ultra_profit_full_throttle.sh`
   - `./scripts/instant_validate_kraken.sh`
@@ -166,7 +170,28 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
 ## Emergency stop
 - Soft stop: run with `--kill`.
 - Hard stop file: create `runs/<run_id>/KILL`.
-- Emergency flatten path uses reduce-only market close (if enabled in config).
+- Emergency flatten supports:
+  - full portfolio flatten
+  - symbol-only flatten via `flatten --symbol <SYMBOL> --scope symbol`
+  - freeze-only mode via `flatten --freeze-only --reason "<reason>"`
+- Emergency flatten remains reduce-only and inventory-backed.
+
+## Tiny live first-money checklist
+1. Run readonly analysis with real credentials:
+   - `bash ./scripts/run_kraken_spot_readonly_analysis.sh`
+2. Validate readiness artifacts in `runs/<run_id>/`:
+   - `tiny_live_readiness_report.json`
+   - `safety_preflight_live_target.json`
+   - `rollback_preflight_liveprofit_paper.json`
+   - `tiny_live_envelope_summary.json`
+   - `live_operator_start_procedure.json`
+3. Confirm:
+   - `tiny_live_readiness_report.json["ready"] == true`
+   - `safety_preflight_live_target.json["ready"] == true`
+   - `rollback_preflight_liveprofit_paper.json["ready"] == true`
+4. Start tiny live:
+   - `ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true bash ./scripts/run_kraken_spot_tiny_live.sh`
+5. Promote to `limited_live` only after reconciliation, throughput diagnostics, and execution truth remain clean.
 
 ## Monitoring (Grafana)
 - drawdown (`drawdown`)
@@ -207,7 +232,7 @@ python3 -m pip install pytest
 python3 -m pytest -q
 
 # paper (offline deterministic)
-PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken_spot.paper.yaml
 
 # live readonly preflight / preview (no order placement)
 PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
@@ -227,9 +252,14 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config con
 # 2) doctrine-safe Kraken SPOT launch gates
 ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
 KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml
+
+# 3) limited live
+ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 
-# 3) higher-notional profile
+# 4) higher-notional profile
 ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true ENABLE_FULL_LIVE_STAGE=true \
 KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
@@ -237,6 +267,8 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.krake
 # emergency kill / flatten
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml --kill
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml --freeze-only --reason "operator_freeze"
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml --scope symbol --symbol BTC/USD --reason "symbol_flatten"
 ```
 
 Rollout stage mapping used by the runtime:

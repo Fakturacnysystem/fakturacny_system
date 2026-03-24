@@ -36,6 +36,10 @@ def main() -> None:
 
     p_flatten = sub.add_parser("flatten")
     p_flatten.add_argument("--config", required=True)
+    p_flatten.add_argument("--symbol", default=None)
+    p_flatten.add_argument("--scope", default="all", choices=["all", "portfolio", "symbol"])
+    p_flatten.add_argument("--freeze-only", action="store_true")
+    p_flatten.add_argument("--reason", default="operator_cli_flatten")
 
     p_ack = sub.add_parser("ack-review")
     p_ack.add_argument("--run-dir", required=True)
@@ -65,7 +69,13 @@ def main() -> None:
             poll_interval_seconds=args.poll_interval_seconds,
         )
     elif args.cmd == "flatten":
-        out = emergency_flatten(args.config)
+        out = emergency_flatten(
+            args.config,
+            symbol=args.symbol,
+            scope=args.scope,
+            freeze_only=args.freeze_only,
+            reason=args.reason,
+        )
     elif args.cmd == "ack-review":
         out = acknowledge_manual_review(
             args.run_dir,

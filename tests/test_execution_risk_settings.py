@@ -368,3 +368,18 @@ def test_robot_settings_config_hash_changes_when_manifest_changes(monkeypatch):
     assert base.rollout_stage() == RolloutStage.CANARY_LIVE
     assert changed.rollout_stage() == RolloutStage.NORMAL_LIVE
     assert base.config_hash() != changed.config_hash()
+
+
+def test_robot_settings_live_tiny_override_skips_full_stage_unlock(monkeypatch):
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    settings = RobotSettings.from_file("config.kraken_spot.tiny_live.yaml")
+
+    gate = settings.live_gate_status()
+
+    assert settings.rollout_stage() == RolloutStage.TINY_LIVE
+    assert gate["rollout_stage"] == "tiny_live"
+    assert gate["full_live_stage_required"] is False
+    assert gate["rollout_profile"]["purpose"] == "first_real_money_truth_and_execution_validation"

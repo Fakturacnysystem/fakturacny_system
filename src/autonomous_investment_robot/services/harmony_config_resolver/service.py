@@ -42,6 +42,7 @@ class HarmonyConfigResolver:
             "ts": datetime.now(timezone.utc).isoformat(),
             "runtime_mode": self.settings.execution_mode_enum().value,
             "rollout_stage": self.settings.rollout_stage().value,
+            "rollout_profile": self.settings.rollout_profile(),
             "provider_target": provider_id,
             "product_target": doctrine_product,
             "doctrine_target_provider": doctrine_provider,

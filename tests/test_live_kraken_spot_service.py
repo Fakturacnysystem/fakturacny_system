@@ -120,15 +120,23 @@ class FakeKrakenSpotConnector:
     def place_order(self, payload):
         self.placed_payloads.append(dict(payload))
         cid = str(payload["newClientOrderId"])
+        side = str(payload["side"]).upper()
+        qty = float(payload["quantity"])
+        if side == "SELL":
+            self.balance_total = max(0.0, self.balance_total - qty)
+            self.balance_free = max(0.0, self.balance_free - qty)
+        elif side == "BUY":
+            self.balance_total += qty
+            self.balance_free += qty
         order = {
             "clientOrderId": cid,
             "orderId": f"order-{len(self.orders) + 1}",
             "status": "FILLED",
             "symbol": str(payload["symbol"]),
-            "side": str(payload["side"]),
+            "side": side,
             "executedQty": payload["quantity"],
-            "avgPrice": str(self.ask if str(payload["side"]).upper() == "BUY" else self.bid),
-            "filledNotional": str(float(payload["quantity"]) * (self.ask if str(payload["side"]).upper() == "BUY" else self.bid)),
+            "avgPrice": str(self.ask if side == "BUY" else self.bid),
+            "filledNotional": str(float(payload["quantity"]) * (self.ask if side == "BUY" else self.bid)),
             "raw": {"order_id": f"order-{len(self.orders) + 1}"},
         }
         self.orders[cid] = order
@@ -261,6 +269,15 @@ def test_kraken_spot_flatten_requires_successful_preflight(monkeypatch: pytest.M
     assert reason == "preflight_not_completed"
 
 
+def test_kraken_spot_freeze_requires_successful_preflight(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=FakeKrakenSpotConnector())
+
+    frozen, reason = svc.freeze_new_openings("operator_freeze")
+
+    assert frozen is False
+    assert reason == "preflight_not_completed"
+
+
 def test_kraken_spot_execute_blocks_non_reduce_sell(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=FakeKrakenSpotConnector())
     assert svc.preflight() == (True, "ok")
@@ -322,6 +339,21 @@ def test_kraken_spot_execute_allows_reduce_only_profitable_sell(monkeypatch: pyt
     assert out.status == "filled_maker"
     assert out.order is not None
     assert out.order["symbol"] == "BTC/USD"
+
+
+def test_kraken_spot_supports_symbol_flatten_and_freeze_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+    assert svc.preflight() == (True, "ok")
+
+    frozen, freeze_reason = svc.freeze_new_openings("operator_freeze")
+    closed, flat_reason = svc.flatten_symbol("BTC/USD", reason="operator_symbol_flatten")
+
+    assert frozen is True
+    assert freeze_reason == "operator_freeze"
+    assert svc.flatten_only is True
+    assert closed is True
+    assert flat_reason == "flat"
 
 
 def test_kraken_spot_execute_honors_marketable_limit_order_style(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
