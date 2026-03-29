@@ -1,0 +1,63 @@
+name: trading-bot
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  trading-engine:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    command: ["bash", "scripts/container_start_tiny_live.sh"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: tiny_live
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SECRETS_DIR: /app/secrets
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 scripts/runtime_healthcheck.py --run-dir /app/runs/kraken_spot_tiny_live || python3 scripts/runtime_healthcheck.py --run-dir /app/runs/kraken_spot_readonly_analysis --allow-readonly",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+    restart: on-failure:5
+    volumes:
+      - ./core:/app
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ./secrets:/app/secrets:ro
+    working_dir: /app

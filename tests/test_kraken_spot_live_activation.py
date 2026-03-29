@@ -220,11 +220,18 @@ def test_orchestrator_live_boot_emits_readiness_artifacts_when_preflight_raises(
     assert (run_dir / "rollback_preflight_liveprofit_paper.json").exists()
     assert (run_dir / "tiny_live_envelope_summary.json").exists()
     assert (run_dir / "live_operator_start_procedure.json").exists()
+    assert (run_dir / "health_summary.json").exists()
+    assert (run_dir / "live_artifact_index.json").exists()
+    assert (run_dir / "throughput_diagnostics.json").exists()
+    assert (run_dir / "failure_taxonomy.json").exists()
+    assert (run_dir / "decision_explainability.json").exists()
     summary = json.loads(Path(result["operator_summary_path"]).read_text(encoding="utf-8"))
     assert summary["preflight"]["ok"] is False
     assert "trade_history_fetch_failed" in summary["preflight"]["reason"]
     rollback = json.loads((run_dir / "rollback_preflight_liveprofit_paper.json").read_text(encoding="utf-8"))
     assert rollback["flatten_command"].endswith("--config config.kraken_spot.tiny_live.yaml")
+    explainability = json.loads((run_dir / "decision_explainability.json").read_text(encoding="utf-8"))
+    assert explainability["action_state"] == "blocked_preflight"
 
 
 def test_live_runtime_summary_emits_capability_artifacts(monkeypatch, tmp_path: Path) -> None:
@@ -275,6 +282,7 @@ def test_live_runtime_summary_emits_capability_artifacts(monkeypatch, tmp_path: 
     assert (Path(settings.storage.run_dir) / "throughput_diagnostics.json").exists()
     assert (Path(settings.storage.run_dir) / "failure_taxonomy.json").exists()
     assert (Path(settings.storage.run_dir) / "decision_explainability.json").exists()
+    assert (Path(settings.storage.run_dir) / "health_summary.json").exists()
 
 
 def test_orchestrator_live_boot_emits_tiny_live_readiness_artifacts(monkeypatch, tmp_path: Path) -> None:
@@ -338,5 +346,16 @@ def test_orchestrator_live_boot_emits_tiny_live_readiness_artifacts(monkeypatch,
     assert (run_dir / "tiny_live_envelope_summary.json").exists()
     assert (run_dir / "safety_preflight_live_target.json").exists()
     assert (run_dir / "rollback_preflight_liveprofit_paper.json").exists()
+    assert (run_dir / "config_truth_report.json").exists()
+    assert (run_dir / "release_manifest.json").exists()
+    assert (run_dir / "deployment_stamp.json").exists()
+    assert (run_dir / "runtime_fingerprint.json").exists()
+    assert (run_dir / "readiness_summary.json").exists()
+    assert (run_dir / "live_safety_summary.json").exists()
+    assert (run_dir / "health_summary.json").exists()
+    assert (run_dir / "live_artifact_index.json").exists()
+    assert (run_dir / "throughput_diagnostics.json").exists()
+    assert (run_dir / "failure_taxonomy.json").exists()
+    assert (run_dir / "decision_explainability.json").exists()
     readiness = json.loads((run_dir / "tiny_live_readiness_report.json").read_text(encoding="utf-8"))
     assert readiness["stage"] == "tiny_live"

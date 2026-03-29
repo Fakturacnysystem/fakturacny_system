@@ -70,6 +70,7 @@ from autonomous_investment_robot.services.reconciliation.service import Reconcil
 from autonomous_investment_robot.services.regime_service.service import RegimeService
 from autonomous_investment_robot.services.replay_reporting.service import ReplayReportingCoordinator
 from autonomous_investment_robot.services.reporting_service.service import ReportingCoordinator
+from autonomous_investment_robot.services.runtime_metadata.service import RuntimeMetadataService
 from autonomous_investment_robot.services.shadow_rival_service.service import ShadowRivalService
 from autonomous_investment_robot.services.shared_venue_limit_governor.service import SharedVenueLimitGovernor
 from autonomous_investment_robot.services.spre_service.service import SPREEngine
@@ -107,6 +108,7 @@ class RobotOrchestrator:
             ack_ttl_minutes=int(settings.monitoring.manual_review_ack_ttl_minutes),
         )
         self.harmony = HarmonyConfigResolver(settings)
+        self.runtime_metadata = RuntimeMetadataService(settings)
         self.policy = PolicyService(
             settings.policy,
             settings.allocator,
@@ -253,6 +255,8 @@ class RobotOrchestrator:
             legacy_fill_payload=self._legacy_fill_payload,
         )
         self._live_runtime_diagnostics = self._fresh_live_runtime_diagnostics()
+        self._last_live_preflight_ok = False
+        self._last_live_ordering_allowed = False
 
     def _legacy_policy_why(self, why: dict) -> dict:
         keys = [
@@ -334,6 +338,27 @@ class RobotOrchestrator:
 
     def _kill_file_path(self) -> str:
         return os.path.join(self.settings.storage.run_dir, "KILL")
+
+    def _pause_file_path(self) -> str:
+        return os.path.join(self.settings.storage.run_dir, "PAUSE.json")
+
+    def _pause_marker(self) -> dict[str, object] | None:
+        path = Path(self._pause_file_path())
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        reason = str(payload.get("reason", "")).strip() or "operator_pause"
+        requested_at = str(payload.get("requested_at", "")).strip()
+        return {
+            "pause_path": str(path),
+            "reason": reason,
+            "requested_at": requested_at,
+        }
 
     def _doctrine_block_map(self) -> dict[str, list[str]]:
         return {
@@ -598,13 +623,91 @@ class RobotOrchestrator:
             "emergency_freeze": f"python3 -m autonomous_investment_robot flatten --config {config_path} --freeze-only --reason operator_freeze",
             "emergency_flatten": f"python3 -m autonomous_investment_robot flatten --config {config_path} --scope all --reason operator_flatten",
         }
-        return {
+        config_truth = self.runtime_metadata.config_truth_report(harmony_payload=harmony_payload)
+        release_manifest = self.runtime_metadata.release_manifest()
+        deployment_stamp = self.runtime_metadata.deployment_stamp()
+        runtime_fingerprint = self.runtime_metadata.runtime_fingerprint()
+        live_safety_summary = self.runtime_metadata.live_safety_summary(
+            preflight_ok=preflight_ok,
+            preflight_reason=preflight_reason,
+            ordering_allowed=ordering_allowed,
+            confidence=confidence,
+            recovery_action=recovery_decision.action,
+        )
+        readiness_summary = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "runtime_mode": mode.value,
+            "rollout_stage": stage.value,
+            "provider_id": self.settings.execution.provider_id,
+            "readiness_ready": bool(tiny_live_readiness["ready"] if stage == RolloutStage.TINY_LIVE else safety_preflight["safety_ready"]),
+            "preflight_ok": preflight_ok,
+            "ordering_allowed": ordering_allowed,
+            "restart_state_confidence": confidence,
+            "recovery_action": recovery_decision.action,
+            "blocking_reasons": [] if safety_preflight["safety_ready"] else tiny_live_readiness["blocking_reasons"],
+        }
+        health_summary = self.runtime_metadata.health_summary(
+            preflight_ok=preflight_ok,
+            ordering_allowed=ordering_allowed,
+            throughput=self._throughput_snapshot(),
+            failure_taxonomy=dict(self._live_runtime_diagnostics.get("failure_taxonomy", {})),
+        )
+        blocked_explainability = {
+            "action_state": "blocked_preflight",
+            "reason_codes": sorted(
+                {
+                    preflight_reason,
+                    f"restart_state:{confidence}",
+                    f"recovery:{recovery_decision.action}",
+                }
+            ),
+            "operator_rationale": {
+                "forecast_regime": "",
+                "market_watch_action": None,
+                "market_integrity_action": None,
+                "doctrine_action": "blocked",
+                "size_multiplier": 0.0,
+            },
+            "investor_rationale": {
+                "thesis": "capital_protection_blocks_until_truth_and_execution_preflight_are_verified",
+                "capital_protection": "no_live_ordering_without_preflight_reconciliation_and_recovery_clearance",
+                "why_chosen_over_alternatives": {
+                    "no_trade_reason": preflight_reason,
+                    "meta_governor_action": "blocked_preflight",
+                    "risk_reason": confidence,
+                    "shadow_rival_action": None,
+                    "recommended_action": "blocked_preflight",
+                },
+            },
+        }
+        artifact_index = {
+            "run_dir": self.settings.storage.run_dir,
+            "stage": stage.value,
+            "files": [],
+        }
+        paths = {
             "safety_preflight_live_target": self._write_json_artifact("safety_preflight_live_target.json", safety_preflight),
             "rollback_preflight_liveprofit_paper": self._write_json_artifact("rollback_preflight_liveprofit_paper.json", rollback_preflight),
             "tiny_live_readiness_report": self._write_json_artifact("tiny_live_readiness_report.json", tiny_live_readiness),
             "tiny_live_envelope_summary": self._write_json_artifact("tiny_live_envelope_summary.json", tiny_live_envelope),
             "live_operator_start_procedure": self._write_json_artifact("live_operator_start_procedure.json", start_procedure),
+            "config_truth_report": self._write_json_artifact("config_truth_report.json", config_truth),
+            "release_manifest": self._write_json_artifact("release_manifest.json", release_manifest),
+            "deployment_stamp": self._write_json_artifact("deployment_stamp.json", deployment_stamp),
+            "runtime_fingerprint": self._write_json_artifact("runtime_fingerprint.json", runtime_fingerprint),
+            "readiness_summary": self._write_json_artifact("readiness_summary.json", readiness_summary),
+            "live_safety_summary": self._write_json_artifact("live_safety_summary.json", live_safety_summary),
+            "health_summary": self._write_json_artifact("health_summary.json", health_summary),
+            "throughput_diagnostics": self._write_json_artifact("throughput_diagnostics.json", self._throughput_snapshot()),
+            "failure_taxonomy": self._write_json_artifact(
+                "failure_taxonomy.json",
+                dict(self._live_runtime_diagnostics.get("failure_taxonomy", {})),
+            ),
+            "decision_explainability": self._write_json_artifact("decision_explainability.json", blocked_explainability),
         }
+        artifact_index["files"] = sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*"))
+        paths["live_artifact_index"] = self._write_json_artifact("live_artifact_index.json", artifact_index)
+        return paths
 
     def _live_capability_bundle(self, *, market: object, decision_ctx: object) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], dict[str, dict[str, object]]]:
         event_report = getattr(market, "event_intelligence_report", None)
@@ -670,6 +773,15 @@ class RobotOrchestrator:
         self._write_json_artifact("throughput_diagnostics.json", throughput)
         self._write_json_artifact("failure_taxonomy.json", throughput.get("failure_taxonomy", {}))
         self._write_json_artifact("decision_explainability.json", explainability)
+        self._write_json_artifact(
+            "health_summary.json",
+            self.runtime_metadata.health_summary(
+                preflight_ok=bool(self._last_live_preflight_ok),
+                ordering_allowed=bool(self._last_live_ordering_allowed),
+                throughput=throughput,
+                failure_taxonomy=throughput.get("failure_taxonomy", {}),
+            ),
+        )
         artifact_index["files"] = sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*"))
         self._write_json_artifact("live_artifact_index.json", artifact_index)
         summary = {
@@ -892,6 +1004,8 @@ class RobotOrchestrator:
         steps = 0
         last_recon_ok = True
         latest_operator_summary_path = ""
+        pause_active = False
+        pause_reason = ""
 
         self.ops.audit_event(
             "live_loop_start",
@@ -917,6 +1031,51 @@ class RobotOrchestrator:
             )
             if stop_result is not None:
                 return stop_result
+
+            pause_marker = self._pause_marker()
+            if pause_marker is not None:
+                marker_reason = str(pause_marker["reason"])
+                if not pause_active or pause_reason != marker_reason:
+                    payload = {
+                        "control_surface": "pause_marker",
+                        "action": "pause",
+                        "mode": mode.value,
+                        "steps": steps,
+                        "pause_path": pause_marker["pause_path"],
+                        "reason": marker_reason,
+                        "requested_at": pause_marker["requested_at"],
+                    }
+                    self.ops.audit_event("operator_pause", payload)
+                    self.observability.journal("control_journal", payload)
+                pause_active = True
+                pause_reason = marker_reason
+                self._live_runtime_diagnostics["operator_pause_blocks"] = int(self._live_runtime_diagnostics.get("operator_pause_blocks", 0)) + 1
+                self._record_live_reason(reason=f"operator_pause:{marker_reason}", surface="control")
+                self.ops.export_prometheus()
+                self.ops.export_dashboard_snapshot()
+                if max_steps and steps >= max_steps:
+                    return {
+                        "status": "ok",
+                        "mode": mode.value,
+                        "reason": "max_steps_reached",
+                        "steps": steps,
+                        "operator_summary_path": latest_operator_summary_path,
+                    }
+                time.sleep(poll_s)
+                continue
+            if pause_active:
+                payload = {
+                    "control_surface": "pause_marker",
+                    "action": "resume",
+                    "mode": mode.value,
+                    "steps": steps,
+                    "pause_path": self._pause_file_path(),
+                    "reason": pause_reason,
+                }
+                self.ops.audit_event("operator_resume", payload)
+                self.observability.journal("control_journal", payload)
+                pause_active = False
+                pause_reason = ""
 
             try:
                 market = self.live_market.collect(
@@ -1444,6 +1603,8 @@ class RobotOrchestrator:
                 and recovery_decision.action not in {"degrade", "flatten_only", "halt", "halt_and_flatten"}
                 and mode != ExecutionMode.LIVE_READONLY
             )
+            self._last_live_preflight_ok = bool(ok_preflight)
+            self._last_live_ordering_allowed = bool(ordering_allowed)
             readiness_artifacts = self._emit_live_readiness_artifacts(
                 symbol=symbol,
                 mode=mode,

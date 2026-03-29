@@ -37,6 +37,7 @@ source .env
 
 # 3. Run tests to verify environment
 .venv/bin/pytest -q
+python3 scripts/deployment_preflight.py
 ```
 
 ---
@@ -166,6 +167,9 @@ cat runs/<run_id>/safety_preflight_live_target.json
 cat runs/<run_id>/rollback_preflight_liveprofit_paper.json
 cat runs/<run_id>/tiny_live_envelope_summary.json
 cat runs/<run_id>/live_operator_start_procedure.json
+python3 scripts/runtime_status.py --run-dir runs/<run_id>
+python3 scripts/runtime_healthcheck.py --run-dir runs/<run_id>
+python3 scripts/collect_diagnostics_bundle.py --run-dir runs/<run_id>
 ```
 
 Start the monitoring stack (if Docker available):
@@ -192,6 +196,8 @@ docker compose -f infra/docker-compose.yml config -q && echo "OK"
 
 # Run full validation suite
 bash scripts/validate_compose_runtime.sh
+python3 scripts/deployment_preflight.py
+python3 scripts/verify_server_parity.py --runtime-path /opt/trading-bot/core
 ```
 
 ---
@@ -200,6 +206,19 @@ bash scripts/validate_compose_runtime.sh
 
 See `docs/redis_postgres_validation.md` for current state.
 See `docs/architecture_truth.md` for full feature classification.
+
+This surface remains explicitly non-production in the current repo. `redis_backend.py` and `postgres_mirror.py` are not implemented, so no deployment or runbook step may claim those paths are live-ready.
+
+## Deployment truth
+
+- `infra/docker-compose.yml` is the only supported compose manifest in this repo, and only for infra dependencies.
+- Root `docker-compose.yml` is explicit `legacy_blocked` ballast and must not be used as a live runtime source.
+- `src/autonomous-investment-robot/` is an archival duplicate snapshot, not the supported source tree.
+- `apps/`, `tools/`, `bootstrap_mac.sh`, and `codex_ultra_master_prompt.md` are local-only and excluded from the supported deploy context.
+- Before any restart or deploy:
+  - `python3 scripts/deployment_preflight.py`
+  - `python3 scripts/verify_server_parity.py --runtime-path <runtime_path>`
+  - `python3 scripts/tiny_live_promotion_readiness.py --run-dir <run_dir> --secrets-dir <secrets_dir>`
 
 Distributed mode requires:
 1. `services/distributed/redis_backend.py` implementation

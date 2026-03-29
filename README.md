@@ -144,7 +144,21 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.krake
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
+python3 scripts/deployment_preflight.py
+python3 scripts/runtime_status.py --run-dir runs/<run_id>
+python3 scripts/runtime_healthcheck.py --run-dir runs/<run_id>
+python3 scripts/collect_diagnostics_bundle.py --run-dir runs/<run_id>
+python3 scripts/verify_server_parity.py --runtime-path /opt/trading-bot/core
 ```
+
+## Deployment truth
+- `infra/docker-compose.yml` is the only supported compose manifest in this repo, and only for infra dependencies.
+- Root `docker-compose.yml` is an explicit `legacy_blocked` manifest. It is not a supported live runtime source.
+- `src/autonomous-investment-robot/` is an archival duplicate snapshot and is excluded from the supported build/deploy surface.
+- `apps/`, `tools/`, `bootstrap_mac.sh`, and `codex_ultra_master_prompt.md` are excluded from the supported deploy context.
+- Use `python3 scripts/deployment_preflight.py` before any deploy or restart decision.
+- Use `python3 scripts/verify_server_parity.py --runtime-path <path>` after sync/deploy to prove local/runtime parity.
+- Use `python3 scripts/tiny_live_promotion_readiness.py --run-dir <run_dir> --secrets-dir <secrets_dir>` before any readonly/shadow -> tiny_live promotion.
 
 ## Requested doctrine status
 - Launch-gated live target: `kraken_spot` only.

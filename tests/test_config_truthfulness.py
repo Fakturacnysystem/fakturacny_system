@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NON_PAPER_CONFIGS = [
@@ -64,3 +66,20 @@ def test_tiny_live_config_is_stricter_than_normal_live() -> None:
     assert tiny["risk"]["max_exposure_notional"] < normal["risk"]["max_exposure_notional"]
     assert tiny["risk"]["max_orders_per_min"] <= normal["risk"]["max_orders_per_min"]
     assert tiny["risk"]["max_spread_bps"] <= normal["risk"]["max_spread_bps"]
+
+
+def test_runtime_surface_manifest_classifies_legacy_and_duplicate_paths() -> None:
+    payload = json.loads((REPO_ROOT / "ops" / "runtime_surface.json").read_text(encoding="utf-8"))
+
+    assert payload["supported_runtime"]["infra_manifests"] == ["infra/docker-compose.yml"]
+    assert "docker-compose.yml" in payload["legacy_blocked"]["manifests"]
+    assert "src/autonomous-investment-robot" in payload["archival_duplicate"]["paths"]
+
+
+def test_root_compose_is_sanitized_legacy_manifest() -> None:
+    payload = json.loads(json.dumps(yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))))
+
+    assert payload["x-runtime-classification"]["status"] == "legacy_blocked"
+    services = payload["services"]
+    assert "legacy-root-compose-blocked" in services
+    assert "build" not in services["legacy-root-compose-blocked"]

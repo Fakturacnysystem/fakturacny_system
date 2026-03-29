@@ -11,9 +11,27 @@ mkdir -p "$pack_dir"
 
 git -C "$repo_root" rev-parse HEAD > "$pack_dir/git_head.txt"
 git -C "$repo_root" status --short > "$pack_dir/git_status.txt" || true
-git -C "$repo_root" diff -- src tests scripts .github/workflows > "$pack_dir/tracked_diff.patch" || true
+git -C "$repo_root" diff -- src tests scripts docs ops docker-compose.yml infra > "$pack_dir/tracked_diff.patch" || true
 find "$repo_root" -maxdepth 1 -name 'config*.yaml' -print0 | while IFS= read -r -d '' cfg; do
   cp "$cfg" "$pack_dir/"
+done
+for rel in \
+  ops/runtime_surface.json \
+  .dockerignore \
+  docker-compose.yml \
+  infra/docker-compose.yml \
+  scripts/deployment_preflight.py \
+  scripts/runtime_status.py \
+  scripts/runtime_healthcheck.py \
+  scripts/collect_diagnostics_bundle.py \
+  scripts/verify_server_parity.py \
+  scripts/validate_deployment_syntax.py \
+  README.md \
+  docs/operator_runbook.md; do
+  if [ -f "$repo_root/$rel" ]; then
+    mkdir -p "$pack_dir/$(dirname "$rel")"
+    cp "$repo_root/$rel" "$pack_dir/$rel"
+  fi
 done
 
 echo "$pack_dir"

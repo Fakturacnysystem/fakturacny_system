@@ -9,8 +9,8 @@ if ! command -v "$PYTEST_BIN" >/dev/null 2>&1; then
 fi
 
 "$PYTEST_BIN" -q tests/test_kraken_provider.py tests/test_kraken_connector.py
-run_robot live-readonly --config config.kraken_derivatives.live_readonly.yaml
+run_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 
 echo
-echo "Kraken signed trading adapter is implemented (REST v3 core endpoints) but must be validated on testnet first."
-echo "Next step: ./scripts/run_kraken_testnet.sh"
+echo "Kraken SPOT readonly validation path completed."
+echo "Next step: ./scripts/run_kraken_spot_readonly_analysis.sh"

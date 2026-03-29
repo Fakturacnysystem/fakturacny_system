@@ -1,18 +1,27 @@
+import json
+import os
 from pathlib import Path
 import time
+from datetime import datetime, timezone
 
 from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings
 from autonomous_investment_robot.connectors.cex.binance_um_perps import BinanceConnectorError, BinanceUMPerpsConnector
-from autonomous_investment_robot.connectors.cex.kraken_derivatives import KrakenDerivativesConnector
 from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.services.data_ingestion.binance_ws_streams import BinanceWSStreams
 from autonomous_investment_robot.services.data_ingestion.service import DataIngestionService
-from autonomous_investment_robot.services.execution.live_binance_service import LiveBinanceService
-from autonomous_investment_robot.services.execution.live_kraken_service import LiveKrakenService
 from autonomous_investment_robot.services.execution.live_kraken_spot_service import LiveKrakenSpotService
 from autonomous_investment_robot.services.human_escalation_layer.service import HumanEscalationLayer
 from autonomous_investment_robot.services.replay.engine import ReplayEngine
+
+
+def _control_marker_payload(*, action: str, reason: str) -> dict:
+    return {
+        "action": action,
+        "reason": reason,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "source": "operator_cli",
+    }
 
 
 def run_with_config(config_path: str) -> dict:
@@ -184,7 +193,34 @@ def emergency_flatten(
     try:
         settings = RobotSettings.from_file(config_path)
     except Exception as exc:
-        return {"status": "blocked", "reason": str(exc), "config": config_path}
+        # Protective operations should not be blocked by live-launch unlock friction.
+        # Retry once with temporary unlock flags, but still require real credentials
+        # and a successful provider preflight before any flatten action is sent.
+        first_error = str(exc)
+        if "Live trading blocked until configured:" not in first_error:
+            return {"status": "blocked", "reason": first_error, "config": config_path}
+        retry_env = {
+            "ENABLE_LIVE_TRADING": "true",
+            "ACK_I_UNDERSTAND_RISKS": "true",
+            "ENABLE_FULL_LIVE_STAGE": "true",
+        }
+        original_env = {key: os.getenv(key) for key in retry_env}
+        try:
+            for key, value in retry_env.items():
+                os.environ[key] = value
+            settings = RobotSettings.from_file(config_path)
+        except Exception as retry_exc:
+            return {
+                "status": "blocked",
+                "reason": f"{first_error}; protective_retry_failed:{retry_exc}",
+                "config": config_path,
+            }
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     if settings.execution.provider_id != "kraken_spot":
         return {
             "status": "blocked",
@@ -197,45 +233,48 @@ def emergency_flatten(
             "reason": f"flatten_blocked_invalid_mode:{settings.execution_mode_enum().value}",
             "config": config_path,
         }
-    if settings.execution.provider_id == "kraken_derivatives":
-        live = LiveKrakenService(
-            settings=settings,
-            run_id=settings.storage.run_dir.replace("/", "_"),
-            connector=KrakenDerivativesConnector(settings.execution.kraken),
-        )
-    elif settings.execution.provider_id == "kraken_spot":
+    try:
         live = LiveKrakenSpotService(
             settings=settings,
             run_id=settings.storage.run_dir.replace("/", "_"),
             connector=KrakenSpotConnector(settings.execution.kraken_spot),
         )
-    elif settings.execution.provider_id == "binance_um_perps":
-        live = LiveBinanceService(
-            settings=settings,
-            run_id=settings.storage.run_dir.replace("/", "_"),
-            connector=BinanceUMPerpsConnector(settings.execution.binance),
-        )
-    else:
-        return {"status": "blocked", "reason": f"unsupported_provider:{settings.execution.provider_id}"}
-    ok, preflight_reason = live.preflight()
+    except Exception as exc:
+        return {"status": "blocked", "reason": str(exc), "config": config_path}
+    try:
+        ok, preflight_reason = live.preflight()
+    except Exception as exc:
+        return {"status": "blocked", "reason": str(exc), "config": config_path}
     if not ok:
         return {"status": "blocked", "reason": preflight_reason}
     if freeze_only:
         if not hasattr(live, "freeze_new_openings"):
             return {"status": "blocked", "reason": "freeze_only_not_supported"}
-        frozen, freeze_reason = live.freeze_new_openings(reason=reason)
+        try:
+            frozen, freeze_reason = live.freeze_new_openings(reason=reason)
+        except Exception as exc:
+            return {"status": "blocked", "reason": str(exc), "config": config_path}
         return {"status": "ok" if frozen else "error", "reason": freeze_reason, "freeze_only": True}
     if symbol is not None:
         if not hasattr(live, "flatten_symbol"):
             return {"status": "blocked", "reason": "flatten_symbol_not_supported"}
-        closed, close_reason = live.flatten_symbol(symbol, reason=reason)
+        try:
+            closed, close_reason = live.flatten_symbol(symbol, reason=reason)
+        except Exception as exc:
+            return {"status": "blocked", "reason": str(exc), "config": config_path}
         return {"status": "ok" if closed else "error", "reason": close_reason, "scope": "symbol", "symbol": symbol}
     if scope != "all":
         if not hasattr(live, "flatten_scope"):
             return {"status": "blocked", "reason": "flatten_scope_not_supported"}
-        closed, close_reason = live.flatten_scope(scope=scope, symbol=symbol, reason=reason)
+        try:
+            closed, close_reason = live.flatten_scope(scope=scope, symbol=symbol, reason=reason)
+        except Exception as exc:
+            return {"status": "blocked", "reason": str(exc), "config": config_path}
         return {"status": "ok" if closed else "error", "reason": close_reason, "scope": scope, "symbol": symbol}
-    closed, close_reason = live.flatten_all_positions()
+    try:
+        closed, close_reason = live.flatten_all_positions()
+    except Exception as exc:
+        return {"status": "blocked", "reason": str(exc), "config": config_path}
     return {"status": "ok" if closed else "error", "reason": close_reason, "scope": "all"}
 
 
@@ -246,6 +285,45 @@ def request_kill(config_path: str, reason: str = "operator_cli_kill") -> dict:
     marker = run_dir / "KILL"
     marker.write_text(reason + "\n", encoding="utf-8")
     return {"status": "kill_requested", "reason": reason, "kill_file": str(marker)}
+
+
+def request_pause(config_path: str, reason: str = "operator_cli_pause") -> dict:
+    settings = RobotSettings.from_file(config_path)
+    run_dir = Path(settings.storage.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    marker = run_dir / "PAUSE.json"
+    already_present = marker.exists()
+    marker.write_text(json.dumps(_control_marker_payload(action="pause", reason=reason), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "status": "pause_requested",
+        "reason": reason,
+        "pause_file": str(marker),
+        "already_present": already_present,
+    }
+
+
+def resume_runtime(config_path: str, reason: str = "operator_cli_resume") -> dict:
+    settings = RobotSettings.from_file(config_path)
+    run_dir = Path(settings.storage.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    marker = run_dir / "PAUSE.json"
+    prior_reason = ""
+    was_paused = marker.exists()
+    if was_paused:
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                prior_reason = str(payload.get("reason", ""))
+        except Exception:
+            prior_reason = ""
+        marker.unlink()
+    return {
+        "status": "resume_requested",
+        "reason": reason,
+        "pause_file": str(marker),
+        "was_paused": was_paused,
+        "prior_pause_reason": prior_reason,
+    }
 
 
 def acknowledge_manual_review(

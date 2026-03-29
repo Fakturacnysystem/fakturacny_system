@@ -3,7 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 
-from autonomous_investment_robot.main import acknowledge_manual_review, emergency_flatten, request_kill, run_record, run_replay, run_replay_report, run_with_config
+from autonomous_investment_robot.main import (
+    acknowledge_manual_review,
+    emergency_flatten,
+    request_kill,
+    request_pause,
+    resume_runtime,
+    run_record,
+    run_replay,
+    run_replay_report,
+    run_with_config,
+)
 
 
 def main() -> None:
@@ -41,6 +51,14 @@ def main() -> None:
     p_flatten.add_argument("--freeze-only", action="store_true")
     p_flatten.add_argument("--reason", default="operator_cli_flatten")
 
+    p_pause = sub.add_parser("pause")
+    p_pause.add_argument("--config", required=True)
+    p_pause.add_argument("--reason", default="operator_cli_pause")
+
+    p_resume = sub.add_parser("resume")
+    p_resume.add_argument("--config", required=True)
+    p_resume.add_argument("--reason", default="operator_cli_resume")
+
     p_ack = sub.add_parser("ack-review")
     p_ack.add_argument("--run-dir", required=True)
     p_ack.add_argument("--decision-key", default=None)
@@ -76,6 +94,10 @@ def main() -> None:
             freeze_only=args.freeze_only,
             reason=args.reason,
         )
+    elif args.cmd == "pause":
+        out = request_pause(args.config, reason=args.reason)
+    elif args.cmd == "resume":
+        out = resume_runtime(args.config, reason=args.reason)
     elif args.cmd == "ack-review":
         out = acknowledge_manual_review(
             args.run_dir,
