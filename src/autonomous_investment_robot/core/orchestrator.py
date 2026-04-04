@@ -456,6 +456,47 @@ class RobotOrchestrator:
                 rows.append(payload)
         return rows
 
+    def _latest_jsonl_artifact(self, name: str) -> dict[str, object]:
+        rows = self._read_jsonl_artifact(name)
+        return rows[-1] if rows else {}
+
+    def _build_execution_lifecycle_report(
+        self,
+        *,
+        execution_result: object | None,
+        health_summary: dict[str, object],
+    ) -> dict[str, object]:
+        result_meta = getattr(execution_result, "metadata", {}) if execution_result is not None else {}
+        result_meta = result_meta if isinstance(result_meta, dict) else {}
+        lifecycle_from_result = dict(result_meta.get("lifecycle_proof", {}) or {})
+        latest_lifecycle = self._latest_jsonl_artifact("lifecycle_evidence_journal.jsonl")
+        lifecycle_summary = latest_lifecycle if latest_lifecycle.get("type") == "summary" else {}
+        proof_from_journal = dict(lifecycle_summary.get("proof", {}) or {})
+        latest_reconciliation = self._latest_jsonl_artifact("reconciliation_journal.jsonl")
+        reconciliation_details = dict(latest_reconciliation.get("details", {}) or {})
+        return {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": (
+                str(getattr(execution_result, "status", "") or lifecycle_summary.get("result_status", "") or latest_lifecycle.get("to_state", "")).strip()
+                or None
+            ),
+            "reason": (
+                str(getattr(execution_result, "reason", "") or proof_from_journal.get("last_reason", "") or lifecycle_summary.get("reason", "")).strip()
+                or None
+            ),
+            "trade_path_state": str(health_summary.get("trade_path_state", "") or ""),
+            "lifecycle_proof": lifecycle_from_result or proof_from_journal,
+            "gap_reasons": list(lifecycle_summary.get("gap_reasons", []) or []),
+            "reconciliation": {
+                "ok": latest_reconciliation.get("ok"),
+                "code": latest_reconciliation.get("code"),
+                "action": latest_reconciliation.get("action"),
+                "failing_domains": list(reconciliation_details.get("failing_domains", []) or []),
+                "truth_confidence": reconciliation_details.get("truth_confidence"),
+            },
+            "top_blockers": list(health_summary.get("top_blockers", []) or [])[:5],
+        }
+
     def _regime_architecture_reports(self, *, symbol: str, market: object) -> dict[str, object]:
         assessment = getattr(market, "regime_assessment", None)
         if assessment is None:
@@ -607,14 +648,10 @@ class RobotOrchestrator:
             if isinstance(provider_capability, dict) and str(provider_capability.get("user_stream_confidence", "")).startswith("authoritative")
             else "degraded",
         }
-        execution_lifecycle_report = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "status": None if execution_result is None else str(getattr(execution_result, "status", "")),
-            "reason": None if execution_result is None else str(getattr(execution_result, "reason", "")),
-            "lifecycle_proof": {}
-            if execution_result is None
-            else dict((((getattr(execution_result, "metadata", {}) or {})).get("lifecycle_proof", {}) if isinstance(getattr(execution_result, "metadata", {}) or {}, dict) else {})),
-        }
+        execution_lifecycle_report = self._build_execution_lifecycle_report(
+            execution_result=execution_result,
+            health_summary=health_summary,
+        )
         order_reject_taxonomy = dict(health_summary.get("failure_taxonomy", {}) or {})
         maker_first_effectiveness = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -1771,6 +1808,10 @@ class RobotOrchestrator:
             failure_taxonomy=dict(self._live_runtime_diagnostics.get("failure_taxonomy", {})),
             blocking_reasons=blocking_reasons,
         )
+        execution_lifecycle_report = self._build_execution_lifecycle_report(
+            execution_result=None,
+            health_summary=health_summary,
+        )
         blocked_trace = self._blocked_preflight_trace(
             symbol=symbol,
             preflight_ok=preflight_ok,
@@ -1887,6 +1928,7 @@ class RobotOrchestrator:
             "readiness_summary": self._write_json_artifact("readiness_summary.json", readiness_summary),
             "live_safety_summary": self._write_json_artifact("live_safety_summary.json", live_safety_summary),
             "health_summary": self._write_json_artifact("health_summary.json", health_summary),
+            "execution_lifecycle_report": self._write_json_artifact("execution_lifecycle_report.json", execution_lifecycle_report),
             "throughput_diagnostics": self._write_json_artifact("throughput_diagnostics.json", self._throughput_snapshot()),
             "failure_taxonomy": self._write_json_artifact(
                 "failure_taxonomy.json",

@@ -3,7 +3,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from autonomous_investment_robot.config.settings import ExecutionSettings, RiskLimits, RobotSettings, StorageSettings, TCOSettings
+from autonomous_investment_robot.config.settings import (
+    DoctrineSettings,
+    ExecutionSettings,
+    HarmonySettings,
+    LiveUnlockSettings,
+    MarketWatchSettings,
+    RiskLimits,
+    RobotSettings,
+    SafetySettings,
+    StorageSettings,
+    TCOSettings,
+)
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.main import run_with_config
 from autonomous_investment_robot.services.paper_runtime import MetricsCoordinator, PaperDecisionCoordinator
@@ -951,3 +962,196 @@ def test_live_runtime_summary_uses_terminal_reject_truth_and_current_capability_
     assert provider_stage["normalized_inputs"]["lifecycle_snapshot_count"] == 1.0
     assert provider_stage["reasons"] == ["user_stream_not_connected"]
     assert operator_summary["current_blocker_chain"][0]["code"] == 'maker_reject:kraken {"error":["EOrder:Insufficient funds"]}'
+
+
+def test_live_runtime_summary_rehydrates_execution_lifecycle_report_from_journals(tmp_path):
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        universe=["BTC/USD"],
+        canary_mode=True,
+        execution=ExecutionSettings(mode="paper", provider_id="kraken_spot"),
+        risk=RiskLimits(
+            max_daily_loss_pct=1.0,
+            max_weekly_loss_pct=2.0,
+            max_drawdown_pct=2.0,
+            max_position_notional=10.0,
+            max_exposure_notional=10.0,
+            max_symbol_exposure_notional=10.0,
+            max_cluster_exposure_notional=10.0,
+            max_orders_per_min=5,
+            leverage=0,
+            max_spread_bps=10.0,
+            min_depth_notional=10.0,
+            stale_data_seconds=10.0,
+            min_margin_buffer=2.0,
+            max_funding_cost_per_day=1.0,
+            max_oi_spike_pct=1.0,
+            max_liquidation_spike=1.0,
+            divergence_threshold_bps=10.0,
+            crowding_score_kill=10.0,
+        ),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    orchestrator = RobotOrchestrator(settings)
+    orchestrator._last_live_preflight_ok = True
+    orchestrator._last_live_ordering_allowed = True
+    orchestrator._last_live_blocking_reasons = []
+    orchestrator._append_jsonl_artifact(
+        "lifecycle_evidence_journal.jsonl",
+        {
+            "type": "summary",
+            "symbol": "BTC/USD",
+            "provider_id": "kraken_spot",
+            "result_status": "timeout",
+            "gap_reasons": ["normalized_fill_missing"],
+            "proof": {
+                "requested": True,
+                "submitted": True,
+                "exchange_acknowledged": True,
+                "terminal_observed": True,
+                "last_terminal_state": "CANCELLED",
+                "last_reason": "lifecycle_proof_timeout",
+                "reconciliation_complete": False,
+            },
+        },
+    )
+    orchestrator._append_jsonl_artifact(
+        "reconciliation_journal.jsonl",
+        {
+            "ok": False,
+            "code": "live_fill_truth_unavailable",
+            "action": "flatten_only",
+            "details": {
+                "failing_domains": ["fill_completeness"],
+                "truth_confidence": {
+                    "fill_truth_confidence": {"level": "unavailable"},
+                },
+            },
+        },
+    )
+    market = SimpleNamespace(
+        forecast=SimpleNamespace(symbol="BTC/USD", regime="RANGE", liquidity_regime="GOOD"),
+        market_integrity=SimpleNamespace(action="continue", score=0.95, reasons=[]),
+        market_watch=SimpleNamespace(action="continue", score=0.9, spread_score=1.0, liquidity_score=1.0, reasons=[], metadata={}),
+        edge_immunity_decision=None,
+        quantum_state=None,
+        provider_capability=SimpleNamespace(
+            user_stream_confidence="single_process_rest_repair",
+            lifecycle_completeness="strong_without_replace",
+            metadata={"capability_evidence": {"partial": False, "lifecycle_snapshot_count": 1, "freshness_seconds": 0.2, "classifications": {}}},
+        ),
+        event_intelligence_report=SimpleNamespace(partial=False),
+        execution_quality=SimpleNamespace(fill_probability=0.0),
+        regime_assessment=None,
+        features={},
+    )
+    decision_ctx = SimpleNamespace(
+        health_snapshot=SimpleNamespace(action="continue"),
+        meta_governor_decision=SimpleNamespace(action="continue", reasons=[], size_multiplier=1.0),
+        policy_decision=SimpleNamespace(symbol="BTC/USD", trade_allowed=True, why={"decision_doctrine": {"recommended_action": "continue", "reasons": []}}),
+        risk_decision=SimpleNamespace(allowed=True, reason="", details={}, adjusted_notional=0.0),
+        adjusted_intent=None,
+        execution_plan=None,
+        inventory_state=None,
+        profitability_context=None,
+        synthetic_affect_state=None,
+        capital_sovereignty_decision=None,
+        position_morph_plan=None,
+        adaptive_exit_allocation=None,
+        execution_simulation_report=None,
+        human_escalation_decision=None,
+    )
+
+    orchestrator._emit_live_runtime_summary(
+        symbol="BTC/USD",
+        mode=settings.execution_mode_enum(),
+        market=market,
+        decision_ctx=decision_ctx,
+        execution_result=None,
+        step=5,
+    )
+
+    execution_lifecycle = json.loads((Path(settings.storage.run_dir) / "execution_lifecycle_report.json").read_text(encoding="utf-8"))
+
+    assert execution_lifecycle["status"] == "timeout"
+    assert execution_lifecycle["reason"] == "lifecycle_proof_timeout"
+    assert execution_lifecycle["lifecycle_proof"]["terminal_observed"] is True
+    assert execution_lifecycle["gap_reasons"] == ["normalized_fill_missing"]
+    assert execution_lifecycle["reconciliation"]["code"] == "live_fill_truth_unavailable"
+    assert execution_lifecycle["reconciliation"]["failing_domains"] == ["fill_completeness"]
+
+
+def test_live_readiness_artifacts_overwrite_stale_execution_lifecycle_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    monkeypatch.setenv("TESTNET_VALIDATED", "true")
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        universe=["BTC/USD"],
+        canary_mode=True,
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(
+            live_unlock=LiveUnlockSettings(
+                enable_live_trading=True,
+                ack_i_understand_risks=True,
+                require_testnet_passed=True,
+            )
+        ),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True),
+        market_watch=MarketWatchSettings(enabled=True),
+        risk=RiskLimits(
+            max_daily_loss_pct=1.0,
+            max_weekly_loss_pct=2.0,
+            max_drawdown_pct=2.0,
+            max_position_notional=10.0,
+            max_exposure_notional=10.0,
+            max_symbol_exposure_notional=10.0,
+            max_cluster_exposure_notional=10.0,
+            max_orders_per_min=5,
+            leverage=0,
+            max_spread_bps=10.0,
+            min_depth_notional=10.0,
+            stale_data_seconds=10.0,
+            min_margin_buffer=2.0,
+            max_funding_cost_per_day=1.0,
+            max_oi_spike_pct=1.0,
+            max_liquidation_spike=1.0,
+            divergence_threshold_bps=10.0,
+            crowding_score_kill=10.0,
+        ),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+    )
+    orchestrator = RobotOrchestrator(settings)
+    stale_path = Path(settings.storage.run_dir) / "execution_lifecycle_report.json"
+    stale_path.write_text(json.dumps({"status": "timeout", "reason": "stale"}, indent=2), encoding="utf-8")
+
+    orchestrator._emit_live_readiness_artifacts(
+        symbol="BTC/USD",
+        mode=settings.execution_mode_enum(),
+        harmony_payload={},
+        preflight_ok=True,
+        preflight_reason="ok",
+        confidence="degraded",
+        confidence_details={},
+        recovery_decision=SimpleNamespace(action="degrade"),
+        ordering_allowed=False,
+    )
+
+    execution_lifecycle = json.loads(stale_path.read_text(encoding="utf-8"))
+
+    assert execution_lifecycle["status"] is None
+    assert execution_lifecycle["reason"] is None
+    assert execution_lifecycle["trade_path_state"] == "not_attempted"
+    assert execution_lifecycle["top_blockers"][0]["code"] == "restart_state:degraded"
