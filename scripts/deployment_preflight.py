@@ -136,7 +136,7 @@ def _compose_checks(runtime_surface: dict[str, Any]) -> list[dict[str, Any]]:
     checks.append(
         _check(
             "server_compose_trading_engine_build_context",
-            server_build.get("context") == "./core" and server_build.get("dockerfile") == "Dockerfile",
+            server_build.get("context") == ".." and server_build.get("dockerfile") == "Dockerfile",
             details={"build": server_build},
         )
     )
@@ -152,6 +152,36 @@ def _compose_checks(runtime_surface: dict[str, Any]) -> list[dict[str, Any]]:
             "server_compose_trading_engine_restart_is_not_always",
             trading_engine.get("restart") != "always",
             details={"restart": trading_engine.get("restart")},
+        )
+    )
+    server_env = (trading_engine.get("environment") or {}) if isinstance(trading_engine, dict) else {}
+    server_volumes = trading_engine.get("volumes") or []
+    checks.append(
+        _check(
+            "server_compose_trading_engine_uses_runtime_env_file",
+            server_env.get("TRADING_ENV_FILE") == "/runtime-secrets/runtime.env",
+            details={"environment": server_env},
+        )
+    )
+    checks.append(
+        _check(
+            "server_compose_trading_engine_uses_runtime_secrets_dir",
+            server_env.get("SECRETS_DIR") == "/runtime-secrets",
+            details={"environment": server_env},
+        )
+    )
+    checks.append(
+        _check(
+            "server_compose_trading_engine_mounts_runtime_secrets",
+            "/home/martin/.config/trading-bot:/runtime-secrets:ro" in server_volumes,
+            details={"volumes": server_volumes},
+        )
+    )
+    checks.append(
+        _check(
+            "server_compose_trading_engine_mounts_repo_root",
+            "..:/app" in server_volumes,
+            details={"volumes": server_volumes},
         )
     )
     return checks

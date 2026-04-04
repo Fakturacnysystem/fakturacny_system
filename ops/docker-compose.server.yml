@@ -26,7 +26,7 @@ services:
 
   trading-engine:
     build:
-      context: ./core
+      context: ..
       dockerfile: Dockerfile
     command: ["bash", "scripts/container_start_tiny_live.sh"]
     depends_on:
@@ -43,7 +43,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-trading}
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      SECRETS_DIR: /app/secrets
+      TRADING_ENV_FILE: /runtime-secrets/runtime.env
+      SECRETS_DIR: /runtime-secrets
     healthcheck:
       test:
         [
@@ -55,9 +56,9 @@ services:
       retries: 6
     restart: on-failure:5
     volumes:
-      - ./core:/app
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./backups:/app/backups
-      - ./secrets:/app/secrets:ro
+      - ..:/app
+      - ../logs:/app/logs
+      - ../data:/app/data
+      - ../backups:/app/backups
+      - /home/martin/.config/trading-bot:/runtime-secrets:ro
     working_dir: /app

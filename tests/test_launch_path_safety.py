@@ -16,6 +16,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
+    for key in (
+        "KRAKEN_SPOT_API_KEY",
+        "KRAKEN_SPOT_API_SECRET",
+        "ENABLE_LIVE_TRADING",
+        "ACK_I_UNDERSTAND_RISKS",
+        "ENABLE_FULL_LIVE_STAGE",
+        "TRADING_ENV_FILE",
+        "SECRETS_DIR",
+    ):
+        env.pop(key, None)
     return env
 
 
@@ -394,6 +404,38 @@ def test_script_helper_loads_export_prefixed_runtime_env_from_home_config(tmp_pa
     assert "-m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml" in result.stdout
 
 
+def test_script_helper_strips_shell_quotes_from_export_prefixed_runtime_env(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    config_dir = fake_home / ".config" / "trading-bot"
+    config_dir.mkdir(parents=True)
+    (config_dir / "runtime.env").write_text(
+        "\n".join(
+            [
+                'export KRAKEN_SPOT_API_KEY="home-key"',
+                "export KRAKEN_SPOT_API_SECRET='home-secret'",
+                'export ENABLE_LIVE_TRADING="true"',
+                "export ACK_I_UNDERSTAND_RISKS='true'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = _base_env()
+    env["HOME"] = str(fake_home)
+
+    result = _run(
+        "bash",
+        "-lc",
+        "unset KRAKEN_SPOT_API_KEY KRAKEN_SPOT_API_SECRET ENABLE_LIVE_TRADING ACK_I_UNDERSTAND_RISKS; "
+        "PYTHON_BIN=/bin/echo bash scripts/run_kraken_spot_tiny_live.sh",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "-m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml" in result.stdout
+
+
 def test_container_start_tiny_live_uses_supported_secret_loading(tmp_path: Path) -> None:
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
@@ -426,11 +468,50 @@ def test_container_start_tiny_live_uses_supported_secret_loading(tmp_path: Path)
     assert "-m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml" in result.stdout
 
 
-def test_container_start_tiny_live_downgrades_to_readonly_without_live_prereqs(tmp_path: Path) -> None:
+def test_container_start_tiny_live_prefers_explicit_secrets_dir_over_home_runtime_env(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    config_dir = fake_home / ".config" / "trading-bot"
+    config_dir.mkdir(parents=True)
+    (config_dir / "runtime.env").write_text(
+        "\n".join(
+            [
+                "KRAKEN_SPOT_API_KEY=home-key",
+                "KRAKEN_SPOT_API_SECRET=home-secret",
+                "ENABLE_LIVE_TRADING=true",
+                "ACK_I_UNDERSTAND_RISKS=true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
 
     env = _base_env()
+    env["HOME"] = str(fake_home)
+    env["SECRETS_DIR"] = str(secrets_dir)
+
+    result = _run(
+        "bash",
+        "-lc",
+        "unset KRAKEN_SPOT_API_KEY KRAKEN_SPOT_API_SECRET ENABLE_LIVE_TRADING ACK_I_UNDERSTAND_RISKS; "
+        "CONTAINER_BOOT_READONLY_ONCE=true PYTHON_BIN=/bin/echo bash scripts/container_start_tiny_live.sh",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "-m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml" in result.stdout
+    assert '"missing_tiny_live_prerequisites"' in result.stderr
+
+
+def test_container_start_tiny_live_downgrades_to_readonly_without_live_prereqs(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    env = _base_env()
+    env["HOME"] = str(fake_home)
     env["SECRETS_DIR"] = str(secrets_dir)
 
     result = _run(
@@ -450,8 +531,11 @@ def test_container_start_tiny_live_downgrades_to_readonly_without_live_prereqs(t
 def test_container_start_tiny_live_enforces_minimum_readonly_loop_interval(tmp_path: Path) -> None:
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
 
     env = _base_env()
+    env["HOME"] = str(fake_home)
     env["SECRETS_DIR"] = str(secrets_dir)
     proc = subprocess.Popen(
         (

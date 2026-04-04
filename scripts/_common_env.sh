@@ -19,6 +19,13 @@ load_env_assignments_if_missing() {
     name="${name#"${name%%[![:space:]]*}"}"
     name="${name%"${name##*[![:space:]]}"}"
     value="${value%$'\r'}"
+    if [[ ${#value} -ge 2 ]]; then
+      if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+        value="${value:1:${#value}-2}"
+      elif [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+    fi
     if [[ -n "${!name:-}" ]]; then
       continue
     fi
@@ -61,6 +68,10 @@ load_secret_file_env_if_missing() {
   else
     candidates+=("/app/secrets/${name}" "./secrets/${name}")
   fi
+  candidates+=(
+    "${HOME}/.config/trading-bot/${name}"
+    "${HOME}/.config/trading-bot/secrets/${name}"
+  )
   for candidate in "${candidates[@]}"; do
     if [[ -f "${candidate}" ]]; then
       export "${name}=$(tr -d '\r' < "${candidate}")"

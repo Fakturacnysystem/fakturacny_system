@@ -32,6 +32,10 @@ def test_deployment_preflight_reports_repo_truth_without_hard_failures() -> None
     assert "runtime_surface_points_to_server_compose" in check_names
     assert "runtime_surface_points_to_root_dockerfile" in check_names
     assert "server_compose_trading_engine_uses_supported_command" in check_names
+    assert "server_compose_trading_engine_uses_runtime_env_file" in check_names
+    assert "server_compose_trading_engine_uses_runtime_secrets_dir" in check_names
+    assert "server_compose_trading_engine_mounts_runtime_secrets" in check_names
+    assert "server_compose_trading_engine_mounts_repo_root" in check_names
 
 
 def test_validate_deployment_syntax_accepts_server_manifest() -> None:

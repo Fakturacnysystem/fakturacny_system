@@ -16,6 +16,10 @@ from autonomous_investment_robot.main import (
 )
 
 
+def _print_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, default=str))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd")
@@ -68,7 +72,7 @@ def main() -> None:
     args = parser.parse_args()
     if getattr(args, "kill", False):
         cfg = getattr(args, "config", "config.paper.yaml")
-        print(json.dumps(request_kill(cfg), indent=2))
+        _print_json(request_kill(cfg))
         return
 
     if args.cmd == "replay":
@@ -107,7 +111,7 @@ def main() -> None:
         )
     else:
         out = run_with_config(args.config)
-    print(json.dumps(out, indent=2))
+    _print_json(out)
 
 
 if __name__ == "__main__":

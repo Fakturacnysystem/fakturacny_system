@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from autonomous_investment_robot.main import run_replay_report, run_with_config
@@ -215,3 +217,25 @@ def test_kraken_spot_readonly_analysis_emits_bundle_without_ordering(monkeypatch
         "promotion_gate_report.json",
     ):
         assert (run_dir / artifact).exists(), artifact
+
+
+def test_cli_json_output_tolerates_datetime_payload(monkeypatch) -> None:
+    run_dir = REPO_ROOT / "runs" / "test_cli_json_output_tolerates_datetime_payload"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "MANUAL_REVIEW_REQUIRED.json").write_text(
+        json.dumps({"decision_key": "abc123"}),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+    result = subprocess.run(
+        ["python3", "-m", "autonomous_investment_robot", "ack-review", "--run-dir", str(run_dir)],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "acknowledged"

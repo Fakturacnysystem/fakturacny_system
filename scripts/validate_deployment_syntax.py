@@ -57,12 +57,12 @@ def main() -> int:
         server_services = ((server_payload or {}).get("services") or {}) if isinstance(server_payload, dict) else {}
         trading_engine = server_services.get("trading-engine", {}) if isinstance(server_services, dict) else {}
         build = (trading_engine.get("build") or {}) if isinstance(trading_engine, dict) else {}
-        if build.get("context") != "./core" or build.get("dockerfile") != "Dockerfile":
+        if build.get("context") != ".." or build.get("dockerfile") != "Dockerfile":
             results.append(
                 {
                     "path": str(server_path),
                     "status": "error",
-                    "error": "server compose trading-engine must build from ./core with Dockerfile",
+                    "error": "server compose trading-engine must build from ../ with Dockerfile",
                 }
             )
         if (trading_engine.get("command") or []) != ["bash", "scripts/container_start_tiny_live.sh"]:
@@ -71,6 +71,40 @@ def main() -> int:
                     "path": str(server_path),
                     "status": "error",
                     "error": "server compose trading-engine must use scripts/container_start_tiny_live.sh",
+                }
+            )
+        env = (trading_engine.get("environment") or {}) if isinstance(trading_engine, dict) else {}
+        volumes = trading_engine.get("volumes") or []
+        if env.get("TRADING_ENV_FILE") != "/runtime-secrets/runtime.env":
+            results.append(
+                {
+                    "path": str(server_path),
+                    "status": "error",
+                    "error": "server compose trading-engine must define TRADING_ENV_FILE=/runtime-secrets/runtime.env",
+                }
+            )
+        if env.get("SECRETS_DIR") != "/runtime-secrets":
+            results.append(
+                {
+                    "path": str(server_path),
+                    "status": "error",
+                    "error": "server compose trading-engine must define SECRETS_DIR=/runtime-secrets",
+                }
+            )
+        if "/home/martin/.config/trading-bot:/runtime-secrets:ro" not in volumes:
+            results.append(
+                {
+                    "path": str(server_path),
+                    "status": "error",
+                    "error": "server compose trading-engine must mount /home/martin/.config/trading-bot to /runtime-secrets:ro",
+                }
+            )
+        if "..:/app" not in volumes:
+            results.append(
+                {
+                    "path": str(server_path),
+                    "status": "error",
+                    "error": "server compose trading-engine must mount repo root via ..:/app",
                 }
             )
     dockerfile = REPO / "Dockerfile"
