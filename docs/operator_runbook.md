@@ -46,8 +46,8 @@ python3 scripts/deployment_preflight.py
 
 | Stage | Purpose | Allowed actions | Blocked actions | Rollback target |
 |-------|---------|-----------------|-----------------|-----------------|
-| `read_only_live` | connector, truth, and analytics validation | live data, full decisioning, full reporting | any order placement | stay readonly |
-| `shadow` | visibility-only decision comparison | readonly analysis plus action comparison | any order placement | `read_only_live` |
+| `readonly` | connector, truth, and analytics validation | live data, full decisioning, full reporting | any order placement | stay readonly |
+| `shadow` | visibility-only decision comparison | readonly analysis plus additive action comparison | any order placement | `readonly` |
 | `tiny_live` | first real-money execution proof | opens, reduce-only exits, flatten, freeze-only | high-notional sizing, full-stage envelope | `shadow` |
 | `limited_live` | conservative post-tiny deployment | normal live actions inside conservative envelope | full-stage envelope | `tiny_live` |
 | `normal_live` | full approved live envelope | full doctrine-safe autonomy | doctrine-incompatible paths | `limited_live` |
@@ -59,6 +59,7 @@ Tiny live is intentionally stricter than normal live:
 - faster downgrade to no-trade / freeze posture
 
 Promotions remain explicit and manual. Downgrades may happen automatically on truth, reconciliation, market-watch, or health degradation.
+Additive performance subsystems remain telemetry or shadow-only until promoted under `PROMOTION_GATES.md`.
 
 ---
 

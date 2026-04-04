@@ -99,6 +99,100 @@ class PolicyService:
             filtered.append(signal)
         return filtered
 
+    @staticmethod
+    def _directional_strategy_names() -> set[str]:
+        return {"trend", "mean_reversion"}
+
+    def _directional_cooldown_snapshot(self, regime: str) -> dict[str, int]:
+        snapshot: dict[str, int] = {}
+        for name in self._directional_strategy_names():
+            remaining = int(self.strategy_regime_cooldowns.get((name, regime), 0) or 0)
+            if remaining > 0:
+                snapshot[name] = remaining
+        return snapshot
+
+    def _empty_signal_decision(
+        self,
+        *,
+        fc: Forecast,
+        profitability_context: dict | None,
+        inventory_context: dict | None,
+    ) -> PolicyDecision:
+        doctrine_filter = {
+            "active": self._kraken_spot_doctrine_active(),
+            "blocked_strategies": list(self.last_doctrine_blocked_strategies),
+            "reasons": list(self.last_doctrine_filter_reasons),
+        }
+        cooldowns = self._directional_cooldown_snapshot(fc.regime)
+        cooldown_reasons = [f"directional_strategy_cooldown:{name}@{fc.regime}:{steps}" for name, steps in sorted(cooldowns.items())]
+        reserve_state = {}
+        if isinstance(profitability_context, dict):
+            reserve_state = dict(
+                (
+                    profitability_context.get("capital_release", {}) or {}
+                ).get("metadata", {}) or {}
+            ).get("reserve_state", {}) or {}
+        reserve_state = dict(reserve_state or {})
+        reserve_reasons = [str(reason).strip() for reason in list(reserve_state.get("reasons", []) or []) if str(reason).strip()]
+        confidence = float(fc.confidence)
+        uncertainty = max(0.0, min(1.0, 1.0 - confidence))
+
+        if any("insufficient_quote" in reason or "reserve_breach" in reason for reason in reserve_reasons):
+            no_trade_reason = "insufficient_quote_external_capital"
+            reasons = [no_trade_reason, *reserve_reasons, *cooldown_reasons, *doctrine_filter["reasons"]]
+        elif cooldown_reasons:
+            no_trade_reason = "directional_signal_cooldown"
+            reasons = [no_trade_reason, *cooldown_reasons, *doctrine_filter["reasons"]]
+        elif doctrine_filter["reasons"]:
+            no_trade_reason = "kraken_spot_doctrine_filter"
+            reasons = ["no_signals", *doctrine_filter["reasons"]]
+        else:
+            no_trade_reason = "no_signals"
+            reasons = ["no_signals"]
+
+        why: dict[str, object] = {
+            "doctrine_target": {
+                "target_provider": self.target_provider,
+                "product_target": self.product_target,
+                "long_only": self.long_only,
+                "kraken_spot_doctrine_active": self._kraken_spot_doctrine_active(),
+            }
+        }
+        if doctrine_filter["reasons"]:
+            why["doctrine_filter"] = doctrine_filter
+        if cooldowns:
+            why["strategy_regime_cooldowns"] = {f"{name}@{fc.regime}": steps for name, steps in sorted(cooldowns.items())}
+
+        return PolicyDecision(
+            symbol=fc.symbol,
+            ts=fc.ts,
+            trade_allowed=False,
+            expected_edge_bps=0.0,
+            expected_cost_bps=0.0,
+            expected_slippage_bps=0.0,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            regime_fit=0.0,
+            capacity_limit=0.0,
+            why=why,
+            profitability={} if profitability_context is None else dict(profitability_context),
+            inventory={} if inventory_context is None else dict(inventory_context),
+            no_trade=NoTradeDecision(
+                symbol=fc.symbol,
+                ts=fc.ts,
+                reason=no_trade_reason,
+                reasons=sorted(dict.fromkeys(reasons)),
+                expected_edge_bps=0.0,
+                expected_cost_bps=0.0,
+                confidence=confidence,
+                uncertainty=uncertainty,
+                metadata={
+                    **why,
+                    "reserve_state": reserve_state,
+                },
+            ),
+        )
+
     def evaluate_strategies(self, features: dict[str, float], forecast: Forecast) -> list[StrategySignal]:
         out: list[StrategySignal] = []
         for s in self.strategies:
@@ -165,23 +259,10 @@ class PolicyService:
         self.last_veto_counts = {}
         signals = self.evaluate_strategies(features, fc)
         if not signals:
-            doctrine_filter = {
-                "active": self._kraken_spot_doctrine_active(),
-                "blocked_strategies": list(self.last_doctrine_blocked_strategies),
-                "reasons": list(self.last_doctrine_filter_reasons),
-            }
-            return PolicyDecision(
-                symbol=fc.symbol,
-                ts=fc.ts,
-                trade_allowed=False,
-                why={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
-                no_trade=NoTradeDecision(
-                    symbol=fc.symbol,
-                    ts=fc.ts,
-                    reason="kraken_spot_doctrine_filter" if doctrine_filter["reasons"] else "no_signals",
-                    reasons=["no_signals", *doctrine_filter["reasons"]] if doctrine_filter["reasons"] else ["no_signals"],
-                    metadata={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
-                ),
+            return self._empty_signal_decision(
+                fc=fc,
+                profitability_context=profitability_context,
+                inventory_context=inventory_context,
             )
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -395,13 +476,18 @@ class PolicyService:
             }
             mastermind_action = str(getattr(mastermind_advisory, "decision", "CONTINUE") or "CONTINUE").lower()
             mastermind_confidence = float(getattr(mastermind_advisory, "confidence", 0.0) or 0.0)
+            mastermind_risk = float(getattr(mastermind_advisory, "risk_level", 0.0) or 0.0) / 100.0
             size_multiplier = min(size_multiplier, float(getattr(mastermind_advisory, "size_multiplier", 1.0) or 1.0))
-            if bool(getattr(mastermind_advisory, "veto", False)) or (mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.45):
+            if bool(getattr(mastermind_advisory, "veto", False)) or (
+                mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.55 and mastermind_risk >= 0.75
+            ):
                 no_trade_reason = no_trade_reason or "mastermind_veto"
                 reasons.append("mastermind_veto")
             elif mastermind_action == "wait" and mastermind_confidence >= 0.40:
                 no_trade_reason = no_trade_reason or "mastermind_wait"
                 reasons.append("mastermind_wait")
+            elif mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.40:
+                reasons.append("mastermind_caution_wait")
             elif mastermind_action == "probe":
                 size_multiplier = min(size_multiplier, 0.25)
                 reasons.append("mastermind_probe")
@@ -578,12 +664,19 @@ class PolicyService:
                 "branch_disagreement_score": float(getattr(collapse, "branch_disagreement_score", 0.0)),
                 "scenario_drift_score": float(getattr(collapse, "scenario_drift_score", 0.0)),
                 "reasons": list(collapse.reasons),
+                "uncertainty_decomposition": dict(getattr(getattr(quantum_state, "collapse_context", object()), "uncertainty_decomposition", {}) or {}),
                 "top_states": dict(getattr(getattr(quantum_state, "collapse_context", object()), "top_states", {}) or {}),
+                "metadata": dict(getattr(collapse, "metadata", {}) or {}),
                 "heuristic": quantum_state.heuristic,
             }
             if collapse.recommended_action == "no_trade":
                 no_trade_reason = no_trade_reason or "quantum_no_trade"
                 reasons.append("quantum_no_trade")
+            elif collapse.recommended_action == "wait":
+                reasons.append("quantum_wait")
+            elif collapse.recommended_action == "probe":
+                size_multiplier = min(size_multiplier, float(collapse.size_multiplier or 0.25) or 0.25)
+                reasons.append("quantum_probe")
             elif collapse.side is not None and abs(combined) > 1e-9:
                 implied_side = "buy" if combined > 0 else "sell"
                 if implied_side != collapse.side:
@@ -593,10 +686,8 @@ class PolicyService:
                 no_trade_reason = no_trade_reason or "execution_fragility"
                 reasons.append("execution_fragility")
             if float(getattr(collapse, "branch_disagreement_score", 0.0)) >= 0.6:
-                no_trade_reason = no_trade_reason or "quantum_branch_disagreement"
                 reasons.append("quantum_branch_disagreement")
             if float(getattr(collapse, "scenario_drift_score", 0.0)) >= 0.65:
-                no_trade_reason = no_trade_reason or "quantum_scenario_drift"
                 reasons.append("quantum_scenario_drift")
         if edge_immunity_decision is not None:
             report = edge_immunity_decision.report

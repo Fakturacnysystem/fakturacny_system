@@ -188,3 +188,57 @@ def test_tiny_live_promotion_readiness_blocks_without_live_prereqs(tmp_path: Pat
         "enable_live_trading_true",
         "ack_i_understand_risks_true",
     ]
+
+
+def test_tiny_live_promotion_readiness_accepts_supported_trading_engine_env_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "kraken_spot_operator_summary.json").write_text(
+        json.dumps(
+            {
+                "mode": "live",
+                "rollout_stage": "tiny_live",
+                "ordering_allowed": False,
+                "preflight": {"ok": True, "reason": "ok"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "readiness_summary.json").write_text(
+        json.dumps({"readiness_ready": False, "rollout_stage": "tiny_live", "preflight_ok": True}),
+        encoding="utf-8",
+    )
+    (run_dir / "live_safety_summary.json").write_text(
+        json.dumps({"safety_ready": False, "ordering_allowed": False}),
+        encoding="utf-8",
+    )
+    (run_dir / "rollback_preflight_liveprofit_paper.json").write_text(
+        json.dumps({"rollback_ready": True}),
+        encoding="utf-8",
+    )
+    (run_dir / "config_truth_report.json").write_text(
+        json.dumps({"config_hash": "abc"}),
+        encoding="utf-8",
+    )
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "KRAKEN_SPOT_API_KEY").write_text("k\n", encoding="utf-8")
+    (secrets_dir / "KRAKEN_SPOT_API_SECRET").write_text("s\n", encoding="utf-8")
+    (secrets_dir / "trading-engine.env").write_text(
+        "ENABLE_LIVE_TRADING=true\nACK_I_UNDERSTAND_RISKS=true\n",
+        encoding="utf-8",
+    )
+
+    result = _run(
+        "python3",
+        "scripts/tiny_live_promotion_readiness.py",
+        "--run-dir",
+        str(run_dir),
+        "--secrets-dir",
+        str(secrets_dir),
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ready"
+    assert payload["missing_live_prerequisites"] == []

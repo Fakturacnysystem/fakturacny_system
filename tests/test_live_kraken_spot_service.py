@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from autonomous_investment_robot.config.settings import (
     DoctrineSettings,
     ExecutionSettings,
+    KrakenSpotExecutionSettings,
     HarmonySettings,
     LiveUnlockSettings,
     MarketWatchSettings,
@@ -17,6 +19,7 @@ from autonomous_investment_robot.config.settings import (
     TCOSettings,
 )
 from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotTradeRow
+from autonomous_investment_robot.core.contracts import UnrealizedPnlTruth
 from autonomous_investment_robot.services.execution.live_kraken_spot_service import LiveKrakenSpotService
 from autonomous_investment_robot.services.policy.service import OrderIntent
 
@@ -29,9 +32,12 @@ class FakeKrakenSpotConnector:
         self.ask = 110.1
         self.balance_total = 1.0
         self.balance_free = 1.0
+        self.quote_total = 1000.0
+        self.quote_free = 1000.0
         self.orders: dict[str, dict] = {}
         self.placed_payloads: list[dict] = []
         self.preview_ok = True
+        self.place_error: Exception | None = None
         self.trade_rows = [
             KrakenSpotTradeRow(
                 trade_id="buy-1",
@@ -96,11 +102,26 @@ class FakeKrakenSpotConnector:
                 "availableBalance": str(self.balance_free),
                 "usedBalance": str(max(0.0, self.balance_total - self.balance_free)),
                 "equity": str(self.balance_total),
-            }
+            },
+            {
+                "asset": "USD",
+                "balance": str(self.quote_total),
+                "availableBalance": str(self.quote_free),
+                "usedBalance": str(max(0.0, self.quote_total - self.quote_free)),
+                "equity": str(self.quote_total),
+            },
         ]
 
     def base_balance(self, symbol):  # noqa: ARG002
         return {"total": self.balance_total, "free": self.balance_free, "used": max(0.0, self.balance_total - self.balance_free)}
+
+    def quote_balance(self, symbol):  # noqa: ARG002
+        return {
+            "asset": "USD",
+            "total": self.quote_total,
+            "free": self.quote_free,
+            "used": max(0.0, self.quote_total - self.quote_free),
+        }
 
     def trade_history(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
         return list(self.trade_rows[offset : offset + limit])
@@ -119,13 +140,21 @@ class FakeKrakenSpotConnector:
 
     def place_order(self, payload):
         self.placed_payloads.append(dict(payload))
+        if self.place_error is not None:
+            raise self.place_error
         cid = str(payload["newClientOrderId"])
         side = str(payload["side"]).upper()
         qty = float(payload["quantity"])
         if side == "SELL":
             self.balance_total = max(0.0, self.balance_total - qty)
             self.balance_free = max(0.0, self.balance_free - qty)
+            proceeds = qty * self.bid
+            self.quote_total += proceeds
+            self.quote_free += proceeds
         elif side == "BUY":
+            cost = qty * float(payload.get("price", self.ask) or self.ask)
+            self.quote_total = max(0.0, self.quote_total - cost)
+            self.quote_free = max(0.0, self.quote_free - cost)
             self.balance_total += qty
             self.balance_free += qty
         order = {
@@ -180,13 +209,35 @@ def _limits() -> RiskLimits:
     )
 
 
-def _settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, mode: str = "live", maker_timeout_s: int = 1) -> RobotSettings:
+def _settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    mode: str = "live",
+    maker_timeout_s: int = 1,
+    lifecycle_proof_enabled: bool = False,
+    lifecycle_proof_timeout_s: int = 3,
+    lifecycle_proof_max_notional: float = 12.0,
+    lifecycle_proof_min_free_quote_reserve_pct: float | None = None,
+) -> RobotSettings:
     monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
     monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
     return RobotSettings(
         provider_whitelist=["kraken_spot"],
         canary_mode=True,
-        execution=ExecutionSettings(mode=mode, provider_id="kraken_spot", maker_timeout_s=maker_timeout_s, fee_bps=30.0, slippage_bps=8.0),
+        execution=ExecutionSettings(
+            mode=mode,
+            provider_id="kraken_spot",
+            maker_timeout_s=maker_timeout_s,
+            fee_bps=30.0,
+            slippage_bps=8.0,
+            kraken_spot=KrakenSpotExecutionSettings(
+                lifecycle_proof_enabled=lifecycle_proof_enabled,
+                lifecycle_proof_timeout_s=lifecycle_proof_timeout_s,
+                lifecycle_proof_max_notional=lifecycle_proof_max_notional,
+                lifecycle_proof_min_free_quote_reserve_pct=lifecycle_proof_min_free_quote_reserve_pct,
+            ),
+        ),
         safety=SafetySettings(
             live_unlock=LiveUnlockSettings(
                 enable_live_trading=True,
@@ -238,6 +289,25 @@ def _buy_intent(target_notional: float, *, order_style: str = "passive_limit") -
             "market_watch": {"action": "continue"},
             "market_integrity": {"action": "continue"},
             "execution_plan": {"order_style": order_style},
+        },
+    )
+
+
+def _proof_buy_intent(target_notional: float) -> OrderIntent:
+    return OrderIntent(
+        symbol="BTC/USD",
+        side="buy",
+        target_notional=target_notional,
+        why={
+            "doctrine_target": {"provider": "kraken_spot", "product": "spot", "long_only": True},
+            "market_watch": {"action": "continue"},
+            "market_integrity": {"action": "continue"},
+            "execution_plan": {"order_style": "passive_limit"},
+            "lifecycle_proof": {
+                "enabled": True,
+                "mode": "tiny_live_bounded_lifecycle_proof",
+                "proof_target_notional": target_notional,
+            },
         },
     )
 
@@ -327,6 +397,142 @@ def test_kraken_spot_execute_fails_closed_when_inventory_truth_is_missing(monkey
     assert out.reason.startswith("inventory_truth_missing:")
 
 
+def test_kraken_spot_flat_account_reports_authoritative_zero_unrealized_even_with_broken_history(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.balance_total = 0.0
+    fake.balance_free = 0.0
+    fake.trade_rows = [
+        KrakenSpotTradeRow(
+            trade_id="sell-1",
+            order_id="sell-order-1",
+            symbol="BTC/USD",
+            side="sell",
+            base_qty=1.0,
+            quote_cost=110.0,
+            fee_quote=0.1,
+            price=110.0,
+            timestamp_ms=1_700_000_000_100,
+            raw={},
+        )
+    ]
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    truth, gaps = svc.authoritative_unrealized_pnl("BTC/USD")
+
+    assert gaps == []
+    assert truth is not None
+    assert isinstance(truth, UnrealizedPnlTruth)
+    assert truth.source == "spot_balance_flat"
+    assert truth.confidence == "authoritative"
+    assert truth.venue_value == pytest.approx(0.0)
+    assert truth.reason == "no_open_spot_inventory"
+
+
+def test_kraken_spot_buy_fill_history_does_not_depend_on_sell_side_fifo_reconstruction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.trade_rows = [
+        KrakenSpotTradeRow(
+            trade_id="buy-1",
+            order_id="buy-order-1",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.5,
+            quote_cost=50.0,
+            fee_quote=0.05,
+            price=100.0,
+            timestamp_ms=1_700_000_000_000,
+            raw={},
+        ),
+        KrakenSpotTradeRow(
+            trade_id="sell-1",
+            order_id="sell-order-1",
+            symbol="BTC/USD",
+            side="sell",
+            base_qty=1.0,
+            quote_cost=110.0,
+            fee_quote=0.1,
+            price=110.0,
+            timestamp_ms=1_700_000_000_100,
+            raw={},
+        ),
+    ]
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    records, gaps = svc.authoritative_fill_history("BTC/USD", side="buy", since_ms=1_700_000_000_000)
+
+    assert gaps == []
+    assert len(records) == 1
+    assert records[0].fill.fill_id == "buy-1"
+    assert records[0].fill.side == "buy"
+
+
+def test_kraken_spot_buy_fill_history_returns_empty_without_gap_for_empty_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    records, gaps = svc.authoritative_fill_history("BTC/USD", side="buy", since_ms=1_800_000_000_000)
+
+    assert records == []
+    assert gaps == []
+
+
+def test_kraken_spot_capability_evidence_treats_missing_book_timestamp_as_connected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    svc.capture_market_integrity_evidence(
+        {"bidPrice": "100", "askPrice": "101", "bidQty": "1", "askQty": "1", "timestamp": None},
+        datetime.now(timezone.utc),
+    )
+    payload = svc.capability_evidence(now_dt=datetime.now(timezone.utc))
+
+    assert payload["public_market_data_connected"] is True
+    assert isinstance(payload["ts"], str)
+
+
+def test_kraken_spot_user_stream_seeded_capability_evidence_drops_stale_snapshot_absent_reason(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    svc._handle_user_stream_state_change(  # type: ignore[attr-defined]
+        {
+            "connected": True,
+            "open_orders_seeded": True,
+            "own_trades_seeded": False,
+            "subscribed_channels": ["openOrders", "ownTrades"],
+        }
+    )
+    payload = svc.capability_evidence(now_dt=datetime.now(timezone.utc))
+
+    assert payload["user_stream_connected"] is True
+    assert payload["lifecycle_snapshot_seeded"] is True
+    assert "user_stream_not_connected" not in payload["reasons"]
+    assert "lifecycle_snapshot_absent" not in payload["reasons"]
+    assert "lifecycle_proof_incomplete" in payload["classifications"]["promotion_blocker"]
+
+
+def test_kraken_spot_user_stream_queue_updates_lifecycle_mirror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    svc._queue_user_stream_order_update(  # type: ignore[attr-defined]
+        {
+            "clientOrderId": "cid-1",
+            "orderId": "oid-1",
+            "status": "NEW",
+            "symbol": "BTC/USD",
+            "raw": {"source": "kraken_private_ws_openOrders", "userref": "123"},
+        }
+    )
+    snapshot = svc.lifecycle_snapshot()
+    transitions = svc.drain_lifecycle_transitions()
+
+    assert snapshot
+    assert snapshot[0]["state"] == "accepted"
+    assert transitions
+    assert transitions[0]["source"] == "exchange_order_update"
+
+
 def test_kraken_spot_execute_allows_reduce_only_profitable_sell(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake = FakeKrakenSpotConnector()
     fake.bid = 110.0
@@ -401,3 +607,146 @@ def test_kraken_spot_sell_timeout_uses_aggressive_limit_not_market_fallback(monk
     assert fake.placed_payloads[0].get("postOnly", False) is True
     assert fake.placed_payloads[1]["type"] == "LIMIT"
     assert fake.placed_payloads[1].get("postOnly", False) is False
+
+
+def test_kraken_spot_lifecycle_proof_mode_stays_post_only_and_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class TimeoutKrakenSpotConnector(FakeKrakenSpotConnector):
+        def place_order(self, payload):
+            self.placed_payloads.append(dict(payload))
+            cid = str(payload["newClientOrderId"])
+            order = {
+                "clientOrderId": cid,
+                "orderId": f"order-{len(self.orders) + 1}",
+                "status": "NEW",
+                "symbol": str(payload["symbol"]),
+                "side": str(payload["side"]),
+                "executedQty": "0",
+                "avgPrice": "0",
+                "filledNotional": "0",
+                "raw": {"order_id": f"order-{len(self.orders) + 1}"},
+            }
+            self.orders[cid] = order
+            return order
+
+    fake = TimeoutKrakenSpotConnector()
+    svc = LiveKrakenSpotService(
+        _settings(
+            monkeypatch,
+            tmp_path,
+            lifecycle_proof_enabled=True,
+            lifecycle_proof_timeout_s=0,
+        ),
+        run_id="r1",
+        connector=fake,
+    )
+    assert svc.preflight() == (True, "ok")
+
+    out = svc.execute_intent(_proof_buy_intent(12.0))
+
+    assert out.status == "timeout"
+    assert out.reason == "lifecycle_proof_timeout"
+    assert len(fake.placed_payloads) == 1
+    assert fake.placed_payloads[0]["type"] == "LIMIT"
+    assert fake.placed_payloads[0].get("postOnly", False) is True
+    assert out.metadata["lifecycle_proof"]["requested"] is True
+    assert out.metadata["lifecycle_proof"]["terminal_observed"] is True
+
+
+def test_kraken_spot_capability_evidence_requires_reconciliation_for_full_lifecycle_proof(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(
+        _settings(monkeypatch, tmp_path, lifecycle_proof_enabled=True),
+        run_id="r1",
+        connector=fake,
+    )
+    assert svc.preflight() == (True, "ok")
+
+    out = svc.execute_intent(_proof_buy_intent(12.0))
+    assert out.status == "filled_maker"
+
+    evidence_before = svc.capability_evidence(now_dt=datetime.now(timezone.utc))
+    assert evidence_before["rest_lifecycle_proven"] is False
+
+    summary = svc.record_lifecycle_reconciliation(
+        result_status=out.status,
+        fill_truth_ok=True,
+        gap_reasons=[],
+    )
+    evidence_after = svc.capability_evidence(now_dt=datetime.now(timezone.utc))
+
+    assert summary["reconciliation_complete"] is True
+    assert summary["upgrade_eligible"] is True
+    assert evidence_after["rest_lifecycle_proven"] is True
+    assert evidence_after["lifecycle_reconciliation_complete"] is True
+
+
+def test_kraken_spot_buy_blocks_when_quote_free_balance_cannot_cover_reserve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.quote_total = 20.0
+    fake.quote_free = 15.9
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+    assert svc.preflight() == (True, "ok")
+
+    out = svc.execute_intent(_buy_intent(12.0))
+
+    assert out.status == "blocked"
+    assert out.reason == "insufficient_free_quote_after_reserve"
+    assert fake.placed_payloads == []
+    blocker = out.metadata["execution_blocker"]
+    assert blocker["source"] == "local_affordability_guard"
+    assert blocker["quote_asset"] == "USD"
+    assert blocker["free_quote_balance"] == pytest.approx(15.9)
+    assert blocker["required_quote"] > 0.0
+    assert blocker["reserve_floor_quote"] == pytest.approx(4.0)
+    assert blocker["reserve_policy_source"] == "policy_default"
+    assert blocker["configured_minimum_reserve_pct"] == pytest.approx(0.2)
+    assert blocker["applied_minimum_reserve_pct"] == pytest.approx(0.2)
+
+
+def test_kraken_spot_lifecycle_proof_can_override_quote_reserve_for_tiny_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.quote_total = 20.0
+    fake.quote_free = 19.0086
+    svc = LiveKrakenSpotService(
+        _settings(
+            monkeypatch,
+            tmp_path,
+            lifecycle_proof_enabled=True,
+            lifecycle_proof_min_free_quote_reserve_pct=0.0,
+        ),
+        run_id="r1",
+        connector=fake,
+    )
+    assert svc.preflight() == (True, "ok")
+
+    out = svc.execute_intent(_proof_buy_intent(12.0))
+
+    assert out.status == "filled_maker"
+    assert len(fake.placed_payloads) == 1
+    assert out.metadata["lifecycle_proof"]["requested"] is True
+    assert out.metadata["lifecycle_proof"]["exchange_acknowledged"] is True
+
+
+def test_kraken_spot_submit_reject_marks_lifecycle_terminal_without_exchange_ack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.place_error = RuntimeError('kraken {"error":["EOrder:Insufficient funds"]}')
+    svc = LiveKrakenSpotService(
+        _settings(monkeypatch, tmp_path, lifecycle_proof_enabled=True),
+        run_id="r1",
+        connector=fake,
+    )
+    assert svc.preflight() == (True, "ok")
+
+    out = svc.execute_intent(_proof_buy_intent(12.0))
+
+    assert out.status == "rejected"
+    assert out.reason.startswith('maker_reject:kraken {"error":["EOrder:Insufficient funds"]}')
+    proof = out.metadata["lifecycle_proof"]
+    assert proof["submitted"] is True
+    assert proof["exchange_acknowledged"] is False
+    assert proof["terminal_observed"] is True
+    assert proof["last_terminal_state"] == "REJECTED"
+    assert proof["submit_source"] == "local_submit"
+    assert proof["reject_source"] == "exchange_submit_exception"
+    blocker = out.metadata["execution_blocker"]
+    assert blocker["source"] == "exchange_submit_exception"

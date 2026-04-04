@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from autonomous_investment_robot.core.contracts import MarketHealthSnapshot, TruthConfidenceLevel
+from autonomous_investment_robot.core.contracts import MarketHealthSnapshot, TruthConfidenceLevel, UnrealizedPnlTruth
 from autonomous_investment_robot.services.event_store.service import EventStore
 from autonomous_investment_robot.services.execution.service import Fill
 from autonomous_investment_robot.services.forensics_service.service import ForensicsService
@@ -110,6 +110,48 @@ def test_live_state_coordinator_rehydrates_missing_exchange_fill_history(tmp_pat
     assert len(event_store.load("fills")) == 1
 
 
+def test_live_state_coordinator_skips_exchange_history_rehydrate_for_flat_boot_without_local_history(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+    calls = {"authoritative_fill_history": 0}
+
+    def _authoritative_fill_history(symbol, side, since_ms=None):  # noqa: ARG001
+        calls["authoritative_fill_history"] += 1
+        return [], ["unexpected_history_fetch"]
+
+    live = SimpleNamespace(
+        connector=FakeConnector(
+            balances=[{"equity": "1000.0"}],
+            positions=[],
+            open_orders=[],
+        ),
+        rehydrate_state=lambda order_events, fill_events: {"orders": len(order_events), "fills": len(fill_events)},
+        authoritative_fill_history=_authoritative_fill_history,
+        authoritative_unrealized_pnl=lambda symbol: (
+            UnrealizedPnlTruth(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                source="spot_balance_flat",
+                confidence="authoritative",
+                venue_value=0.0,
+                reason="no_open_spot_inventory",
+                evidence={"remaining_qty": 0.0, "tolerance_qty": 0.0001},
+            ),
+            [],
+        ),
+    )
+
+    result = coordinator.rehydrate_state(live, "BTCUSDT")
+
+    assert result.confidence == "trusted"
+    assert result.details["reason"] == "flat_and_consistent"
+    assert result.details["exchange_history_rehydrate"]["recovered"] == 0
+    assert result.details["exchange_history_rehydrate"]["skipped"] == "flat_account_boot_baseline"
+    assert result.details["truth_confidence"]["fill_truth_confidence"]["level"] == TruthConfidenceLevel.AUTHORITATIVE.value
+    assert calls["authoritative_fill_history"] == 0
+
+
 def test_truth_confidence_marks_market_data_proxy_when_health_is_missing(tmp_path):
     event_store = EventStore(str(tmp_path))
     portfolio = PortfolioService()
@@ -125,6 +167,74 @@ def test_truth_confidence_marks_market_data_proxy_when_health_is_missing(tmp_pat
 
     assert snapshot.market_data_truth_confidence.level == TruthConfidenceLevel.PROXY
     assert snapshot.overall_action == "degrade"
+
+
+def test_truth_confidence_defers_market_data_gate_at_boot_until_first_snapshot(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+    exchange = coordinator.exchange_state(
+        SimpleNamespace(connector=FakeConnector(balances=[{"equity": "1000.0"}], positions=[], open_orders=[])),
+        "BTCUSDT",
+    )
+
+    snapshot = coordinator.truth_confidence(
+        exchange=exchange,
+        fill_history_gaps=[],
+        realized_pnl_gaps=[],
+        unrealized_truth=exchange.unrealized_pnl_truth,
+        history_since_ms=None,
+        history_recovered=0,
+        defer_market_data_gate=True,
+    )
+
+    assert snapshot.market_data_truth_confidence.level == TruthConfidenceLevel.PROXY
+    assert snapshot.market_data_truth_confidence.reason == "market_health_deferred_until_first_snapshot"
+    assert snapshot.overall_action == "continue"
+    assert snapshot.metadata["market_data_gate_deferred"] is True
+
+
+def test_truth_confidence_treats_spot_dust_without_open_inventory_as_authoritative(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+    exchange = coordinator.exchange_state(
+        SimpleNamespace(
+            connector=FakeConnector(
+                balances=[{"equity": "1000.0"}],
+                positions=[{"symbol": "ETH/EUR", "positionAmt": "0.0002367356", "markPrice": "1821.0"}],
+                open_orders=[],
+            ),
+            authoritative_unrealized_pnl=lambda symbol: (
+                UnrealizedPnlTruth(
+                    symbol=symbol,
+                    ts=datetime.now(timezone.utc),
+                    source="spot_balance_flat",
+                    confidence="authoritative",
+                    venue_value=0.0,
+                    reason="no_open_spot_inventory",
+                    evidence={"remaining_qty": 0.0002367356, "tolerance_qty": 0.001},
+                ),
+                [],
+            ),
+        ),
+        "ETH/EUR",
+    )
+
+    snapshot = coordinator.truth_confidence(
+        exchange=exchange,
+        fill_history_gaps=[],
+        realized_pnl_gaps=[],
+        unrealized_truth=exchange.unrealized_pnl_truth,
+        history_since_ms=None,
+        history_recovered=0,
+        defer_market_data_gate=True,
+    )
+
+    assert snapshot.fill_truth_confidence.level == TruthConfidenceLevel.AUTHORITATIVE
+    assert snapshot.fee_truth_confidence.level == TruthConfidenceLevel.AUTHORITATIVE
+    assert snapshot.realized_pnl_confidence.level == TruthConfidenceLevel.AUTHORITATIVE
+    assert snapshot.overall_action == "continue"
 
 
 def test_truth_confidence_marks_market_data_unavailable_when_feed_is_stale(tmp_path):
@@ -195,6 +305,40 @@ def test_truth_confidence_marks_unrealized_unavailable_when_position_fields_are_
     assert snapshot.unrealized_pnl_confidence is not None
     assert snapshot.unrealized_pnl_confidence.level == TruthConfidenceLevel.UNAVAILABLE
     assert snapshot.overall_action == "degrade"
+
+
+def test_live_state_coordinator_boot_truth_does_not_degrade_only_because_market_health_is_deferred(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+    live = SimpleNamespace(
+        connector=FakeConnector(
+            balances=[{"equity": "1000.0"}],
+            positions=[],
+            open_orders=[],
+        ),
+        rehydrate_state=lambda order_events, fill_events: {"orders": len(order_events), "fills": len(fill_events)},
+        authoritative_unrealized_pnl=lambda symbol: (
+            UnrealizedPnlTruth(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                source="spot_balance_flat",
+                confidence="authoritative",
+                venue_value=0.0,
+                reason="no_open_spot_inventory",
+                evidence={"remaining_qty": 0.0, "tolerance_qty": 0.0001},
+            ),
+            [],
+        ),
+    )
+
+    result = coordinator.rehydrate_state(live, "BTCUSDT")
+
+    assert result.confidence == "trusted"
+    assert result.details["truth_confidence"]["market_data_truth_confidence"]["level"] == TruthConfidenceLevel.PROXY.value
+    assert result.details["truth_confidence"]["market_data_truth_confidence"]["reason"] == "market_health_deferred_until_first_snapshot"
+    assert result.details["truth_confidence"]["overall_action"] == "continue"
+    assert result.details["truth_confidence"]["metadata"]["market_data_gate_deferred"] is True
 
 
 def test_live_ledger_coordinator_does_not_guess_exposure_without_normalized_fill(tmp_path):

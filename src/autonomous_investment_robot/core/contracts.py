@@ -100,7 +100,7 @@ class RegimeAssessment:
     persistence: float
     transition_probability: float
     degradation_warning: str | None = None
-    evidence: dict[str, float] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -254,6 +254,13 @@ class ReserveState:
     free_quote_reserve_pct: float
     minimum_reserve_pct: float
     reserve_breached: bool
+    quote_asset: str = ""
+    quote_total_balance: float = 0.0
+    quote_free_balance: float = 0.0
+    quote_used_balance: float = 0.0
+    reserve_floor_quote: float = 0.0
+    entry_buying_power_quote: float = 0.0
+    required_quote_with_fee_buffer: float = 0.0
     reasons: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -871,6 +878,47 @@ class DecisionDoctrineReport:
 
 
 @dataclass
+class DecisionStageBlocker:
+    stage: str
+    code: str
+    classification: str
+    contribution: float
+    hard: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DecisionStageTrace:
+    stage: str
+    action: str
+    raw_inputs: dict[str, Any] = field(default_factory=dict)
+    normalized_inputs: dict[str, Any] = field(default_factory=dict)
+    scores: dict[str, float] = field(default_factory=dict)
+    threshold_crossings: dict[str, bool] = field(default_factory=dict)
+    clamp_sources: list[str] = field(default_factory=list)
+    veto_sources: list[str] = field(default_factory=list)
+    confidence_contributors: dict[str, float] = field(default_factory=dict)
+    uncertainty_contributors: dict[str, float] = field(default_factory=dict)
+    blockers: list[DecisionStageBlocker] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DecisionCollapseTrace:
+    symbol: str
+    ts: datetime
+    frame_id: str
+    step: int
+    final_decision: str
+    trade_path_state: str
+    ranked_blockers: list[DecisionStageBlocker] = field(default_factory=list)
+    reason_chain: list[str] = field(default_factory=list)
+    stages: list[DecisionStageTrace] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class BackendSelector:
     backend: str
     enabled: bool = False
@@ -1279,4 +1327,204 @@ class CalibrationProfile:
     size_bias: float
     reasons: list[str] = field(default_factory=list)
     heuristic: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PerformanceTargetTranslationReport:
+    ts: datetime
+    target_monthly_return_pct: float
+    required_daily_return_pct: float
+    target_round_trips_per_day: float
+    required_net_bps_per_trade: float
+    required_capital_utilization_pct: float
+    required_deployment_notional: float
+    current_deployment_notional: float
+    current_capital_utilization_pct: float
+    theoretically_implausible: bool
+    edge_shortfall_explanation: str
+    gaps: dict[str, float] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CapitalEnvelopeReport:
+    ts: datetime
+    total_equity: float
+    free_quote_balance: float
+    reserved_capital: float
+    deployable_capital: float
+    live_deployment_cap: float
+    pair_level_cap: float
+    playbook_level_cap: float
+    regime_level_cap: float
+    portfolio_heat: float
+    idle_capital: float
+    forced_reserve: float
+    capital_efficiency_score: float
+    capital_lock_time_minutes: float
+    dead_capital_pressure: float
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PairScoreCard:
+    symbol: str
+    score: float
+    eligible: bool
+    active: bool
+    spread_quality: float
+    depth_quality: float
+    realized_volatility: float
+    signal_stability: float
+    fill_quality: float
+    execution_friction: float
+    expectancy_bps: float
+    reject_burden: float
+    capital_capacity: float
+    regime_compatibility: float
+    capital_efficiency: float
+    microstructure_quality: float
+    crowding_penalty: float
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MarketUniverseReport:
+    ts: datetime
+    active_symbols: list[str]
+    ranked_pairs: list[PairScoreCard] = field(default_factory=list)
+    clusters: dict[str, list[str]] = field(default_factory=dict)
+    rotation_reason: str = "unchanged"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PlaybookCandidate:
+    symbol: str
+    playbook: str
+    ts: datetime
+    live_enabled: bool
+    expected_gross_edge_bps: float
+    expected_net_edge_bps: float
+    confidence: float
+    quality_of_edge: float
+    opportunity_decay: float
+    capital_efficiency: float
+    hold_minutes: float
+    execution_preference: str
+    exit_family: str
+    side: str
+    target_notional: float
+    cooldown_active: bool
+    disable_reasons: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OpportunityAuctionReport:
+    ts: datetime
+    selected_symbol: str | None
+    selected_playbook: str | None
+    selected_score: float
+    backlog_pressure: float
+    false_negative_rate: float
+    false_positive_rate: float
+    signal_crowding_score: float
+    ranked_candidates: list[dict[str, Any]] = field(default_factory=list)
+    rejected_candidates: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExitIntelligenceReport:
+    ts: datetime
+    preferred_exit_family: str
+    inventory_pressure: float
+    hold_time_minutes: float
+    hold_time_target_minutes: float
+    adverse_excursion_bps: float
+    favorable_excursion_bps: float
+    trade_lifecycle_score: float
+    root_cause: str
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FillAwareCostReport:
+    ts: datetime
+    maker_probability: float
+    taker_probability: float
+    expected_fill_price: float
+    spread_capture_probability: float
+    slippage_bps: float
+    adverse_selection_bps: float
+    cancel_to_fill_ratio: float
+    post_only_reject_burden: float
+    repricing_burden: float
+    partial_fill_burden: float
+    live_degradation_delta: float
+    total_cost_bps: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AllocatorDecisionReport:
+    ts: datetime
+    recommended_notional: float
+    pair_budget: float
+    playbook_budget: float
+    regime_budget: float
+    recovery_mode: bool
+    aggressiveness_scalar: float
+    confidence_bucket: str
+    execution_quality_bucket: str
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExpectancyEngineReport:
+    ts: datetime
+    trade_count: int
+    net_expectancy_bps: float
+    capital_efficiency_expectancy: float
+    hold_time_adjusted_expectancy: float
+    win_rate: float
+    avg_win_bps: float
+    avg_loss_bps: float
+    avg_hold_minutes: float
+    false_negative_rate: float
+    false_positive_rate: float
+    promotion_score: float
+    promotion_ready: bool
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExperimentRegistryReport:
+    ts: datetime
+    enabled: bool
+    promotion_score: float
+    rollback_triggered: bool
+    active_variants: list[str] = field(default_factory=list)
+    shadow_variants: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DeadCapitalReport:
+    ts: datetime
+    idle_capital_pct: float
+    time_in_market_pct: float
+    opportunity_backlog_pressure: float
+    deployment_efficiency: float
+    capital_efficiency: float
+    no_trade_histogram: dict[str, int] = field(default_factory=dict)
+    miss_reasons: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)

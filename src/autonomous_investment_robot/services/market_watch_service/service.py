@@ -85,8 +85,28 @@ class MarketWatchService:
             action = "degrade"
 
         regime_label = str(getattr(regime_assessment, "label", "") or "")
-        if regime_label in {"liquidity_vacuum", "news_chaos", "dead_market"}:
+        regime_evidence = {} if regime_assessment is None else dict(getattr(regime_assessment, "evidence", {}) or {})
+        dead_market_reasoning = {
+            "candidate": bool(float(regime_evidence.get("dead_market_candidate", 0.0) or 0.0) > 0.0),
+            "healthy_microstructure": bool(float(regime_evidence.get("healthy_microstructure", 0.0) or 0.0) > 0.0),
+            "book_liveliness_score": float(regime_evidence.get("book_liveliness_score", 0.0) or 0.0),
+            "seconds_since_distinct_book_change": float(regime_evidence.get("seconds_since_distinct_book_change", 0.0) or 0.0),
+            "book_repeat_count": int(regime_evidence.get("book_repeat_count", 0.0) or 0.0),
+            "public_market_data_connected": bool(float(regime_evidence.get("public_market_data_connected", 0.0) or 0.0) > 0.0),
+            "dead_market_reason": regime_evidence.get("dead_market_reason", ""),
+        }
+        regime_score_table = {
+            "spread_health": spread_score,
+            "liquidity_health": liquidity_score,
+            "book_liveliness_health": float(dead_market_reasoning["book_liveliness_score"]),
+            "dead_market_candidate": 1.0 if dead_market_reasoning["candidate"] else 0.0,
+            "healthy_microstructure_override": 1.0 if dead_market_reasoning["healthy_microstructure"] else 0.0,
+        }
+        if regime_label in {"liquidity_vacuum", "news_chaos"}:
             action = "block_entries" if action == "continue" else action
+            reasons.append(f"regime_watch:{regime_label}")
+        elif regime_label == "dead_market":
+            action = "degrade" if action == "continue" else action
             reasons.append(f"regime_watch:{regime_label}")
 
         if market_integrity is not None:
@@ -109,5 +129,7 @@ class MarketWatchService:
                 "depth_notional": depth_notional,
                 "forecast_regime": str(getattr(forecast, "regime", "")),
                 "forecast_liquidity_regime": str(getattr(forecast, "liquidity_regime", "")),
+                "regime_score_table": regime_score_table,
+                "dead_market_reasoning": dead_market_reasoning,
             },
         )

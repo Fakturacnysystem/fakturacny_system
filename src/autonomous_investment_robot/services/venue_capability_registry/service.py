@@ -65,11 +65,14 @@ class VenueCapabilityRegistry:
             )
         )
         lifecycle_snapshot_count = int(capability_payload.get("lifecycle_snapshot_count", 0) or 0)
+        lifecycle_snapshot_seeded = bool(capability_payload.get("lifecycle_snapshot_seeded", lifecycle_snapshot_count > 0))
         if lifecycle_snapshot_count <= 0 and live is not None and hasattr(live, "lifecycle_snapshot"):
             try:
                 lifecycle_snapshot_count = len(live.lifecycle_snapshot())
             except Exception:
                 lifecycle_snapshot_count = 0
+        if lifecycle_snapshot_count > 0:
+            lifecycle_snapshot_seeded = True
         evidence_ts = integrity.get("ts", now_dt)
         if capability_payload.get("ts") is not None:
             evidence_ts = capability_payload.get("ts")
@@ -92,12 +95,34 @@ class VenueCapabilityRegistry:
         auth_validated = bool(capability_payload.get("auth_validated", False))
         private_api_healthy = bool(capability_payload.get("private_api_healthy", True))
         public_market_data_connected = bool(capability_payload.get("public_market_data_connected", integrity.get("ts") is not None))
+        single_process_scope = bool(capability_payload.get("single_process_scope", False))
+        rest_lifecycle_proven = bool(capability_payload.get("rest_lifecycle_proven", False))
+        lifecycle_reconciliation_complete = bool(capability_payload.get("lifecycle_reconciliation_complete", False))
+        lifecycle_proof_complete = bool(capability_payload.get("lifecycle_proof_complete", False))
+        lifecycle_proof_mode = str(capability_payload.get("lifecycle_proof_mode", "") or "")
+        ws_lifecycle_observability = bool(capability_payload.get("ws_lifecycle_observability", user_stream_connected and lifecycle_snapshot_seeded))
+        payload_classifications = capability_payload.get("classifications", {}) if isinstance(capability_payload.get("classifications"), dict) else {}
+        payload_promotion_blockers = [
+            str(reason)
+            for reason in list(payload_classifications.get("promotion_blocker", []) or [])
+            if str(reason) not in {"user_stream_not_connected", "lifecycle_snapshot_absent"}
+        ]
+        single_process_lifecycle_equivalent = bool(
+            provider_id == "kraken_spot"
+            and single_process_scope
+            and rest_lifecycle_proven
+            and lifecycle_reconciliation_complete
+            and lifecycle_snapshot_count > 0
+            and auth_validated
+            and private_api_healthy
+            and public_market_data_connected
+        )
         reasons: list[str] = []
         partial = False
-        if not user_stream_connected and provider_id != "kraken_derivatives":
+        if not user_stream_connected and provider_id != "kraken_derivatives" and not single_process_lifecycle_equivalent:
             reasons.append("user_stream_not_connected")
             partial = True
-        if lifecycle_snapshot_count <= 0:
+        if not lifecycle_snapshot_seeded:
             reasons.append("lifecycle_snapshot_absent")
             partial = True
         if freshness > 60.0:
@@ -118,6 +143,13 @@ class VenueCapabilityRegistry:
         if bool(capability_payload.get("has_credentials", False)) and not auth_validated and provider_id != "kraken_derivatives":
             reasons.append("auth_validation_unproven")
             partial = True
+        for reason in payload_promotion_blockers:
+            if reason not in reasons:
+                reasons.append(reason)
+        classifications = self._classify_reasons(reasons)
+        for reason in payload_promotion_blockers:
+            if reason not in classifications["promotion_blocker"]:
+                classifications["promotion_blocker"].append(reason)
         return CapabilityEvidence(
             provider_id=provider_id,
             ts=now_dt,
@@ -138,8 +170,35 @@ class VenueCapabilityRegistry:
                 "book_repeat_count": int(capability_payload.get("book_repeat_count", 0) or 0),
                 "seconds_since_distinct_book_change": float(capability_payload.get("seconds_since_distinct_book_change", 0.0) or 0.0),
                 "has_credentials": bool(capability_payload.get("has_credentials", False)),
+                "single_process_scope": single_process_scope,
+                "rest_lifecycle_proven": rest_lifecycle_proven,
+                "lifecycle_reconciliation_complete": lifecycle_reconciliation_complete,
+                "lifecycle_proof_complete": lifecycle_proof_complete,
+                "lifecycle_proof_mode": lifecycle_proof_mode,
+                "single_process_lifecycle_equivalent": single_process_lifecycle_equivalent,
+                "ws_lifecycle_observability": ws_lifecycle_observability,
+                "lifecycle_snapshot_seeded": lifecycle_snapshot_seeded,
+                "classifications": classifications,
             },
         )
+
+    def _classify_reasons(self, reasons: list[str]) -> dict[str, list[str]]:
+        classifications = {
+            "execution_blocker": [],
+            "promotion_blocker": [],
+            "confidence_haircut": [],
+            "informational_only": [],
+        }
+        for reason in reasons:
+            if reason in {"private_api_health_degraded", "auth_validation_unproven"}:
+                classifications["execution_blocker"].append(reason)
+            elif reason in {"lifecycle_snapshot_absent", "user_stream_not_connected"}:
+                classifications["promotion_blocker"].append(reason)
+            elif reason in {"capability_evidence_stale", "sequence_evidence_degraded", "checksum_evidence_degraded", "public_market_data_not_connected"}:
+                classifications["confidence_haircut"].append(reason)
+            else:
+                classifications["informational_only"].append(reason)
+        return classifications
 
     def resolve(
         self,
@@ -158,6 +217,12 @@ class VenueCapabilityRegistry:
             user_stream_confidence = "rest_history_only"
         if evidence.lifecycle_snapshot_count <= 0:
             lifecycle_completeness = "partial_without_snapshot"
+        if provider_id == "kraken_spot" and bool(evidence.metadata.get("ws_lifecycle_observability", False)):
+            user_stream_confidence = "user_stream_plus_rest_repair"
+            lifecycle_completeness = "strong_without_replace"
+        if provider_id == "kraken_spot" and bool(evidence.metadata.get("single_process_lifecycle_equivalent", False)):
+            user_stream_confidence = "single_process_rest_repair"
+            lifecycle_completeness = "strong_without_replace"
         replace_supported = bool(getattr(live, "supports_replace", getattr(connector, "supports_replace", base.replace_supported)))
         expire_supported = bool(getattr(live, "supports_expire", getattr(connector, "supports_expire", base.expire_supported)))
         return ProviderCapabilityMatrix(
@@ -174,10 +239,14 @@ class VenueCapabilityRegistry:
                 "capability_evidence": {
                     "freshness_seconds": evidence.evidence_freshness_seconds,
                     "reasons": list(evidence.reasons),
+                    "classifications": dict(evidence.metadata.get("classifications", {}) or {}),
                     "partial": evidence.partial,
                     "sequence_ok": evidence.sequence_ok,
                     "checksum_ok": evidence.checksum_ok,
                     "lifecycle_snapshot_count": evidence.lifecycle_snapshot_count,
+                    "lifecycle_snapshot_seeded": bool(evidence.metadata.get("lifecycle_snapshot_seeded", False)),
+                    "ws_lifecycle_observability": bool(evidence.metadata.get("ws_lifecycle_observability", False)),
+                    "single_process_lifecycle_equivalent": bool(evidence.metadata.get("single_process_lifecycle_equivalent", False)),
                 },
             },
         )

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime
 import json
 import os
+from pathlib import Path
 import time
 from typing import Any
 
@@ -58,6 +59,7 @@ class LiveDecisionContext:
     adaptive_exit_allocation: Any | None = None
     execution_simulation_report: Any | None = None
     human_escalation_decision: Any | None = None
+    decision_collapse_trace: Any | None = None
     health_stage_ms: float = 0.0
     risk_stage_ms: float = 0.0
     execution_stage_ms: float = 0.0
@@ -184,6 +186,13 @@ class LiveMarketCoordinator:
         else:
             self.observability.journal("signal_interference_journal", payload)
 
+    def _book_liveliness_score(self, *, book_repeat_count: float, seconds_since_distinct_book_change: float, public_market_data_connected: bool) -> float:
+        if not public_market_data_connected:
+            return 0.0
+        repeat_penalty = min(max(float(book_repeat_count), 0.0) / 6.0, 1.0)
+        age_penalty = min(max(float(seconds_since_distinct_book_change), 0.0) / 18.0, 1.0)
+        return max(0.0, min(1.0, 1.0 - repeat_penalty * 0.45 - age_penalty * 0.55))
+
     def _coerce_feed_dt(self, raw: Any, *, fallback: datetime) -> datetime:
         if isinstance(raw, datetime):
             feed_dt = raw
@@ -239,7 +248,7 @@ class LiveMarketCoordinator:
                 payload = dict(live.market_integrity_evidence())
             except Exception:
                 payload = {}
-        feed_ts = payload.get("ts", book_raw.get("ts", book_raw.get("timestamp", book_raw.get("event_time", now_dt))))
+        feed_ts = payload.get("ts") or book_raw.get("ts") or book_raw.get("timestamp") or book_raw.get("event_time") or now_dt
         feed_dt = self._coerce_feed_dt(feed_ts, fallback=now_dt)
         age_seconds = max(0.0, (now_dt - feed_dt).total_seconds())
         sequence_ok = bool(payload.get("sequence_ok", book_raw.get("sequence_ok", book_raw.get("sequenceOk", True))))
@@ -293,7 +302,13 @@ class LiveMarketCoordinator:
         market_started = time.perf_counter()
         snapshot = self.market_data.build_live_snapshot(
             symbol,
-            {"bidPrice": bid, "askPrice": ask, "bidQty": bid_qty, "askQty": ask_qty},
+            {
+                **dict(book_raw),
+                "bidPrice": bid,
+                "askPrice": ask,
+                "bidQty": bid_qty,
+                "askQty": ask_qty,
+            },
             recent_mids=prices,
             ts=now_dt,
         )
@@ -307,6 +322,30 @@ class LiveMarketCoordinator:
             now_dt=now_dt,
             symbol=symbol,
             provider_id=provider_id,
+        )
+        book_repeat_count = float(getattr(integrity_evidence, "metadata", {}).get("book_repeat_count", 0.0) or 0.0)
+        seconds_since_book_change = float(getattr(integrity_evidence, "metadata", {}).get("seconds_since_distinct_book_change", 0.0) or 0.0)
+        public_market_data_connected = bool(getattr(integrity_evidence, "metadata", {}).get("public_market_data_connected", False))
+        book_liveliness_score = self._book_liveliness_score(
+            book_repeat_count=book_repeat_count,
+            seconds_since_distinct_book_change=seconds_since_book_change,
+            public_market_data_connected=public_market_data_connected,
+        )
+        features.update(
+            {
+                "book_repeat_count": book_repeat_count,
+                "seconds_since_distinct_book_change": seconds_since_book_change,
+                "book_liveliness_score": book_liveliness_score,
+                "public_market_data_connected": 1.0 if public_market_data_connected else 0.0,
+            }
+        )
+        snapshot.metadata.update(
+            {
+                "book_repeat_count": int(book_repeat_count),
+                "seconds_since_distinct_book_change": seconds_since_book_change,
+                "book_liveliness_score": book_liveliness_score,
+                "public_market_data_connected": public_market_data_connected,
+            }
         )
         market_health = self.market_data.assess_health(
             snapshot,
@@ -625,6 +664,7 @@ class LiveDecisionCoordinator:
         execution: Any,
         observability: Any,
         settings: Any,
+        mastermind: Any | None = None,
         profitability: Any | None = None,
         inventory: Any | None = None,
         reporting: Any | None = None,
@@ -639,6 +679,7 @@ class LiveDecisionCoordinator:
         self.policy = policy
         self.risk = risk
         self.execution = execution
+        self.mastermind = mastermind
         self.profitability = profitability
         self.inventory = inventory
         self.reporting = reporting
@@ -651,10 +692,140 @@ class LiveDecisionCoordinator:
         self.observability = observability
         self.settings = settings
 
+    def _anomaly_pressure(self, market: LiveMarketContext) -> float:
+        warning = str(getattr(market.regime_assessment, "degradation_warning", "") or "")
+        integrity_action = str(getattr(market.market_integrity, "action", "continue") or "continue")
+        if not warning:
+            return 0.0
+        if integrity_action in {"halt", "flatten_only"}:
+            return 1.0
+        if warning in {"low_energy_but_book_alive"}:
+            return 0.20
+        if warning in {"dead_market", "exchange_health_bad", "market_integrity_stale_feed"}:
+            return 1.0
+        if any(token in warning for token in ("sequence", "checksum", "stale", "gap", "mismatch")):
+            return 0.90
+        if integrity_action == "degrade":
+            return 0.65
+        return 0.35
+
+    def _lifecycle_proof_settings(self) -> dict[str, Any]:
+        resolver = getattr(self.settings, "kraken_spot_lifecycle_proof", None)
+        payload = resolver() if callable(resolver) else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _lifecycle_proof_reserve_policy(self, *, intent_side: str) -> tuple[float, str, float]:
+        configured_pct = float(self.settings.policy.min_free_quote_reserve_pct)
+        proof = self._lifecycle_proof_settings()
+        override = proof.get("min_free_quote_reserve_pct")
+        if (
+            str(self.settings.execution.provider_id) == "kraken_spot"
+            and str(self.settings.rollout_stage().value) == "tiny_live"
+            and bool(proof.get("enabled", False))
+            and str(intent_side or "").lower() == "buy"
+            and override is not None
+        ):
+            applied_pct = min(configured_pct, max(0.0, float(override)))
+            return applied_pct, "tiny_live_lifecycle_proof_override", configured_pct
+        return configured_pct, "policy_default", configured_pct
+
+    def _lifecycle_proof_eligible(
+        self,
+        *,
+        market: LiveMarketContext,
+        policy_decision: Any,
+        risk_decision: Any,
+    ) -> tuple[bool, dict[str, Any]]:
+        proof = self._lifecycle_proof_settings()
+        enabled = bool(proof.get("enabled", False))
+        rollout_stage = str(self.settings.rollout_stage().value)
+        doctrine = getattr(policy_decision, "why", {}) if hasattr(policy_decision, "why") else {}
+        doctrine_payload = doctrine.get("decision_doctrine", {}) if isinstance(doctrine, dict) else {}
+        doctrine_action = str(doctrine_payload.get("recommended_action", "continue") or "continue")
+        mastermind_decision = str(getattr(getattr(market, "advisory", None), "decision", "CONTINUE") or "CONTINUE").upper()
+        raw_notional = float(getattr(risk_decision, "adjusted_notional", 0.0) or 0.0)
+        max_notional = float(proof.get("max_notional", 0.0) or 0.0)
+        constraints = self.execution.venue_constraints(getattr(policy_decision, "symbol", market.snapshot.symbol))
+        min_notional = float(getattr(constraints, "min_notional", 0.0) or 0.0)
+        proof_target_notional = min(raw_notional, max_notional) if max_notional > 0.0 else raw_notional
+        eligible = (
+            enabled
+            and rollout_stage == "tiny_live"
+            and str(self.settings.execution.provider_id) == "kraken_spot"
+            and str(getattr(market.market_integrity, "action", "continue") or "continue") == "continue"
+            and str(getattr(getattr(market, "market_watch", None), "action", "continue") or "continue") != "block_entries"
+            and doctrine_action in {"probe", "trade_smaller", "continue"}
+            and mastermind_decision != "NO_TRADE"
+            and raw_notional >= min_notional
+            and proof_target_notional >= min_notional
+        )
+        return eligible, {
+            "enabled": enabled,
+            "rollout_stage": rollout_stage,
+            "doctrine_action": doctrine_action,
+            "mastermind_decision": mastermind_decision,
+            "raw_notional": raw_notional,
+            "proof_target_notional": proof_target_notional,
+            "max_notional": max_notional,
+            "min_notional": min_notional,
+        }
+
+    def _apply_lifecycle_proof_uplift(
+        self,
+        *,
+        intent: OrderIntent,
+        policy_decision: Any,
+        risk_decision: Any,
+        proof_details: dict[str, Any],
+    ) -> OrderIntent:
+        proof_target_notional = max(
+            float(proof_details.get("min_notional", 0.0) or 0.0),
+            float(proof_details.get("proof_target_notional", 0.0) or 0.0),
+        )
+        why = dict(intent.why) if isinstance(intent.why, dict) else {}
+        why["lifecycle_proof"] = {
+            "enabled": True,
+            "mode": "tiny_live_bounded_lifecycle_proof",
+            "reason": "venue_min_notional_proof_uplift",
+            "requested_notional": float(intent.target_notional),
+            "proof_target_notional": proof_target_notional,
+            "submitted_target_notional": proof_target_notional,
+            "max_notional": float(proof_details.get("max_notional", 0.0) or 0.0),
+            "min_notional": float(proof_details.get("min_notional", 0.0) or 0.0),
+            "raw_risk_notional": float(getattr(risk_decision, "adjusted_notional", 0.0) or 0.0),
+            "market_integrity_action": str(why.get("market_integrity", {}).get("action", "continue")) if isinstance(why.get("market_integrity"), dict) else "continue",
+            "market_watch_action": str(why.get("market_watch", {}).get("action", "continue")) if isinstance(why.get("market_watch"), dict) else "continue",
+        }
+        meta_governor = why.get("meta_governor", {})
+        if isinstance(meta_governor, dict):
+            meta_governor = {**meta_governor, "proof_override": True}
+            why["meta_governor"] = meta_governor
+        return OrderIntent(
+            intent.symbol,
+            intent.side,
+            proof_target_notional,
+            why,
+        )
+
     def _with_execution_plan(self, intent: OrderIntent, execution_plan: Any) -> OrderIntent:
         why = dict(intent.why) if isinstance(intent.why, dict) else {}
-        why["execution_plan"] = asdict(execution_plan)
+        why["execution_plan"] = self._payload_dict(execution_plan)
         return OrderIntent(intent.symbol, intent.side, intent.target_notional, why)
+
+    def _payload_dict(self, payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+        if is_dataclass(payload):
+            return asdict(payload)
+        if isinstance(payload, dict):
+            return dict(payload)
+        if hasattr(payload, "__dict__"):
+            return {
+                key: value
+                for key, value in vars(payload).items()
+                if not key.startswith("_")
+            }
+        return {"value": payload}
 
     def _route(self, kind: str, payload: Any) -> None:
         route = getattr(self.observability, kind, None)
@@ -698,7 +869,7 @@ class LiveDecisionCoordinator:
             api_error_burst=len(getattr(getattr(live, "rate_limits", None), "timestamps", [])),
             order_reject_burst=len(getattr(getattr(live, "rejects", None), "timestamps", [])),
             abnormal_latency_ms=float(market.execution_quality.expected_fill_speed_ms),
-            anomaly_pressure=1.0 if market.regime_assessment.degradation_warning else 0.0,
+            anomaly_pressure=self._anomaly_pressure(market),
             market_integrity_status=market.market_integrity,
         )
         self.observability.journal("health_journal", health_snapshot)
@@ -743,13 +914,23 @@ class LiveDecisionCoordinator:
         round_trip_report = None
         if self.inventory is not None and self.profitability is not None:
             details = {} if reconciliation_report is None else getattr(reconciliation_report, "details", {})
+            reserve_minimum_pct, reserve_policy_source, configured_reserve_pct = self._lifecycle_proof_reserve_policy(
+                intent_side=str(getattr(preliminary_policy, "side", "buy") or "buy")
+            )
             reserve_state = self.inventory.reserve_state(
                 ts=market.now_dt,
                 exchange_balance=float(details.get("exchange_balance", 0.0) or 0.0),
                 local_cash_delta=float(details.get("local_cash_delta", 0.0) or 0.0),
                 gross_exposure_notional=abs(exposure_notional),
-                minimum_reserve_pct=float(self.settings.policy.min_free_quote_reserve_pct),
+                minimum_reserve_pct=reserve_minimum_pct,
                 capital_floor=float(self.settings.policy.base_risk_budget),
+                quote_asset=str(details.get("quote_asset", "") or ""),
+                quote_total_balance=None if details.get("quote_total_balance") is None else float(details.get("quote_total_balance", 0.0) or 0.0),
+                quote_free_balance=None if details.get("quote_free_balance") is None else float(details.get("quote_free_balance", 0.0) or 0.0),
+                quote_used_balance=None if details.get("quote_used_balance") is None else float(details.get("quote_used_balance", 0.0) or 0.0),
+                required_quote_with_fee_buffer=float(getattr(self.execution.venue_constraints(symbol), "min_notional", 0.0) or 0.0),
+                reserve_policy_source=reserve_policy_source,
+                configured_minimum_reserve_pct=configured_reserve_pct,
             )
             truth_snapshot = details.get("truth_confidence")
             inventory_state = self.inventory.inventory_pressure(
@@ -757,7 +938,11 @@ class LiveDecisionCoordinator:
                 ts=market.now_dt,
                 opportunity_cost_score=float(getattr(market.portfolio_allocation, "opportunity_cost_score", 0.0)),
                 unrealized_pnl=float(details.get("local_unrealized_pnl", 0.0) or 0.0),
-                truth_pressure=0.0 if truth_snapshot is None else 0.5 if "proxy" in json.dumps(truth_snapshot, sort_keys=True) else 0.0,
+                truth_pressure=0.0
+                if truth_snapshot is None
+                else 0.5
+                if "proxy" in json.dumps(truth_snapshot, sort_keys=True, default=str)
+                else 0.0,
                 execution_fragility=max(
                     float(getattr(market.execution_quality, "adverse_selection_risk", 0.0)),
                     float(getattr(getattr(market.edge_immunity_decision, "report", None), "fragility_index", 0.0) or 0.0),
@@ -905,8 +1090,46 @@ class LiveDecisionCoordinator:
                 position_morph=position_morph_plan,
                 adaptive_exit=adaptive_exit_allocation,
             )
-            if market.advisory is not None:
-                self.reporting.report_mastermind(symbol=symbol, mastermind=market.advisory)
+        truth_context = None if reconciliation_report is None else {"snapshot": getattr(reconciliation_report, "details", {}).get("truth_confidence"), "reconciliation_ok": last_recon_ok}
+        final_advisory = market.advisory
+        if self.mastermind is not None:
+            final_advisory = self.mastermind.advise(
+                symbol,
+                market.features,
+                market.forecast.regime,
+                forecast=market.forecast,
+                regime_assessment=market.regime_assessment,
+                execution_quality=market.execution_quality,
+                portfolio_allocation=market.portfolio_allocation,
+                market_integrity=market.market_integrity,
+                provider_capability=market.provider_capability,
+                event_intelligence_report=market.event_intelligence_report,
+                quantum_state=market.quantum_state,
+                edge_immunity_decision=market.edge_immunity_decision,
+                truth_context=truth_context,
+            )
+            if final_advisory is not None:
+                self._route(
+                    "route_mastermind",
+                    {
+                        "symbol": symbol,
+                        "ts": market.now_dt,
+                        "provider": final_advisory.provider,
+                        "signal": final_advisory.signal,
+                        "confidence": final_advisory.confidence,
+                        "reason": final_advisory.reason,
+                        "decision": final_advisory.decision,
+                        "risk_level": final_advisory.risk_level,
+                        "veto": final_advisory.veto,
+                        "size_multiplier": final_advisory.size_multiplier,
+                        "execution_style_bias": final_advisory.execution_style_bias,
+                        "reasons": list(final_advisory.reasons),
+                        "heuristic": final_advisory.heuristic,
+                        "raw": dict(final_advisory.raw),
+                    },
+                )
+        if self.reporting is not None and final_advisory is not None:
+            self.reporting.report_mastermind(symbol=symbol, mastermind=final_advisory)
         policy_decision = self.policy.evaluate_decision(
             market.forecast,
             market.features,
@@ -926,10 +1149,10 @@ class LiveDecisionCoordinator:
             adaptive_exit_allocation=adaptive_exit_allocation,
             execution_simulation_report=execution_simulation_report,
             human_escalation_decision=human_escalation_decision,
-            truth_context=None if reconciliation_report is None else {"snapshot": getattr(reconciliation_report, "details", {}).get("truth_confidence"), "reconciliation_ok": last_recon_ok},
+            truth_context=truth_context,
             market_integrity_status=market.market_integrity,
             provider_capability=market.provider_capability,
-            mastermind_advisory=market.advisory,
+            mastermind_advisory=final_advisory,
             market_watch_report=market.market_watch,
         )
         self.observability.journal("policy_journal", policy_decision)
@@ -1017,18 +1240,19 @@ class LiveDecisionCoordinator:
                 return LiveDecisionContext(
                     health_snapshot=health_snapshot,
                     meta_governor_decision=meta_governor,
-                    policy_decision=policy_decision,
-                    reserve_state=reserve_state,
-                    inventory_state=inventory_state,
-                    profitability_context=profitability_context,
-                    synthetic_affect_state=synthetic_affect_state,
-                    capital_sovereignty_decision=capital_sovereignty_decision,
-                    position_morph_plan=position_morph_plan,
-                    adaptive_exit_allocation=adaptive_exit_allocation,
-                    execution_simulation_report=execution_simulation_report,
-                    human_escalation_decision=human_escalation_decision,
-                    health_stage_ms=health_stage_ms,
-                )
+            policy_decision=policy_decision,
+            reserve_state=reserve_state,
+            inventory_state=inventory_state,
+            profitability_context=profitability_context,
+            synthetic_affect_state=synthetic_affect_state,
+            capital_sovereignty_decision=capital_sovereignty_decision,
+            position_morph_plan=position_morph_plan,
+            adaptive_exit_allocation=adaptive_exit_allocation,
+            execution_simulation_report=execution_simulation_report,
+            human_escalation_decision=human_escalation_decision,
+            decision_collapse_trace=None,
+            health_stage_ms=health_stage_ms,
+        )
             intent = OrderIntent(
                 exit_intent.symbol,
                 exit_intent.side,
@@ -1049,12 +1273,12 @@ class LiveDecisionCoordinator:
                         "size_multiplier": getattr(meta_governor, "size_multiplier", 1.0),
                         "forced_risk_mode": getattr(meta_governor, "forced_risk_mode", None),
                     },
-                    "event_intelligence": {} if market.event_intelligence_report is None else asdict(market.event_intelligence_report),
+                    "event_intelligence": self._payload_dict(market.event_intelligence_report),
                     "synthetic_affect": {} if synthetic_affect_state is None else asdict(synthetic_affect_state),
                     "capital_sovereignty": {} if capital_sovereignty_decision is None else asdict(capital_sovereignty_decision),
                     "position_morph": {} if position_morph_plan is None else asdict(position_morph_plan),
                     "adaptive_exit": {} if adaptive_exit_allocation is None else asdict(adaptive_exit_allocation),
-                    "market_watch": {} if market.market_watch is None else asdict(market.market_watch),
+                    "market_watch": self._payload_dict(market.market_watch),
                     "doctrine_target": {
                         "provider": str(getattr(self.settings.doctrine, "target_provider", "") or self.settings.execution.provider_id),
                         "product": str(getattr(self.settings.doctrine, "product_target", "") or "spot"),
@@ -1160,7 +1384,7 @@ class LiveDecisionCoordinator:
                     risk_stage_ms=risk_stage_ms,
                     execution_stage_ms=(time.perf_counter() - execution_started) * 1000.0,
                 )
-            self.observability.journal("execution_journal", {"plan": asdict(execution_plan), "forecast": asdict(market.execution_quality), "capital_release": True})
+            self.observability.journal("execution_journal", {"plan": self._payload_dict(execution_plan), "forecast": self._payload_dict(market.execution_quality), "capital_release": True})
             execution_stage_ms = (time.perf_counter() - execution_started) * 1000.0
             intent = self._with_execution_plan(intent, execution_plan)
             return LiveDecisionContext(
@@ -1268,7 +1492,7 @@ class LiveDecisionCoordinator:
                     "size_multiplier": size_multiplier,
                     "forced_risk_mode": getattr(meta_governor, "forced_risk_mode", None),
                 },
-                "market_watch": {} if market.market_watch is None else asdict(market.market_watch),
+                "market_watch": self._payload_dict(market.market_watch),
                 "doctrine_target": {
                     "provider": str(getattr(self.settings.doctrine, "target_provider", "") or self.settings.execution.provider_id),
                     "product": str(getattr(self.settings.doctrine, "product_target", "") or "spot"),
@@ -1289,32 +1513,75 @@ class LiveDecisionCoordinator:
             regime=market.forecast.regime,
             liquidity_regime=market.forecast.liquidity_regime,
         )
+        lifecycle_proof_eligible, proof_details = self._lifecycle_proof_eligible(
+            market=market,
+            policy_decision=policy_decision,
+            risk_decision=risk_decision,
+        )
         if execution_plan.target_notional <= 0.0:
-            risk_decision.allowed = False
-            risk_decision.reason = "venue_constraints_block_open"
-            return LiveDecisionContext(
-                health_snapshot=health_snapshot,
-                meta_governor_decision=meta_governor,
-                policy_decision=policy_decision,
-                intent=intent,
-                risk_decision=risk_decision,
-                adjusted_intent=None,
-                execution_plan=None,
-                reserve_state=reserve_state,
-                inventory_state=inventory_state,
-                profitability_context=profitability_context,
-                exit_intent=exit_intent,
-                synthetic_affect_state=synthetic_affect_state,
-                capital_sovereignty_decision=capital_sovereignty_decision,
-                position_morph_plan=position_morph_plan,
-                adaptive_exit_allocation=adaptive_exit_allocation,
-                execution_simulation_report=execution_simulation_report,
-                human_escalation_decision=human_escalation_decision,
-                health_stage_ms=health_stage_ms,
-                risk_stage_ms=risk_stage_ms,
-                execution_stage_ms=(time.perf_counter() - execution_started) * 1000.0,
-            )
-        self.observability.journal("execution_journal", {"plan": asdict(execution_plan), "forecast": asdict(market.execution_quality)})
+            if lifecycle_proof_eligible:
+                adjusted_intent = self._apply_lifecycle_proof_uplift(
+                    intent=adjusted_intent,
+                    policy_decision=policy_decision,
+                    risk_decision=risk_decision,
+                    proof_details=proof_details,
+                )
+                execution_plan = self.execution.build_execution_plan(
+                    adjusted_intent,
+                    depth_notional=market.snapshot.depth_notional,
+                    spread_bps=market.snapshot.spread_bps,
+                    regime=market.forecast.regime,
+                    liquidity_regime=market.forecast.liquidity_regime,
+                )
+                execution_plan = replace(
+                    execution_plan,
+                    order_style="passive_limit",
+                    passive=True,
+                    child_orders=1,
+                    reasons={
+                        **dict(getattr(execution_plan, "reasons", {}) or {}),
+                        "lifecycle_proof": dict(adjusted_intent.why.get("lifecycle_proof", {})),
+                        "proof_override": {
+                            "applied": True,
+                            "reason": "venue_min_notional_proof_uplift",
+                        },
+                    },
+                )
+            if execution_plan.target_notional <= 0.0:
+                risk_decision.allowed = False
+                risk_decision.reason = "venue_constraints_block_open"
+                if lifecycle_proof_eligible:
+                    risk_decision.details = {
+                        **dict(getattr(risk_decision, "details", {}) or {}),
+                        "lifecycle_proof": {
+                            **proof_details,
+                            "applied": False,
+                            "blocked_reason": "proof_target_still_below_venue_constraints",
+                        },
+                    }
+                return LiveDecisionContext(
+                    health_snapshot=health_snapshot,
+                    meta_governor_decision=meta_governor,
+                    policy_decision=policy_decision,
+                    intent=intent,
+                    risk_decision=risk_decision,
+                    adjusted_intent=None,
+                    execution_plan=None,
+                    reserve_state=reserve_state,
+                    inventory_state=inventory_state,
+                    profitability_context=profitability_context,
+                    exit_intent=exit_intent,
+                    synthetic_affect_state=synthetic_affect_state,
+                    capital_sovereignty_decision=capital_sovereignty_decision,
+                    position_morph_plan=position_morph_plan,
+                    adaptive_exit_allocation=adaptive_exit_allocation,
+                    execution_simulation_report=execution_simulation_report,
+                    human_escalation_decision=human_escalation_decision,
+                    health_stage_ms=health_stage_ms,
+                    risk_stage_ms=risk_stage_ms,
+                    execution_stage_ms=(time.perf_counter() - execution_started) * 1000.0,
+                )
+        self.observability.journal("execution_journal", {"plan": self._payload_dict(execution_plan), "forecast": self._payload_dict(market.execution_quality)})
         execution_stage_ms = (time.perf_counter() - execution_started) * 1000.0
         adjusted_intent = self._with_execution_plan(adjusted_intent, execution_plan)
         return LiveDecisionContext(

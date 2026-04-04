@@ -184,6 +184,39 @@ def test_spre_engine_collapses_probe_selection_to_trade_smaller():
     assert "probe_entry_dominant" in decision.reasons
 
 
+def test_spre_engine_prefers_bounded_probe_when_edge_survives_and_ambiguity_is_not_adverse():
+    decision = SPREEngine().evaluate(
+        symbol="SOL/EUR",
+        ts=datetime.now(timezone.utc),
+        combined_signal=14.0,
+        expected_edge_bps=53.59918780936158,
+        expected_cost_bps=38.952125971379196,
+        uncertainty=0.5461867401305002,
+        quantum_state=SimpleNamespace(
+            collapse_decision=SimpleNamespace(
+                expected_move_bps=1237.1157462604012,
+                no_trade_probability=0.3938570023380764,
+                execution_fragility_score=0.34046422402702964,
+                branch_disagreement_score=0.717977563431909,
+                scenario_drift_score=0.7318755987183742,
+            ),
+        ),
+        edge_immunity_decision=SimpleNamespace(
+            report=SimpleNamespace(
+                fragility_index=0.20094846277861933,
+                wait_value_score=0.1,
+            ),
+        ),
+        profitability_context={"round_trip": {"recommended_size_multiplier": 1.0}},
+        synthetic_affect_state=SimpleNamespace(no_trade_threshold_shift=0.05238728109018716),
+        execution_simulation_report=SimpleNamespace(worst_case_cost_bps=2.601377199695287),
+    )
+
+    assert decision.dominant_action == "trade_smaller"
+    assert decision.metadata["internal_action"] in {"probe", "trade_smaller"}
+    assert 0.0 < decision.size_multiplier <= 0.5
+
+
 def test_calibration_service_emits_spre_and_shadow_bias_metadata():
     calibration = CalibrationService()
     profile = calibration.update_from_episodes(

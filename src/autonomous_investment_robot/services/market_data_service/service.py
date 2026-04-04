@@ -22,7 +22,9 @@ class MarketDataService:
         ask_qty = float(book.get("askQty", 0.0))
         mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
         spread_bps = ((ask - bid) / max(mid, 1e-9)) * 10000.0 if mid > 0 else 0.0
-        depth_notional = (bid * max(bid_qty, 0.0)) + (ask * max(ask_qty, 0.0))
+        depth_notional = float(book.get("depthNotional", 0.0) or 0.0)
+        if depth_notional <= 0.0:
+            depth_notional = (bid * max(bid_qty, 0.0)) + (ask * max(ask_qty, 0.0))
         flow_imbalance = (bid_qty - ask_qty) / max(bid_qty + ask_qty, 1e-9)
         mids = (recent_mids or []) + ([mid] if mid > 0 else [])
         realized_vol = 0.0
@@ -49,7 +51,9 @@ class MarketDataService:
         mids = recent_mids or [snapshot.mid]
         ret_1 = 0.0 if len(mids) < 2 else (mids[-1] / max(mids[-2], 1e-9) - 1.0)
         ret_3 = 0.0 if len(mids) < 4 else (mids[-1] / max(mids[-4], 1e-9) - 1.0)
+        metadata = dict(snapshot.metadata or {})
         return {
+            "history_points": float(len(mids)),
             "ret_1": ret_1,
             "ret_3": ret_3,
             "realized_vol": snapshot.realized_vol,
@@ -64,6 +68,10 @@ class MarketDataService:
             "flow_imbalance": snapshot.flow_imbalance,
             "mark_price": snapshot.mark_price,
             "spot_price_proxy": snapshot.secondary_price,
+            "book_repeat_count": float(metadata.get("book_repeat_count", 0.0) or 0.0),
+            "seconds_since_distinct_book_change": float(metadata.get("seconds_since_distinct_book_change", 0.0) or 0.0),
+            "book_liveliness_score": float(metadata.get("book_liveliness_score", 0.0) or 0.0),
+            "public_market_data_connected": 1.0 if bool(metadata.get("public_market_data_connected", False)) else 0.0,
         }
 
     def assess_health(

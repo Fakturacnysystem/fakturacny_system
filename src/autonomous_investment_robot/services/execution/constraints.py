@@ -82,10 +82,9 @@ class VenueConstraintsNormalizer:
             }
         rounded = notional
         if not reduce_only and constraints.min_notional > 0.0:
-            rounded = round(notional / constraints.min_notional) * constraints.min_notional
             rounded = max(constraints.min_notional, rounded)
             if abs(rounded - notional) > 1e-9:
-                reasons.append("rounded_to_venue_min_notional_grid")
+                reasons.append("raised_to_venue_min_notional")
         return float(rounded), {
             "constraints_blocked": False,
             "reasons": reasons,

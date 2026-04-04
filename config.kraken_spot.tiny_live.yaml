@@ -20,7 +20,10 @@
       "api_key_env": "KRAKEN_SPOT_API_KEY",
       "api_secret_env": "KRAKEN_SPOT_API_SECRET",
       "allow_unknown_permissions": false,
-      "event_feed_path": ""
+      "event_feed_path": "",
+      "lifecycle_proof_enabled": true,
+      "lifecycle_proof_max_notional": 12.0,
+      "lifecycle_proof_timeout_s": 3
     }
   },
   "safety": {

@@ -43,6 +43,16 @@ def _branch_move(label: str, mu_bps: float, ret1_bps: float, ret3_bps: float, vo
     return mu_bps
 
 
+def _directional_pressure(mu_bps: float, *, regime_label: str, positive: bool) -> float:
+    magnitude = max(mu_bps, 0.0) if positive else max(-mu_bps, 0.0)
+    scale = 90.0 if positive else 100.0
+    pressure = min(magnitude / scale, 0.24)
+    regime_hint = regime_label.lower()
+    if any(token in regime_hint for token in {"mean", "dead", "chop", "range"}):
+        pressure *= 0.35
+    return pressure
+
+
 def build_scenario_tree(
     *,
     symbol: str,
@@ -64,13 +74,13 @@ def build_scenario_tree(
     fill_probability = float(getattr(execution_quality, "fill_probability", 0.5))
 
     raw = {
-        "bullish_continuation": 0.14 + max(mu_bps, 0.0) / 90.0 + (0.18 if regime_label == "trend" else 0.0),
+        "bullish_continuation": 0.14 + _directional_pressure(mu_bps, regime_label=regime_label, positive=True) + (0.18 if regime_label == "trend" else 0.0),
         "failed_breakout": 0.10 + (0.22 if regime_label == "fake_breakout" else 0.0) + (0.08 if flow * ret3_bps < 0.0 else 0.0),
         "mean_reversion_snapback": 0.12 + min(abs(ret1_bps) / 80.0, 0.2) + (0.16 if regime_label in {"mean_reversion", "low_vol_chop"} else 0.0),
         "volatility_expansion": 0.12 + min(vol_bps / 120.0, 0.22) + (0.18 if regime_label in {"high_vol_expansion", "news_chaos"} else 0.0),
         "liquidity_sweep_reversal": 0.08 + min(liquidations / 120000.0, 0.2) + (0.16 if regime_label == "liquidity_vacuum" else 0.0),
         "dead_market_drift": 0.08 + (0.28 if regime_label == "dead_market" else 0.0) + (0.08 if abs(mu_bps) < 4.0 else 0.0),
-        "panic_flush": 0.08 + (0.28 if regime_label in {"liquidity_vacuum", "news_chaos"} else 0.0) + max(-mu_bps, 0.0) / 100.0,
+        "panic_flush": 0.08 + (0.28 if regime_label in {"liquidity_vacuum", "news_chaos"} else 0.0) + _directional_pressure(mu_bps, regime_label=regime_label, positive=False),
         "squeeze": 0.08 + max(abs(flow) - 0.2, 0.0) * 0.35 + (0.08 if spread_bps <= 6.0 else 0.0),
     }
     probabilities = normalize(raw)

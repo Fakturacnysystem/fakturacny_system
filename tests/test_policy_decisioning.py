@@ -109,6 +109,78 @@ def test_kraken_spot_doctrine_filter_turns_negative_directional_entry_into_no_tr
     assert "blocked_negative_direction_entry:trend" in decision.no_trade.reasons
 
 
+def test_empty_signal_decision_prefers_external_quote_capital_truth() -> None:
+    svc = _kraken_spot_policy()
+
+    def _no_signals(features, forecast):  # noqa: ARG001
+        svc.last_doctrine_filter_reasons = [
+            "blocked_doctrine_incompatible_strategy:delta_neutral_carry",
+            "blocked_doctrine_incompatible_strategy:basis",
+        ]
+        svc.last_doctrine_blocked_strategies = ["delta_neutral_carry", "basis"]
+        return []
+
+    svc.evaluate_strategies = _no_signals  # type: ignore[method-assign]
+    fc = _forecast()
+    profitability = {
+        "capital_release": {
+            "metadata": {
+                "reserve_state": {
+                    "quote_asset": "EUR",
+                    "quote_free_balance": 0.0086,
+                    "entry_buying_power_quote": 0.0086,
+                    "required_quote_with_fee_buffer": 5.0,
+                    "reasons": ["insufficient_quote_below_min_order_quote"],
+                }
+            }
+        }
+    }
+
+    decision = svc.evaluate_decision(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0005, "spread_proxy": 0.0},
+        1.0,
+        0.1,
+        profitability_context=profitability,
+    )
+
+    assert decision.trade_allowed is False
+    assert decision.no_trade is not None
+    assert decision.no_trade.reason == "insufficient_quote_external_capital"
+    assert "insufficient_quote_below_min_order_quote" in decision.no_trade.reasons
+    assert decision.profitability == profitability
+
+
+def test_empty_signal_decision_prefers_directional_cooldown_over_doctrine_filter() -> None:
+    svc = _kraken_spot_policy()
+
+    def _no_signals(features, forecast):  # noqa: ARG001
+        svc.last_doctrine_filter_reasons = [
+            "blocked_doctrine_incompatible_strategy:delta_neutral_carry",
+            "blocked_doctrine_incompatible_strategy:basis",
+        ]
+        svc.last_doctrine_blocked_strategies = ["delta_neutral_carry", "basis"]
+        return []
+
+    svc.evaluate_strategies = _no_signals  # type: ignore[method-assign]
+    svc.strategy_regime_cooldowns[("trend", "RANGE")] = 3
+    svc.strategy_regime_cooldowns[("mean_reversion", "RANGE")] = 2
+    fc = _forecast()
+
+    decision = svc.evaluate_decision(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0005, "spread_proxy": 0.0},
+        1.0,
+        0.1,
+    )
+
+    assert decision.trade_allowed is False
+    assert decision.no_trade is not None
+    assert decision.no_trade.reason == "directional_signal_cooldown"
+    assert "directional_strategy_cooldown:trend@RANGE:3" in decision.no_trade.reasons
+    assert "directional_strategy_cooldown:mean_reversion@RANGE:2" in decision.no_trade.reasons
+
+
 def test_make_intent_remains_compatible_with_structured_decision():
     svc = _policy()
     fc = _forecast()

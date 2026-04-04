@@ -163,6 +163,35 @@ def test_execution_service_uses_doctrine_context_to_make_forced_exit_more_aggres
     assert plan.reasons["global_execution_adjustments"]["preferred_exit_style"] == "marketable_limit"
 
 
+def test_execution_service_preserves_lifecycle_proof_submitted_notional_for_kraken_spot():
+    svc = ExecutionService(ExecutionSettings(provider_id="kraken_spot", fee_bps=30.0, slippage_bps=8.0))
+    intent = OrderIntent(
+        symbol="BTC/USD",
+        side="buy",
+        target_notional=12.0,
+        why={
+            "decision_doctrine": {"recommended_action": "probe", "size_multiplier": 0.5},
+            "lifecycle_proof": {
+                "enabled": True,
+                "proof_target_notional": 12.0,
+                "submitted_target_notional": 12.0,
+            },
+        },
+    )
+
+    plan = svc.build_execution_plan(intent, depth_notional=100000.0, spread_bps=2.0, regime="RANGE", liquidity_regime="GOOD")
+
+    assert plan.target_notional == pytest.approx(12.0)
+    assert plan.reasons["constraint_adjustment"]["constraints_blocked"] is False
+    assert plan.reasons["notional_breakdown"] == {
+        "policy_requested_notional": 12.0,
+        "constraint_normalized_notional": 12.0,
+        "doctrine_scaled_notional": 6.0,
+        "proof_override_notional": 12.0,
+        "submitted_target_notional": 12.0,
+    }
+
+
 def test_execution_service_exposes_provider_capability_matrix():
     svc = ExecutionService(ExecutionSettings(provider_id="kraken_derivatives"))
 

@@ -116,3 +116,39 @@ def test_decision_doctrine_respects_mastermind_veto():
     assert report.recommended_action == "no_trade"
     assert "doctrine_mastermind_veto" in report.reasons
     assert report.metadata["mastermind_action"] == "no_trade"
+
+
+def test_decision_doctrine_preserves_wait_for_mastermind_caution_without_hard_veto():
+    svc = DecisionDoctrineService()
+
+    report = svc.evaluate(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        base_uncertainty=0.2,
+        truth_context={
+            "snapshot": {
+                "fill_truth_confidence": {"level": "authoritative"},
+                "fee_truth_confidence": {"level": "authoritative"},
+                "realized_pnl_confidence": {"level": "authoritative"},
+                "balance_truth_confidence": {"level": "authoritative"},
+                "exposure_truth_confidence": {"level": "authoritative"},
+                "market_data_truth_confidence": {"level": "authoritative"},
+                "unrealized_pnl_confidence": {"level": "authoritative"},
+            },
+            "reconciliation_ok": True,
+        },
+        market_integrity_status=SimpleNamespace(score=0.93, action="continue", reasons=[]),
+        provider_capability=SimpleNamespace(
+            user_stream_confidence="rest_history_only",
+            lifecycle_completeness="partial_without_snapshot",
+            fee_truth_confidence="partial_exchange_history",
+        ),
+        execution_quality=SimpleNamespace(fill_probability=0.88, adverse_selection_risk=0.06, expected_fill_speed_ms=120),
+        portfolio_allocation=SimpleNamespace(),
+        profitability_context={"round_trip": {"net_edge_bps": 26.0}},
+        mastermind_advisory=SimpleNamespace(decision="NO_TRADE", confidence=0.46, risk_level=58.0, size_multiplier=0.0, reasons=["mastermind_uncertain"]),
+    )
+
+    assert report.recommended_action == "wait"
+    assert "doctrine_mastermind_caution_wait" in report.reasons
+    assert report.metadata["mastermind_action"] == "no_trade"

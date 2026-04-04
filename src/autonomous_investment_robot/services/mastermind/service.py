@@ -32,7 +32,7 @@ class MastermindService:
 
     def _truth_penalty(self, truth_context: dict[str, Any] | None) -> tuple[float, list[str]]:
         if not truth_context:
-            return 0.25, ["truth_context_missing"]
+            return 0.20, ["truth_context_missing"]
         snapshot = truth_context.get("snapshot", truth_context.get("truth_confidence", truth_context))
         if not isinstance(snapshot, dict):
             return 0.35, ["truth_context_unstructured"]
@@ -60,25 +60,25 @@ class MastermindService:
             penalties.append(0.9)
             reasons.append("reconciliation_not_ok")
         if not penalties:
-            return 0.2, ["truth_context_empty"]
+            return 0.15, ["truth_context_empty"]
         return self._clamp(sum(penalties) / len(penalties)), sorted(set(reasons))
 
     def _provider_penalty(self, provider_capability: object | None) -> tuple[float, list[str]]:
         if provider_capability is None:
-            return 0.2, ["provider_capability_missing"]
+            return 0.15, ["provider_capability_missing"]
         reasons: list[str] = []
         penalty = 0.0
         lifecycle = str(getattr(provider_capability, "lifecycle_completeness", "") or "").lower()
         user_stream = str(getattr(provider_capability, "user_stream_confidence", "") or "").lower()
         fee_truth = str(getattr(provider_capability, "fee_truth_confidence", "") or "").lower()
         if lifecycle and "partial" in lifecycle:
-            penalty += 0.2
+            penalty += 0.15
             reasons.append("lifecycle_partial")
         if lifecycle and "weak" in lifecycle:
-            penalty += 0.35
+            penalty += 0.30
             reasons.append("lifecycle_weak")
         if user_stream == "rest_history_only":
-            penalty += 0.2
+            penalty += 0.15
             reasons.append("user_stream_rest_only")
         if fee_truth and ("partial" in fee_truth or "proxy" in fee_truth):
             penalty += 0.1
@@ -87,7 +87,7 @@ class MastermindService:
 
     def _market_penalty(self, market_integrity: object | None) -> tuple[float, str, list[str]]:
         if market_integrity is None:
-            return 0.2, "continue", ["market_integrity_missing"]
+            return 0.10, "continue", ["market_integrity_missing"]
         action = str(getattr(market_integrity, "action", "continue") or "continue").lower()
         score = self._clamp(float(getattr(market_integrity, "score", 0.75) or 0.75))
         penalty = max(0.0, 1.0 - score)
@@ -136,16 +136,25 @@ class MastermindService:
         momentum_support = self._clamp(0.5 + max(-0.45, min(0.45, (ret1_bps + ret3_bps * 0.5) / 50.0)))
         flow_support = self._clamp(0.5 + max(-0.35, min(0.35, flow_imbalance)))
         execution_toxicity = self._clamp(max(1.0 - fill_probability, adverse_selection))
-        fragility = self._clamp(
+        market_toxicity = self._clamp(
             max(
                 1.0 - market_quality,
                 event_risk,
-                quantum_uncertainty,
-                edge_fragility,
-                truth_penalty,
-                provider_penalty,
                 market_penalty,
                 execution_toxicity,
+            )
+        )
+        observability_penalty = self._clamp(max(truth_penalty * 0.85, provider_penalty, market_penalty * 0.60))
+        decision_uncertainty = self._clamp(max(quantum_uncertainty * 0.70, edge_fragility * 0.80, 1.0 - forecast_confidence))
+        caution_pressure = self._clamp(max(observability_penalty, decision_uncertainty, event_risk * 0.75))
+        fragility = self._clamp(
+            max(
+                market_toxicity,
+                execution_toxicity,
+                truth_penalty * 0.65,
+                provider_penalty * 0.60,
+                quantum_uncertainty * 0.55,
+                edge_fragility * 0.75,
             )
         )
         survival_support = self._clamp(0.35 * edge_survival + 0.25 * market_quality + 0.20 * forecast_confidence + 0.20 * (1.0 - execution_toxicity))
@@ -154,7 +163,7 @@ class MastermindService:
             + 0.20 * momentum_support
             + 0.10 * flow_support
             + 0.20 * (1.0 - event_risk)
-            + 0.20 * (1.0 - quantum_uncertainty)
+            + 0.20 * (1.0 - decision_uncertainty)
         )
         reasons = truth_reasons + provider_reasons + market_reasons
 
@@ -164,6 +173,7 @@ class MastermindService:
         size_multiplier = 1.0
         execution_style_bias = "unchanged"
         veto = False
+        veto_chain: list[str] = []
 
         if market_action in {"halt", "flatten_only"}:
             decision = "NO_TRADE"
@@ -171,42 +181,49 @@ class MastermindService:
             signal = "integrity_block"
             veto = True
             size_multiplier = 0.0
-        elif truth_penalty >= 0.8:
+            veto_chain.append("market_integrity_hard_block")
+        elif truth_penalty >= 0.9:
             decision = "NO_TRADE"
             reason = "truth_not_strong_enough"
             signal = "truth_block"
             veto = True
             size_multiplier = 0.0
-        elif event_action == "no_trade" or execution_toxicity >= 0.8 or fragility >= 0.85:
+            veto_chain.append("truth_hard_block")
+        elif event_action == "no_trade" or market_toxicity >= 0.92 or execution_toxicity >= 0.85:
             decision = "NO_TRADE"
             reason = "hostile_future_breaks_thesis"
             signal = "fragile_edge"
             veto = True
             size_multiplier = 0.0
-        elif event_action == "wait" or quantum_uncertainty >= 0.7 or fragility >= 0.65 or survival_support < 0.45:
+            veto_chain.append("market_toxicity_or_execution_break")
+        elif event_action == "wait" or decision_uncertainty >= 0.72 or caution_pressure >= 0.72 or survival_support < 0.45:
             decision = "WAIT"
             reason = "uncertainty_requires_wait"
             signal = "wait_dominates"
             size_multiplier = 0.0
             execution_style_bias = "passive_limit"
+            veto_chain.append("uncertainty_wait")
         elif forecast_edge_bps < 8.0 or conviction < 0.45 or edge_survival < 0.55:
             decision = "PROBE"
             reason = "edge_not_robust_enough_for_full_size"
             signal = "probe_only"
             size_multiplier = 0.2
             execution_style_bias = "passive_limit"
-        elif fragility >= 0.45 or event_action == "trade_smaller" or market_action == "degrade":
+            veto_chain.append("bounded_probe")
+        elif fragility >= 0.45 or event_action == "trade_smaller" or market_action == "degrade" or observability_penalty >= 0.45:
             decision = "TRADE_SMALLER"
             reason = "bounded_risk_requires_smaller_size"
             signal = "size_down"
             size_multiplier = 0.45
             execution_style_bias = "passive_limit"
+            veto_chain.append("bounded_size_reduction")
         elif regime.lower() in {"panic", "news_chaos", "dead_market"}:
             decision = "WAIT"
             reason = "regime_unfavorable_for_fresh_risk"
             signal = "regime_wait"
             size_multiplier = 0.0
             execution_style_bias = "passive_limit"
+            veto_chain.append("regime_wait")
 
         confidence = self._clamp(
             0.45 * (1.0 - fragility)
@@ -216,11 +233,11 @@ class MastermindService:
         )
         risk_level = self._clamp(
             max(
-                fragility,
-                truth_penalty,
-                provider_penalty,
-                market_penalty,
+                market_toxicity,
                 execution_toxicity,
+                truth_penalty * 0.85,
+                provider_penalty * 0.65,
+                decision_uncertainty * 0.75,
             )
         ) * 100.0
         reasons.append(f"mastermind_{decision.lower()}")
@@ -246,6 +263,10 @@ class MastermindService:
                 "momentum_support": momentum_support,
                 "flow_support": flow_support,
                 "fragility": fragility,
+                "market_toxicity": market_toxicity,
+                "observability_penalty": observability_penalty,
+                "decision_uncertainty": decision_uncertainty,
+                "caution_pressure": caution_pressure,
                 "survival_support": survival_support,
                 "conviction": conviction,
                 "event_action": event_action,
@@ -257,6 +278,24 @@ class MastermindService:
                 "provider_penalty": provider_penalty,
                 "market_penalty": market_penalty,
                 "execution_toxicity": execution_toxicity,
+                "risk_components": {
+                    "market_toxicity": market_toxicity,
+                    "execution_toxicity": execution_toxicity,
+                    "truth_penalty": truth_penalty * 0.85,
+                    "provider_penalty": provider_penalty * 0.65,
+                    "decision_uncertainty": decision_uncertainty * 0.75,
+                },
+                "observability_components": {
+                    "truth_penalty": truth_penalty,
+                    "provider_penalty": provider_penalty,
+                    "market_penalty": market_penalty * 0.60,
+                },
+                "uncertainty_components": {
+                    "quantum_uncertainty": quantum_uncertainty * 0.70,
+                    "edge_fragility": edge_fragility * 0.80,
+                    "forecast_confidence_gap": 1.0 - forecast_confidence,
+                },
+                "veto_chain": veto_chain,
                 "spread_bps": spread_bps,
                 "depth_notional": depth_notional,
                 "realized_vol_bps": realized_vol_bps,

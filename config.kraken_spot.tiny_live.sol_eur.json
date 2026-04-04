@@ -1,0 +1,101 @@
+{
+  "mode": "live",
+  "rollout_stage": "tiny_live",
+  "safe_mode_default": false,
+  "provider_whitelist": ["kraken_spot"],
+  "universe": ["SOL/EUR"],
+  "execution": {
+    "provider_id": "kraken_spot",
+    "mode": "live",
+    "fee_bps": 30.0,
+    "slippage_bps": 8.0,
+    "maker_preference": true,
+    "maker_timeout_s": 10,
+    "max_participation_rate": 0.04,
+    "max_pct_volume": 0.04,
+    "max_pct_top_depth": 0.05,
+    "kraken_spot": {
+      "rest_base_url": "https://api.kraken.com",
+      "ws_public_url": "wss://ws.kraken.com/v2",
+      "api_key_env": "KRAKEN_SPOT_API_KEY",
+      "api_secret_env": "KRAKEN_SPOT_API_SECRET",
+      "allow_unknown_permissions": false,
+      "event_feed_path": "",
+      "lifecycle_proof_enabled": true,
+      "lifecycle_proof_max_notional": 12.0,
+      "lifecycle_proof_timeout_s": 3,
+      "lifecycle_proof_min_free_quote_reserve_pct": 0.0
+    }
+  },
+  "safety": {
+    "live_unlock": {
+      "enable_live_trading": false,
+      "ack_i_understand_risks": false,
+      "require_testnet_passed": false,
+      "canary_required_before_full": true,
+      "allow_full_live_stage": false
+    }
+  },
+  "canary_mode": false,
+  "doctrine": {
+    "target_provider": "kraken_spot",
+    "product_target": "spot",
+    "long_only": true,
+    "never_open_new_short_exposure": true,
+    "minimum_sell_net_profit_bps": 120.0,
+    "enforce_cost_basis_sell_block": true,
+    "enforce_net_profit_sell_block": true,
+    "block_non_reduce_only_sells": true
+  },
+  "harmony": {
+    "enabled": true,
+    "default_order_cadence_s": 7.0
+  },
+  "market_watch": {
+    "enabled": true,
+    "blackout_windows": [],
+    "entry_block_max_spread_bps": 18.0,
+    "entry_degrade_max_spread_bps": 10.0,
+    "entry_block_min_depth_notional": 50000.0,
+    "entry_degrade_min_depth_notional": 80000.0,
+    "liquidity_map_min_depth_notional": 80000.0,
+    "block_new_entries_on_blackout": true
+  },
+  "risk": {
+    "max_daily_loss_pct": 0.35,
+    "max_weekly_loss_pct": 0.8,
+    "max_drawdown_pct": 1.0,
+    "max_position_notional": 35.0,
+    "max_exposure_notional": 35.0,
+    "max_symbol_exposure_notional": 35.0,
+    "max_cluster_exposure_notional": 35.0,
+    "max_orders_per_min": 2,
+    "leverage": 0,
+    "target_portfolio_vol": 0.03,
+    "cvar_limit_pct": 0.5,
+    "stress_loss_limit_pct": 1.0,
+    "max_spread_bps": 12.0,
+    "min_depth_notional": 80000.0,
+    "stale_data_seconds": 8.0,
+    "min_margin_buffer": 2.0,
+    "max_funding_cost_per_day": 0.0,
+    "max_oi_spike_pct": 0.0,
+    "max_liquidation_spike": 0.0,
+    "divergence_threshold_bps": 8.0,
+    "crowding_score_kill": 10.0,
+    "crowding_score_medium": 4.0,
+    "crowding_score_high": 7.0,
+    "crowding_score_extreme": 10.0
+  },
+  "tco": {"max_total_cost_bps": 55.0, "max_impact_bps": 20.0},
+  "policy": {
+    "confidence_threshold": 0.68,
+    "estimated_cost_bps": 38.0,
+    "safety_buffer_bps": 2.0,
+    "base_risk_budget": 20.0,
+    "min_free_quote_reserve_pct": 0.55,
+    "stale_inventory_hours": 8.0,
+    "capital_release_min_stale_score": 0.25
+  },
+  "storage": {"run_dir": "runs/kraken_spot_tiny_live_sol_eur_proof_reserve"}
+}

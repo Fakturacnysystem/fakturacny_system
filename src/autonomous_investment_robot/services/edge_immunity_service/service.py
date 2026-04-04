@@ -80,12 +80,13 @@ class EdgeImmunityService:
             fragility_index=signature.fragility_index,
         )
         report.wait_value_score = wait.wait_value_score
+        wait_advantage_bps = float(wait.metadata.get("incremental_advantage_bps", 0.0) or 0.0)
         action = "trade_now"
         reason = "edge_survives_counterfactuals"
         if report.edge_survival_ratio < 0.25 or report.fragility_index >= 0.8:
             action = "no_trade"
             reason = "edge_fragile"
-        elif wait.wait_dominant and wait.wait_value_score > (report.stressed_expected_edge_bps + max(2.0, base_edge_bps * 0.05)) and report.fragility_index >= 0.35:
+        elif wait.wait_dominant and wait_advantage_bps > max(2.0, base_edge_bps * 0.05) and report.fragility_index >= 0.35:
             action = "wait"
             reason = "wait_dominance"
         elif report.fragility_index >= 0.45:

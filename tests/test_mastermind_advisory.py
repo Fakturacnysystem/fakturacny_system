@@ -54,6 +54,43 @@ def test_mastermind_local_provider_vetoes_when_truth_or_integrity_is_weak():
     assert result.reason in {"market_integrity_block", "truth_not_strong_enough", "hostile_future_breaks_thesis"}
 
 
+def test_mastermind_partial_provider_capability_adds_caution_without_auto_max_risk():
+    svc = MastermindService(provider="local")
+
+    result = svc.advise(
+        "BTCUSDT",
+        {"ret_1": 0.0007, "ret_3": 0.0014, "realized_vol": 0.0012, "spread_proxy": 0.00015, "depth_notional": 180000.0, "flow_imbalance": 0.15},
+        "range",
+        forecast=SimpleNamespace(mu=0.0012, confidence=0.72),
+        execution_quality=SimpleNamespace(fill_probability=0.82, adverse_selection_risk=0.08),
+        event_intelligence_report=SimpleNamespace(overall_risk_score=0.18, recommended_action="continue"),
+        market_integrity=SimpleNamespace(score=0.92, action="continue", reasons=[]),
+        provider_capability=SimpleNamespace(
+            user_stream_confidence="rest_history_only",
+            lifecycle_completeness="partial_without_snapshot",
+            fee_truth_confidence="partial_exchange_history",
+        ),
+        truth_context={
+            "snapshot": {
+                "fill_truth_confidence": {"level": "authoritative"},
+                "fee_truth_confidence": {"level": "partial"},
+                "realized_pnl_confidence": {"level": "authoritative"},
+                "balance_truth_confidence": {"level": "authoritative"},
+            },
+            "reconciliation_ok": True,
+        },
+        quantum_state=SimpleNamespace(collapse_decision=SimpleNamespace(uncertainty=0.46)),
+        edge_immunity=SimpleNamespace(report=SimpleNamespace(edge_survival_ratio=0.76, fragility_index=0.18)),
+    )
+
+    assert result is not None
+    assert result.decision != "NO_TRADE"
+    assert result.risk_level < 100.0
+    assert result.raw["observability_components"]["provider_penalty"] > 0.0
+    assert "market_integrity_hard_block" not in result.raw["veto_chain"]
+    assert "truth_hard_block" not in result.raw["veto_chain"]
+
+
 def test_mastermind_groq_without_key_returns_unavailable(monkeypatch):
     monkeypatch.setenv("ADVISORY_PROVIDER", "groq")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

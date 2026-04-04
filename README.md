@@ -24,6 +24,12 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
 - Reconciliation reason/severity/action model is documented in `docs/reconciliation_truth.md`.
 - Architecture/runtime upgrade details are documented in `docs/architecture_upgrade.md`.
 - Operator-facing runtime artifact and risk-mode guidance is documented in `docs/operator_runtime.md`.
+- Live authority, release baseline, promotion discipline, and operator runtime review are defined in:
+  - `LIVE_AUTHORITY_BOUNDARY.md`
+  - `RELEASE_BASELINE.md`
+  - `PROMOTION_GATES.md`
+  - `RUN_REVIEW_TEMPLATE.md`
+  - `OPERATOR_RUNTIME_CHECKLIST.md`
 
 ## Architecture highlights
 - `RobotOrchestrator` now coordinates explicit bounded contexts for market data, regime, alpha, portfolio, health, learning, and observability while preserving existing entrypoints.
@@ -118,10 +124,17 @@ ROBOT_ROLLOUT_STAGE_OVERRIDE=
 KRAKEN_SPOT_EVENT_FEED_PATH=
 ```
 
+Supported runtime env sources:
+- `TRADING_ENV_FILE=/absolute/path/to/runtime.env`
+- `${SECRETS_DIR}/trading-engine.env`
+- `~/.config/trading-bot/runtime.env`
+- `~/.config/trading-bot/trading-engine.env`
+- `./secrets/trading-engine.env`
+
 3. Controlled rollout ladder:
-1. `read_only_live` via `config.kraken_spot.readonly_analysis.yaml`
-2. `shadow` via readonly analysis plus full decision visibility
-3. `tiny_live` via `config.kraken_spot.tiny_live.yaml`
+1. `readonly` via `config.kraken_spot.readonly_analysis.yaml` with `execution.mode=live_readonly` and resolved `rollout_stage=shadow`
+2. `shadow` via readonly analysis plus additive decision-comparison artifacts
+3. `tiny_live` via `config.kraken_spot.tiny_live.yaml` with `execution.mode=live` and explicit `rollout_stage=tiny_live`
 4. `limited_live` via `config.kraken_spot.live.yaml`
 5. `normal_live` via `config.kraken_spot.live_profit.yaml` with `ENABLE_FULL_LIVE_STAGE=true`
 
@@ -287,8 +300,8 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
 
 Rollout stage mapping used by the runtime:
 - `paper` -> offline deterministic
-- `shadow` -> `live_readonly`
-- `tiny_live` -> canary-sized launch-gated `kraken_spot` profile
+- `shadow` -> readonly analytics only; no live order authority
+- `tiny_live` -> bounded first-money `kraken_spot` profile on the existing authoritative live path
 - `limited_live` -> conservative `kraken_spot` live profile
 - `normal_live` -> higher-notional `kraken_spot` live profile
 

@@ -206,3 +206,12 @@ def test_kraken_spot_readonly_analysis_emits_bundle_without_ordering(monkeypatch
     assert result["reason"] == "live_preflight_passed"
     assert (run_dir / "kraken_spot_operator_summary.json").exists()
     assert (run_dir / "kraken_spot_replay_summary.json").exists()
+    for artifact in (
+        "performance_target_translation.json",
+        "performance_gap_report.json",
+        "capital_envelope_summary.json",
+        "pair_ranking_report.json",
+        "expectancy_engine_report.json",
+        "promotion_gate_report.json",
+    ):
+        assert (run_dir / artifact).exists(), artifact

@@ -200,12 +200,26 @@ class ExecutionService:
         )
         constraints = self.venue_constraints(intent.symbol)
         doctrine_adjustments = self._global_execution_adjustments(intent, reduce_only=reduce_only)
-        normalized_notional, constraint_meta = self.constraints.normalize_target_notional(
-            target_notional=float(intent.target_notional),
+        proof_payload = {}
+        if isinstance(intent.why, dict):
+            raw_proof = intent.why.get("lifecycle_proof", {})
+            if isinstance(raw_proof, dict):
+                proof_payload = dict(raw_proof)
+        policy_requested_notional = max(0.0, float(intent.target_notional))
+        constraint_notional, constraint_meta = self.constraints.normalize_target_notional(
+            target_notional=policy_requested_notional,
             constraints=constraints,
             reduce_only=reduce_only,
         )
-        normalized_notional *= float(doctrine_adjustments["size_multiplier"])
+        doctrine_scaled_notional = constraint_notional * float(doctrine_adjustments["size_multiplier"])
+        submitted_target_notional = doctrine_scaled_notional
+        if bool(proof_payload.get("enabled", False)):
+            submitted_target_notional = max(
+                float(proof_payload.get("submitted_target_notional", 0.0) or 0.0),
+                float(proof_payload.get("proof_target_notional", 0.0) or 0.0),
+                float(constraints.min_notional or 0.0),
+            )
+        normalized_notional = submitted_target_notional
         if bool(doctrine_adjustments["hard_block"]):
             normalized_notional = 0.0
         passive = forecast.passive_preferred and self.settings.maker_preference
@@ -259,6 +273,13 @@ class ExecutionService:
                 "expected_price_quality_bps": forecast.expected_price_quality_bps,
                 "venue_constraints": constraints.__dict__,
                 "constraint_adjustment": constraint_meta,
+                "notional_breakdown": {
+                    "policy_requested_notional": policy_requested_notional,
+                    "constraint_normalized_notional": constraint_notional,
+                    "doctrine_scaled_notional": doctrine_scaled_notional,
+                    "proof_override_notional": submitted_target_notional if bool(proof_payload.get("enabled", False)) else 0.0,
+                    "submitted_target_notional": normalized_notional,
+                },
                 "decision_doctrine": self._doctrine_payload(intent),
                 "execution_simulation": self._execution_simulation_payload(intent),
                 "market_integrity": self._market_integrity_payload(intent),

@@ -103,12 +103,18 @@ class KrakenExecutionSettings:
 class KrakenSpotExecutionSettings:
     rest_base_url: str = "https://api.kraken.com"
     ws_public_url: str = "wss://ws.kraken.com/v2"
+    ws_private_url: str = "wss://ws-auth.kraken.com/"
     api_key_env: str = "KRAKEN_SPOT_API_KEY"
     api_secret_env: str = "KRAKEN_SPOT_API_SECRET"
     request_timeout_s: float = 10.0
     rate_limit_rps: float = 3.0
     allow_unknown_permissions: bool = False
     event_feed_path: str = ""
+    lifecycle_proof_enabled: bool = False
+    lifecycle_proof_max_notional: float = 12.0
+    lifecycle_proof_timeout_s: int = 3
+    lifecycle_proof_min_free_quote_reserve_pct: float | None = None
+    user_stream_connect_timeout_s: float = 3.0
 
 
 @dataclass
@@ -252,6 +258,96 @@ class MLOpsSettings:
 
 
 @dataclass
+class PerformanceTargetSettings:
+    monthly_return_pct: float = 30.0
+    max_monthly_drawdown_pct: float = 10.0
+    max_intraday_drawdown_pct: float = 3.0
+    round_trips_per_day: float = 1.0
+    capital_utilization_pct: float = 50.0
+    net_bps_per_trade: float = 20.0
+    expectancy_bps_floor: float = 5.0
+    fill_rate: float = 0.35
+    maker_ratio: float = 0.7
+    max_inventory_age_minutes: float = 720.0
+
+
+@dataclass
+class CapitalEnvelopeSettings:
+    max_pair_exposure_notional: float = 250.0
+    reserve_fraction: float = 0.35
+    max_portfolio_heat: float = 0.65
+    max_regime_heat: float = 0.45
+    max_playbook_heat: float = 0.30
+    idle_capital_alert_threshold: float = 0.60
+    target_capital_utilization_min: float = 0.35
+    max_capital_lock_time_min: float = 720.0
+    capital_efficiency_min_score: float = 0.40
+
+
+@dataclass
+class MarketUniverseSettings:
+    pair_universe: list[str] = field(default_factory=list)
+    max_active_pairs: int = 1
+    pair_rotation_interval_s: int = 300
+    pair_min_depth_notional: float = 25000.0
+    pair_max_spread_bps: float = 35.0
+    pair_min_expectancy_bps: float = 0.0
+    pair_min_fill_rate: float = 0.0
+    pair_clustering_enabled: bool = True
+    pair_admission_lookback_trades: int = 10
+    pair_expulsion_expectancy_floor_bps: float = -10.0
+
+
+@dataclass
+class PlaybookSettings:
+    enable_multi_playbook_shadow: bool = True
+    enable_multi_pair_shadow: bool = True
+    live_candidate_auction_enabled: bool = True
+    max_backlog_candidates: int = 12
+    default_opportunity_half_life_s: int = 180
+    signal_crowding_limit: float = 0.70
+    shadow_only_playbooks: list[str] = field(
+        default_factory=lambda: [
+            "inventory_unwind",
+            "profit_capture_exit",
+        ]
+    )
+
+
+@dataclass
+class ExpectancySettings:
+    rolling_window_trades: int = 50
+    min_sample_guard: int = 5
+    size_down_expectancy_floor_bps: float = 0.0
+    cooldown_expectancy_floor_bps: float = -10.0
+    disable_expectancy_floor_bps: float = -20.0
+    promotion_expectancy_bps: float = 8.0
+    intraday_session_buckets: list[str] = field(
+        default_factory=lambda: ["asia", "europe", "us", "overnight"]
+    )
+
+
+@dataclass
+class ExperimentsSettings:
+    enabled: bool = True
+    evidence_min_trades: int = 5
+    rollback_loss_bps: float = -25.0
+    staged_variants_enabled: bool = True
+    shadow_variant_bias: float = 0.20
+    promotion_score_min: float = 0.60
+
+
+@dataclass
+class OperatorKPISettings:
+    expose_advanced_runtime_panels: bool = True
+    backlog_pressure_warn: float = 0.60
+    capital_efficiency_warn: float = 0.40
+    live_degradation_warn: float = 0.45
+    false_negative_warn: float = 0.30
+    false_positive_warn: float = 0.20
+
+
+@dataclass
 class MarginSettings:
     enabled: bool = False
     max_leverage: int = 0
@@ -262,7 +358,7 @@ class MarginSettings:
 
 @dataclass
 class RobotSettings:
-    config_schema_version: int = 2
+    config_schema_version: int = 3
     trading_mode: TradingMode = TradingMode.PAPER
     explicit_live_enable: bool = False
     ack_live_risks: bool = False
@@ -288,6 +384,13 @@ class RobotSettings:
     replay: ReplaySettings = field(default_factory=ReplaySettings)
     kraken_spot_non_live: KrakenSpotNonLiveSettings = field(default_factory=KrakenSpotNonLiveSettings)
     mlops: MLOpsSettings = field(default_factory=MLOpsSettings)
+    performance_targets: PerformanceTargetSettings = field(default_factory=PerformanceTargetSettings)
+    capital_envelope: CapitalEnvelopeSettings = field(default_factory=CapitalEnvelopeSettings)
+    market_universe: MarketUniverseSettings = field(default_factory=MarketUniverseSettings)
+    playbooks: PlaybookSettings = field(default_factory=PlaybookSettings)
+    expectancy: ExpectancySettings = field(default_factory=ExpectancySettings)
+    experiments: ExperimentsSettings = field(default_factory=ExperimentsSettings)
+    operator_kpis: OperatorKPISettings = field(default_factory=OperatorKPISettings)
     margin: MarginSettings = field(default_factory=MarginSettings)
 
     @classmethod
@@ -315,6 +418,41 @@ class RobotSettings:
                     allow_full_live_stage=os.getenv("ENABLE_FULL_LIVE_STAGE", "false").lower() == "true",
                 )
             ),
+            performance_targets=PerformanceTargetSettings(
+                monthly_return_pct=_env_float("AUTONOMOUS_TARGET_MONTHLY_RETURN_PCT", 30.0),
+                max_monthly_drawdown_pct=_env_float("AUTONOMOUS_TARGET_MAX_MONTHLY_DRAWDOWN_PCT", 10.0),
+                max_intraday_drawdown_pct=_env_float("AUTONOMOUS_TARGET_MAX_INTRADAY_DRAWDOWN_PCT", 3.0),
+                round_trips_per_day=_env_float("AUTONOMOUS_TARGET_ROUND_TRIPS_PER_DAY", 1.0),
+                capital_utilization_pct=_env_float("AUTONOMOUS_TARGET_CAPITAL_UTILIZATION_PCT", 50.0),
+                net_bps_per_trade=_env_float("AUTONOMOUS_TARGET_NET_BPS_PER_TRADE", 20.0),
+                expectancy_bps_floor=_env_float("AUTONOMOUS_TARGET_EXPECTANCY_BPS_FLOOR", 5.0),
+                fill_rate=_env_float("AUTONOMOUS_TARGET_FILL_RATE", 0.35),
+                maker_ratio=_env_float("AUTONOMOUS_TARGET_MAKER_RATIO", 0.70),
+                max_inventory_age_minutes=_env_float("AUTONOMOUS_TARGET_MAX_INVENTORY_AGE_MINUTES", 720.0),
+            ),
+            capital_envelope=CapitalEnvelopeSettings(
+                max_pair_exposure_notional=_env_float("AUTONOMOUS_MAX_PAIR_EXPOSURE_NOTIONAL", 250.0),
+                reserve_fraction=_env_float("AUTONOMOUS_RESERVE_FRACTION", 0.35),
+                max_portfolio_heat=_env_float("AUTONOMOUS_MAX_PORTFOLIO_HEAT", 0.65),
+                max_regime_heat=_env_float("AUTONOMOUS_MAX_REGIME_HEAT", 0.45),
+                max_playbook_heat=_env_float("AUTONOMOUS_MAX_PLAYBOOK_HEAT", 0.30),
+                idle_capital_alert_threshold=_env_float("AUTONOMOUS_IDLE_CAPITAL_ALERT_THRESHOLD", 0.60),
+                target_capital_utilization_min=_env_float("AUTONOMOUS_TARGET_CAPITAL_UTILIZATION_MIN", 0.35),
+                max_capital_lock_time_min=_env_float("AUTONOMOUS_MAX_CAPITAL_LOCK_TIME_MIN", 720.0),
+                capital_efficiency_min_score=_env_float("AUTONOMOUS_CAPITAL_EFFICIENCY_MIN_SCORE", 0.40),
+            ),
+            market_universe=MarketUniverseSettings(
+                pair_universe=_env_csv("AUTONOMOUS_PAIR_UNIVERSE"),
+                max_active_pairs=_env_int("AUTONOMOUS_MAX_ACTIVE_PAIRS", 1),
+                pair_rotation_interval_s=_env_int("AUTONOMOUS_PAIR_ROTATION_INTERVAL_S", 300),
+                pair_min_depth_notional=_env_float("AUTONOMOUS_PAIR_MIN_DEPTH_NOTIONAL", 25000.0),
+                pair_max_spread_bps=_env_float("AUTONOMOUS_PAIR_MAX_SPREAD_BPS", 35.0),
+                pair_min_expectancy_bps=_env_float("AUTONOMOUS_PAIR_MIN_EXPECTANCY_BPS", 0.0),
+                pair_min_fill_rate=_env_float("AUTONOMOUS_PAIR_MIN_FILL_RATE", 0.0),
+                pair_clustering_enabled=_env_bool("AUTONOMOUS_PAIR_CLUSTERING_ENABLED", True),
+                pair_admission_lookback_trades=_env_int("AUTONOMOUS_PAIR_ADMISSION_LOOKBACK_TRADES", 10),
+                pair_expulsion_expectancy_floor_bps=_env_float("AUTONOMOUS_PAIR_EXPULSION_EXPECTANCY_FLOOR_BPS", -10.0),
+            ),
         )
 
     @classmethod
@@ -328,6 +466,10 @@ class RobotSettings:
         env_canary_mode = os.getenv("CANARY_MODE", "false").lower() == "true"
         env_full_live_stage = os.getenv("ENABLE_FULL_LIVE_STAGE", "false").lower() == "true"
         env_event_feed_path = os.getenv("KRAKEN_SPOT_EVENT_FEED_PATH", "").strip()
+        env_lifecycle_proof = os.getenv("KRAKEN_SPOT_LIFECYCLE_PROOF_ENABLED", "").strip().lower()
+        env_lifecycle_proof_max_notional = os.getenv("KRAKEN_SPOT_LIFECYCLE_PROOF_MAX_NOTIONAL", "").strip()
+        env_lifecycle_proof_timeout_s = os.getenv("KRAKEN_SPOT_LIFECYCLE_PROOF_TIMEOUT_S", "").strip()
+        env_lifecycle_proof_min_reserve_pct = os.getenv("KRAKEN_SPOT_LIFECYCLE_PROOF_MIN_FREE_QUOTE_RESERVE_PCT", "").strip()
         requested_mode = str(execution_data.get("mode", data.get("mode", "paper")))
         requested_provider = str(execution_data.get("provider_id", "binance_um_perps"))
 
@@ -345,6 +487,14 @@ class RobotSettings:
         kraken_spot_data = dict(execution_data.get("kraken_spot", {}))
         if env_event_feed_path:
             kraken_spot_data["event_feed_path"] = env_event_feed_path
+        if env_lifecycle_proof in {"true", "false"}:
+            kraken_spot_data["lifecycle_proof_enabled"] = env_lifecycle_proof == "true"
+        if env_lifecycle_proof_max_notional:
+            kraken_spot_data["lifecycle_proof_max_notional"] = float(env_lifecycle_proof_max_notional)
+        if env_lifecycle_proof_timeout_s:
+            kraken_spot_data["lifecycle_proof_timeout_s"] = int(env_lifecycle_proof_timeout_s)
+        if env_lifecycle_proof_min_reserve_pct:
+            kraken_spot_data["lifecycle_proof_min_free_quote_reserve_pct"] = float(env_lifecycle_proof_min_reserve_pct)
 
         return cls(
             trading_mode=TradingMode(data.get("mode", "paper")),
@@ -388,6 +538,60 @@ class RobotSettings:
             replay=ReplaySettings(**data.get("replay", {})),
             kraken_spot_non_live=KrakenSpotNonLiveSettings(**data.get("kraken_spot_non_live", {})),
             mlops=MLOpsSettings(**data.get("mlops", {})),
+            performance_targets=PerformanceTargetSettings(
+                **_apply_env_overrides(
+                    data.get("performance_targets", {}),
+                    {
+                        "monthly_return_pct": _env_float("AUTONOMOUS_TARGET_MONTHLY_RETURN_PCT"),
+                        "max_monthly_drawdown_pct": _env_float("AUTONOMOUS_TARGET_MAX_MONTHLY_DRAWDOWN_PCT"),
+                        "max_intraday_drawdown_pct": _env_float("AUTONOMOUS_TARGET_MAX_INTRADAY_DRAWDOWN_PCT"),
+                        "round_trips_per_day": _env_float("AUTONOMOUS_TARGET_ROUND_TRIPS_PER_DAY"),
+                        "capital_utilization_pct": _env_float("AUTONOMOUS_TARGET_CAPITAL_UTILIZATION_PCT"),
+                        "net_bps_per_trade": _env_float("AUTONOMOUS_TARGET_NET_BPS_PER_TRADE"),
+                        "expectancy_bps_floor": _env_float("AUTONOMOUS_TARGET_EXPECTANCY_BPS_FLOOR"),
+                        "fill_rate": _env_float("AUTONOMOUS_TARGET_FILL_RATE"),
+                        "maker_ratio": _env_float("AUTONOMOUS_TARGET_MAKER_RATIO"),
+                        "max_inventory_age_minutes": _env_float("AUTONOMOUS_TARGET_MAX_INVENTORY_AGE_MINUTES"),
+                    },
+                )
+            ),
+            capital_envelope=CapitalEnvelopeSettings(
+                **_apply_env_overrides(
+                    data.get("capital_envelope", {}),
+                    {
+                        "max_pair_exposure_notional": _env_float("AUTONOMOUS_MAX_PAIR_EXPOSURE_NOTIONAL"),
+                        "reserve_fraction": _env_float("AUTONOMOUS_RESERVE_FRACTION"),
+                        "max_portfolio_heat": _env_float("AUTONOMOUS_MAX_PORTFOLIO_HEAT"),
+                        "max_regime_heat": _env_float("AUTONOMOUS_MAX_REGIME_HEAT"),
+                        "max_playbook_heat": _env_float("AUTONOMOUS_MAX_PLAYBOOK_HEAT"),
+                        "idle_capital_alert_threshold": _env_float("AUTONOMOUS_IDLE_CAPITAL_ALERT_THRESHOLD"),
+                        "target_capital_utilization_min": _env_float("AUTONOMOUS_TARGET_CAPITAL_UTILIZATION_MIN"),
+                        "max_capital_lock_time_min": _env_float("AUTONOMOUS_MAX_CAPITAL_LOCK_TIME_MIN"),
+                        "capital_efficiency_min_score": _env_float("AUTONOMOUS_CAPITAL_EFFICIENCY_MIN_SCORE"),
+                    },
+                )
+            ),
+            market_universe=MarketUniverseSettings(
+                **_apply_env_overrides(
+                    data.get("market_universe", {}),
+                    {
+                        "pair_universe": _env_csv("AUTONOMOUS_PAIR_UNIVERSE") or None,
+                        "max_active_pairs": _env_int("AUTONOMOUS_MAX_ACTIVE_PAIRS"),
+                        "pair_rotation_interval_s": _env_int("AUTONOMOUS_PAIR_ROTATION_INTERVAL_S"),
+                        "pair_min_depth_notional": _env_float("AUTONOMOUS_PAIR_MIN_DEPTH_NOTIONAL"),
+                        "pair_max_spread_bps": _env_float("AUTONOMOUS_PAIR_MAX_SPREAD_BPS"),
+                        "pair_min_expectancy_bps": _env_float("AUTONOMOUS_PAIR_MIN_EXPECTANCY_BPS"),
+                        "pair_min_fill_rate": _env_float("AUTONOMOUS_PAIR_MIN_FILL_RATE"),
+                        "pair_clustering_enabled": _env_bool("AUTONOMOUS_PAIR_CLUSTERING_ENABLED"),
+                        "pair_admission_lookback_trades": _env_int("AUTONOMOUS_PAIR_ADMISSION_LOOKBACK_TRADES"),
+                        "pair_expulsion_expectancy_floor_bps": _env_float("AUTONOMOUS_PAIR_EXPULSION_EXPECTANCY_FLOOR_BPS"),
+                    },
+                )
+            ),
+            playbooks=PlaybookSettings(**data.get("playbooks", {})),
+            expectancy=ExpectancySettings(**data.get("expectancy", {})),
+            experiments=ExperimentsSettings(**data.get("experiments", {})),
+            operator_kpis=OperatorKPISettings(**data.get("operator_kpis", {})),
             margin=MarginSettings(**data.get("margin", {})),
         )
 
@@ -437,6 +641,16 @@ class RobotSettings:
 
     def kraken_spot_event_feed_path(self) -> str:
         return str(self.execution.kraken_spot.event_feed_path or "")
+
+    def kraken_spot_lifecycle_proof(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.execution.kraken_spot.lifecycle_proof_enabled),
+            "max_notional": float(self.execution.kraken_spot.lifecycle_proof_max_notional),
+            "timeout_s": int(self.execution.kraken_spot.lifecycle_proof_timeout_s),
+            "min_free_quote_reserve_pct": None
+            if self.execution.kraken_spot.lifecycle_proof_min_free_quote_reserve_pct is None
+            else float(self.execution.kraken_spot.lifecycle_proof_min_free_quote_reserve_pct),
+        }
 
     def rollout_stage_configured(self) -> RolloutStage | None:
         raw = str(self.rollout_stage_override or "").strip()
@@ -598,6 +812,7 @@ class RobotSettings:
             "market_watch_enabled": bool(self.market_watch.enabled),
             "event_feed_configured": bool(self.kraken_spot_event_feed_path()),
             "event_feed_path": self.kraken_spot_event_feed_path(),
+            "lifecycle_proof": self.kraken_spot_lifecycle_proof(),
             "doctrine_launch_safe": doctrine_launch_safe,
             "rollout_profile": self.rollout_profile(),
         }
@@ -652,6 +867,7 @@ class RobotSettings:
             "kraken_spot_live": {
                 "event_feed_path": self.kraken_spot_event_feed_path(),
                 "full_live_stage_enabled": self.full_live_stage_enabled(),
+                "lifecycle_proof": self.kraken_spot_lifecycle_proof(),
             },
             "live_gate_status": self.live_gate_status(),
             "monitoring": {
@@ -659,6 +875,75 @@ class RobotSettings:
                 "reconciliation_lag_warn_ms": self.monitoring.reconciliation_lag_warn_ms,
                 "loop_latency_warn_ms": self.monitoring.loop_latency_warn_ms,
                 "manual_review_ack_ttl_minutes": self.monitoring.manual_review_ack_ttl_minutes,
+            },
+            "performance_targets": {
+                "monthly_return_pct": self.performance_targets.monthly_return_pct,
+                "max_monthly_drawdown_pct": self.performance_targets.max_monthly_drawdown_pct,
+                "max_intraday_drawdown_pct": self.performance_targets.max_intraday_drawdown_pct,
+                "round_trips_per_day": self.performance_targets.round_trips_per_day,
+                "capital_utilization_pct": self.performance_targets.capital_utilization_pct,
+                "net_bps_per_trade": self.performance_targets.net_bps_per_trade,
+                "expectancy_bps_floor": self.performance_targets.expectancy_bps_floor,
+                "fill_rate": self.performance_targets.fill_rate,
+                "maker_ratio": self.performance_targets.maker_ratio,
+                "max_inventory_age_minutes": self.performance_targets.max_inventory_age_minutes,
+            },
+            "capital_envelope": {
+                "max_pair_exposure_notional": self.capital_envelope.max_pair_exposure_notional,
+                "reserve_fraction": self.capital_envelope.reserve_fraction,
+                "max_portfolio_heat": self.capital_envelope.max_portfolio_heat,
+                "max_regime_heat": self.capital_envelope.max_regime_heat,
+                "max_playbook_heat": self.capital_envelope.max_playbook_heat,
+                "idle_capital_alert_threshold": self.capital_envelope.idle_capital_alert_threshold,
+                "target_capital_utilization_min": self.capital_envelope.target_capital_utilization_min,
+                "max_capital_lock_time_min": self.capital_envelope.max_capital_lock_time_min,
+                "capital_efficiency_min_score": self.capital_envelope.capital_efficiency_min_score,
+            },
+            "market_universe": {
+                "pair_universe": list(self.market_universe.pair_universe),
+                "max_active_pairs": self.market_universe.max_active_pairs,
+                "pair_rotation_interval_s": self.market_universe.pair_rotation_interval_s,
+                "pair_min_depth_notional": self.market_universe.pair_min_depth_notional,
+                "pair_max_spread_bps": self.market_universe.pair_max_spread_bps,
+                "pair_min_expectancy_bps": self.market_universe.pair_min_expectancy_bps,
+                "pair_min_fill_rate": self.market_universe.pair_min_fill_rate,
+                "pair_clustering_enabled": self.market_universe.pair_clustering_enabled,
+                "pair_admission_lookback_trades": self.market_universe.pair_admission_lookback_trades,
+                "pair_expulsion_expectancy_floor_bps": self.market_universe.pair_expulsion_expectancy_floor_bps,
+            },
+            "playbooks": {
+                "enable_multi_playbook_shadow": self.playbooks.enable_multi_playbook_shadow,
+                "enable_multi_pair_shadow": self.playbooks.enable_multi_pair_shadow,
+                "live_candidate_auction_enabled": self.playbooks.live_candidate_auction_enabled,
+                "max_backlog_candidates": self.playbooks.max_backlog_candidates,
+                "default_opportunity_half_life_s": self.playbooks.default_opportunity_half_life_s,
+                "signal_crowding_limit": self.playbooks.signal_crowding_limit,
+                "shadow_only_playbooks": list(self.playbooks.shadow_only_playbooks),
+            },
+            "expectancy": {
+                "rolling_window_trades": self.expectancy.rolling_window_trades,
+                "min_sample_guard": self.expectancy.min_sample_guard,
+                "size_down_expectancy_floor_bps": self.expectancy.size_down_expectancy_floor_bps,
+                "cooldown_expectancy_floor_bps": self.expectancy.cooldown_expectancy_floor_bps,
+                "disable_expectancy_floor_bps": self.expectancy.disable_expectancy_floor_bps,
+                "promotion_expectancy_bps": self.expectancy.promotion_expectancy_bps,
+                "intraday_session_buckets": list(self.expectancy.intraday_session_buckets),
+            },
+            "experiments": {
+                "enabled": self.experiments.enabled,
+                "evidence_min_trades": self.experiments.evidence_min_trades,
+                "rollback_loss_bps": self.experiments.rollback_loss_bps,
+                "staged_variants_enabled": self.experiments.staged_variants_enabled,
+                "shadow_variant_bias": self.experiments.shadow_variant_bias,
+                "promotion_score_min": self.experiments.promotion_score_min,
+            },
+            "operator_kpis": {
+                "expose_advanced_runtime_panels": self.operator_kpis.expose_advanced_runtime_panels,
+                "backlog_pressure_warn": self.operator_kpis.backlog_pressure_warn,
+                "capital_efficiency_warn": self.operator_kpis.capital_efficiency_warn,
+                "live_degradation_warn": self.operator_kpis.live_degradation_warn,
+                "false_negative_warn": self.operator_kpis.false_negative_warn,
+                "false_positive_warn": self.operator_kpis.false_positive_warn,
             },
         }
 
@@ -776,6 +1061,52 @@ class RobotSettings:
 
         if missing:
             raise ValueError(f"Live trading blocked until configured: {missing}")
+
+
+def _env_bool(name: str, default: bool | None = None) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_float(name: str, default: float | None = None) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _env_int(name: str, default: int | None = None) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(float(raw))
+    except Exception:
+        return default
+
+
+def _env_csv(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _apply_env_overrides(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        merged[key] = value
+    return merged
 
 
 def _load_yaml_like(path: str) -> dict[str, Any]:

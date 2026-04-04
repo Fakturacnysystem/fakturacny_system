@@ -37,10 +37,43 @@ def _discover_run_dir(explicit: str | None) -> Path:
     return RUNS / "missing"
 
 
-def _value_from_env_or_secret(name: str, secrets_dir: Path) -> str:
+def _read_env_assignments(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        key = name.strip()
+        if key:
+            values[key] = value.strip().rstrip("\r")
+    return values
+
+
+def _env_file_candidates(secrets_dir: Path) -> tuple[Path, ...]:
+    return (
+        secrets_dir / "trading-engine.env",
+        secrets_dir / "runtime.env",
+    )
+
+
+def _value_from_env_or_secret(name: str, secrets_dir: Path, env_file_values: dict[str, str]) -> str:
     value = os.getenv(name, "").strip()
     if value:
         return value
+    env_file_value = env_file_values.get(name, "").strip()
+    if env_file_value:
+        return env_file_value
     secret_path = secrets_dir / name
     if secret_path.exists():
         try:
@@ -90,11 +123,14 @@ def main() -> int:
     with _temporary_config_parse_env():
         settings = RobotSettings.from_file(str(REPO / args.config))
     envelope = settings.rollout_profile()
+    env_file_values: dict[str, str] = {}
+    for candidate in _env_file_candidates(secrets_dir):
+        env_file_values.update(_read_env_assignments(candidate))
 
-    api_key = _value_from_env_or_secret("KRAKEN_SPOT_API_KEY", secrets_dir)
-    api_secret = _value_from_env_or_secret("KRAKEN_SPOT_API_SECRET", secrets_dir)
-    enable_live = _value_from_env_or_secret("ENABLE_LIVE_TRADING", secrets_dir)
-    ack_risk = _value_from_env_or_secret("ACK_I_UNDERSTAND_RISKS", secrets_dir)
+    api_key = _value_from_env_or_secret("KRAKEN_SPOT_API_KEY", secrets_dir, env_file_values)
+    api_secret = _value_from_env_or_secret("KRAKEN_SPOT_API_SECRET", secrets_dir, env_file_values)
+    enable_live = _value_from_env_or_secret("ENABLE_LIVE_TRADING", secrets_dir, env_file_values)
+    ack_risk = _value_from_env_or_secret("ACK_I_UNDERSTAND_RISKS", secrets_dir, env_file_values)
 
     current_stage = operator.get("rollout_stage") or readiness.get("rollout_stage") or readiness.get("stage")
     checks = {

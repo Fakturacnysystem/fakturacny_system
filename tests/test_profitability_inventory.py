@@ -172,3 +172,50 @@ def test_reporting_coordinator_surfaces_deadlock_and_stagnation_flags(tmp_path):
     assert payload["quote_balance_deadlock"] is False
     assert payload["inventory_stagnation"] is True
     assert payload["profit_lock_candidate"] is True
+
+
+def test_inventory_reserve_state_prefers_quote_asset_affordability_truth():
+    reserve_state = InventoryService().reserve_state(
+        ts=datetime.now(timezone.utc),
+        exchange_balance=5000.0,
+        local_cash_delta=0.0,
+        gross_exposure_notional=0.0,
+        minimum_reserve_pct=0.2,
+        capital_floor=100.0,
+        quote_asset="USD",
+        quote_total_balance=20.0,
+        quote_free_balance=15.9,
+        quote_used_balance=4.1,
+        required_quote_with_fee_buffer=12.05,
+    )
+
+    assert reserve_state.total_capital == 20.0
+    assert reserve_state.free_quote == 15.9
+    assert reserve_state.reserve_floor_quote == 4.0
+    assert reserve_state.entry_buying_power_quote == 11.9
+    assert reserve_state.required_quote_with_fee_buffer == 12.05
+    assert reserve_state.metadata["affordability_source"] == "quote_asset_balance"
+    assert reserve_state.metadata["reserve_policy_source"] == "policy_default"
+    assert reserve_state.metadata["configured_minimum_reserve_pct"] == 0.2
+
+
+def test_inventory_reserve_state_surfaces_override_policy_metadata():
+    reserve_state = InventoryService().reserve_state(
+        ts=datetime.now(timezone.utc),
+        exchange_balance=5000.0,
+        local_cash_delta=0.0,
+        gross_exposure_notional=0.0,
+        minimum_reserve_pct=0.0,
+        capital_floor=100.0,
+        quote_asset="EUR",
+        quote_total_balance=20.0,
+        quote_free_balance=19.0,
+        quote_used_balance=1.0,
+        reserve_policy_source="tiny_live_lifecycle_proof_override",
+        configured_minimum_reserve_pct=0.55,
+    )
+
+    assert reserve_state.reserve_floor_quote == 0.0
+    assert reserve_state.entry_buying_power_quote == 19.0
+    assert reserve_state.metadata["reserve_policy_source"] == "tiny_live_lifecycle_proof_override"
+    assert reserve_state.metadata["configured_minimum_reserve_pct"] == 0.55

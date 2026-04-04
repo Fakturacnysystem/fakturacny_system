@@ -23,6 +23,9 @@ class AlphaService:
         liq = float(features.get("liquidations", 0.0))
         eq = execution_quality or ExecutionQualityForecast(symbol, ts, 0.5, 500, spread_bps, 0.5, spread_bps <= 10.0, {})
         capacity = max(50.0, depth * 0.1)
+        forecast_move_bps = min(abs(float(getattr(forecast, "mu", 0.0) or 0.0)) * 10000.0, 60.0)
+        if regime.label not in {"trend", "high_vol_expansion", "fake_breakout"}:
+            forecast_move_bps *= 0.15
 
         def _signal(
             name: str,
@@ -53,7 +56,7 @@ class AlphaService:
             )
 
         return [
-            _signal("trend_expert", 0.5 + max(-0.4, min(0.4, ret_3_bps / 100.0)), abs(ret_3_bps) + abs(forecast.mu) * 10000.0, 0.25, 0.2, forecast.confidence, 0.25, 1.0 if regime.label == "trend" else 0.45, {"ret_3_bps": ret_3_bps}),
+            _signal("trend_expert", 0.5 + max(-0.4, min(0.4, ret_3_bps / 100.0)), abs(ret_3_bps) + forecast_move_bps, 0.25, 0.2, forecast.confidence, 0.25, 1.0 if regime.label == "trend" else 0.45, {"ret_3_bps": ret_3_bps}),
             _signal("mean_reversion_expert", 0.5 - max(-0.35, min(0.35, ret_1_bps / 60.0)), abs(ret_1_bps) * 0.8, 0.35, 0.15, max(0.3, 1.0 - forecast.confidence * 0.4), 0.35, 1.0 if regime.label in {"mean_reversion", "low_vol_chop"} else 0.4, {"ret_1_bps": ret_1_bps}),
             _signal("breakout_expert", 0.5 + max(-0.3, min(0.3, flow * 0.6)), abs(ret_3_bps) + vol_bps * 0.25, 0.4, 0.3, forecast.confidence * 0.9, 0.4, 0.95 if regime.label in {"trend", "high_vol_expansion"} else 0.3, {"flow_imbalance": flow}),
             _signal("volatility_expansion_expert", 0.5 + max(-0.25, min(0.25, ret_1_bps / 80.0)), vol_bps * 0.6, 0.45, 0.35, min(1.0, vol_bps / 100.0), 0.45, 1.0 if regime.label in {"high_vol_expansion", "news_chaos"} else 0.35, {"vol_bps": vol_bps}),

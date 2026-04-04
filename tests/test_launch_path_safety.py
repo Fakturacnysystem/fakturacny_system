@@ -279,6 +279,34 @@ def test_script_helper_honors_python_bin_override() -> None:
     assert "-m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml" in result.stdout
 
 
+def test_script_helper_prefers_repo_venv_dir_over_system_python(tmp_path: Path) -> None:
+    fake_venv = tmp_path / "repo-venv" / "bin"
+    fake_venv.mkdir(parents=True)
+    fake_python = fake_venv / "python"
+    fake_python.write_text("#!/usr/bin/env bash\necho fake-repo-venv-python\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    fake_python311 = fake_path / "python3.11"
+    fake_python311.write_text("#!/usr/bin/env bash\necho fake-system-python311\n", encoding="utf-8")
+    fake_python311.chmod(0o755)
+
+    env = _base_env()
+    env["REPO_VENV_DIR"] = str(fake_venv.parent)
+    env["PATH"] = f"{fake_path}:{env['PATH']}"
+
+    result = _run(
+        "bash",
+        "-lc",
+        ". scripts/_common_env.sh && resolve_python_bin",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(fake_python)
+
+
 def test_script_helper_loads_runtime_env_from_secret_files(tmp_path: Path) -> None:
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
@@ -289,6 +317,70 @@ def test_script_helper_loads_runtime_env_from_secret_files(tmp_path: Path) -> No
 
     env = _base_env()
     env["SECRETS_DIR"] = str(secrets_dir)
+
+    result = _run(
+        "bash",
+        "-lc",
+        "unset KRAKEN_SPOT_API_KEY KRAKEN_SPOT_API_SECRET ENABLE_LIVE_TRADING ACK_I_UNDERSTAND_RISKS; "
+        "PYTHON_BIN=/bin/echo bash scripts/run_kraken_spot_tiny_live.sh",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "-m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml" in result.stdout
+
+
+def test_script_helper_loads_runtime_env_from_home_config(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    config_dir = fake_home / ".config" / "trading-bot"
+    config_dir.mkdir(parents=True)
+    (config_dir / "runtime.env").write_text(
+        "\n".join(
+            [
+                "KRAKEN_SPOT_API_KEY=home-key",
+                "KRAKEN_SPOT_API_SECRET=home-secret",
+                "ENABLE_LIVE_TRADING=true",
+                "ACK_I_UNDERSTAND_RISKS=true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = _base_env()
+    env["HOME"] = str(fake_home)
+
+    result = _run(
+        "bash",
+        "-lc",
+        "unset KRAKEN_SPOT_API_KEY KRAKEN_SPOT_API_SECRET ENABLE_LIVE_TRADING ACK_I_UNDERSTAND_RISKS; "
+        "PYTHON_BIN=/bin/echo bash scripts/run_kraken_spot_tiny_live.sh",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "-m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml" in result.stdout
+
+
+def test_script_helper_loads_export_prefixed_runtime_env_from_home_config(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    config_dir = fake_home / ".config" / "trading-bot"
+    config_dir.mkdir(parents=True)
+    (config_dir / "runtime.env").write_text(
+        "\n".join(
+            [
+                "export KRAKEN_SPOT_API_KEY=home-key",
+                "export KRAKEN_SPOT_API_SECRET=home-secret",
+                "export ENABLE_LIVE_TRADING=true",
+                "export ACK_I_UNDERSTAND_RISKS=true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = _base_env()
+    env["HOME"] = str(fake_home)
 
     result = _run(
         "bash",

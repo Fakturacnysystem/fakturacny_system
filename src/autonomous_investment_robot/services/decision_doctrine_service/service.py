@@ -28,8 +28,9 @@ class DecisionDoctrineService:
         user_stream = str(getattr(provider_capability, "user_stream_confidence", "partial") or "partial")
         lifecycle = str(getattr(provider_capability, "lifecycle_completeness", "partial") or "partial")
         fee_truth = str(getattr(provider_capability, "fee_truth_confidence", "partial") or "partial")
+        user_stream_level = "strong" if user_stream in {"user_stream_plus_rest_repair", "single_process_rest_repair"} else "partial" if user_stream == "rest_history_only" else user_stream
         score = (
-            0.40 * self._level_score("strong" if user_stream == "user_stream_plus_rest_repair" else "partial" if user_stream == "rest_history_only" else user_stream)
+            0.40 * self._level_score(user_stream_level)
             + 0.35 * self._level_score("strong" if lifecycle == "strong_without_replace" else "partial" if "partial" in lifecycle else lifecycle)
             + 0.25 * self._level_score("strong" if "authoritative" in fee_truth else "partial" if "partial" in fee_truth or "proxy" in fee_truth else fee_truth)
         )
@@ -176,15 +177,24 @@ class DecisionDoctrineService:
             - 0.12 * edge_fragility
             - 0.10 * event_risk
         )
+        uncertainty_components = {
+            "base_uncertainty": float(base_uncertainty),
+            "quantum_uncertainty": quantum_uncertainty * 0.70,
+            "affect_shift": affect_shift,
+            "partial_truth_penalty": partial_truth_penalty * 0.75,
+            "market_ambiguity": (1.0 - market_score) * 0.60,
+            "event_risk": event_risk * 0.70,
+            "mastermind_pressure": max(0.0, mastermind_risk * 0.55 + (1.0 - mastermind_confidence) * 0.20),
+        }
         uncertainty_pressure = self._clamp(
             max(
-                base_uncertainty,
-                quantum_uncertainty,
-                affect_shift,
-                partial_truth_penalty,
-                1.0 - market_score,
-                event_risk * 0.85,
-                max(0.0, mastermind_risk * 0.9 + (1.0 - mastermind_confidence) * 0.35),
+                uncertainty_components["base_uncertainty"],
+                uncertainty_components["quantum_uncertainty"],
+                uncertainty_components["affect_shift"],
+                uncertainty_components["partial_truth_penalty"],
+                uncertainty_components["market_ambiguity"],
+                uncertainty_components["event_risk"],
+                uncertainty_components["mastermind_pressure"],
             )
         )
 
@@ -231,9 +241,12 @@ class DecisionDoctrineService:
         elif raw_truth_strength < 0.35 or partial_truth_penalty >= 0.70 or "reconciliation_not_ok" in truth_reasons:
             recommended_action = "no_trade"
             reasons.append("doctrine_truth_not_strong_enough")
-        elif mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.45:
+        elif mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.55 and mastermind_risk >= 0.75:
             recommended_action = "no_trade"
             reasons.append("doctrine_mastermind_veto")
+        elif mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.40:
+            recommended_action = "wait"
+            reasons.append("doctrine_mastermind_caution_wait")
         elif execution_survivability < 0.35 or robustness_score < 0.35:
             recommended_action = "no_trade"
             reasons.append("doctrine_robust_edge_not_proved")
@@ -295,5 +308,6 @@ class DecisionDoctrineService:
                 "mastermind_action": mastermind_action,
                 "mastermind_confidence": mastermind_confidence,
                 "mastermind_risk": mastermind_risk,
+                "uncertainty_components": uncertainty_components,
             },
         )

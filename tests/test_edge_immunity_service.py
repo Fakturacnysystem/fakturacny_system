@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from autonomous_investment_robot.core.contracts import EdgeImmunityDecision, PortfolioAllocation, RegimeAssessment
 from autonomous_investment_robot.services.calibration_service.service import CalibrationService
 from autonomous_investment_robot.services.edge_immunity_service.service import EdgeImmunityService
+from autonomous_investment_robot.services.edge_immunity_service.wait_dominance_engine import evaluate_wait_dominance
 from autonomous_investment_robot.services.models.service import Forecast
 
 
@@ -79,3 +82,37 @@ def test_edge_immunity_service_applies_calibration_bias():
 
     assert decision.report.metadata["calibrated"] is True
     assert decision.report.recommended_size_multiplier <= 1.0
+
+
+def test_wait_dominance_reports_incremental_advantage_without_relabeling_full_wait_score():
+    report = evaluate_wait_dominance(
+        base_edge_bps=1377.6780060189583,
+        stressed_edge_bps=1227.7610086858338,
+        wait_bonus_bps=0.1,
+        fragility_index=0.16380359855140555,
+    )
+
+    assert report.wait_dominant is True
+    assert report.wait_value_score == pytest.approx(0.1)
+    assert report.trade_now_score == pytest.approx(1002.0923936548035)
+    assert float(report.metadata["wait_score_bps"]) == pytest.approx(1227.8610086858337)
+    assert float(report.metadata["incremental_advantage_bps"]) == pytest.approx(225.76861503103017)
+
+
+def test_edge_immunity_service_keeps_wait_value_incremental_for_high_edge_benign_trade():
+    fc = _forecast(mu=0.13776780060189583)
+    decision = EdgeImmunityService().evaluate(
+        symbol=fc.symbol,
+        ts=fc.ts,
+        features={"spread_proxy": 0.0000014791881918073513, "depth_notional": 625295.2810000002},
+        forecast=fc,
+        regime_assessment=RegimeAssessment(fc.symbol, fc.ts, "dead_market", 0.65, 0.49, 0.05, None, {}),
+        execution_quality=SimpleNamespace(fill_probability=0.98),
+        portfolio_allocation=PortfolioAllocation(fc.symbol, fc.ts, 4.401247288979623, 0.0, 0.0875, 1.0, 0.825, 1.0, 1.0, 0.3233, 1.0, {}),
+        quantum_state=SimpleNamespace(collapse_decision=SimpleNamespace(expected_move_bps=1293.6837000537507, execution_fragility_score=0.16380359855140555, reasons=[])),
+    )
+
+    assert decision.action == "trade_now"
+    assert decision.report.wait_value_score == pytest.approx(0.1)
+    wait_meta = decision.report.metadata["wait_dominance"]["metadata"]
+    assert float(wait_meta["incremental_advantage_bps"]) > 200.0

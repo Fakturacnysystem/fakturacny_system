@@ -95,6 +95,13 @@ class RuntimeMetadataService:
             "live_gate_status": gate,
             "rollout_profile": self.settings.rollout_profile(),
             "effective_min_order_quote": effective_min,
+            "performance_targets": harmony_payload.get("performance_targets", {}),
+            "capital_envelope": harmony_payload.get("capital_envelope", {}),
+            "market_universe": harmony_payload.get("market_universe", {}),
+            "playbooks": harmony_payload.get("playbooks", {}),
+            "expectancy": harmony_payload.get("expectancy", {}),
+            "experiments": harmony_payload.get("experiments", {}),
+            "operator_kpis": harmony_payload.get("operator_kpis", {}),
             "conflicts": conflicts,
             "warnings": warnings,
             "harmony_config_hash": harmony_payload.get("config_hash"),
@@ -164,23 +171,26 @@ class RuntimeMetadataService:
         ordering_allowed: bool,
         confidence: str,
         recovery_action: str,
+        blocking_reasons: list[str] | None = None,
     ) -> dict[str, Any]:
+        safety_ready = bool(
+            preflight_ok
+            and ordering_allowed
+            and confidence not in {"insufficient", "degraded"}
+            and recovery_action == "continue"
+        )
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "provider_id": self.settings.execution.provider_id,
             "runtime_mode": self.settings.execution_mode_enum().value,
             "rollout_stage": self.settings.rollout_stage().value,
-            "safety_ready": bool(
-                preflight_ok
-                and ordering_allowed
-                and confidence not in {"insufficient", "degraded"}
-                and recovery_action == "continue"
-            ),
+            "safety_ready": safety_ready,
             "preflight_ok": preflight_ok,
             "preflight_reason": preflight_reason,
             "ordering_allowed": ordering_allowed,
             "restart_state_confidence": confidence,
             "recovery_action": recovery_action,
+            "blocking_reasons": [] if safety_ready else list(blocking_reasons or []),
             "capital_protection": {
                 "cost_basis_sell_block": bool(self.settings.doctrine.enforce_cost_basis_sell_block),
                 "net_profit_sell_block": bool(self.settings.doctrine.enforce_net_profit_sell_block),
@@ -196,13 +206,38 @@ class RuntimeMetadataService:
         ordering_allowed: bool,
         throughput: dict[str, Any],
         failure_taxonomy: dict[str, Any],
+        blocking_reasons: list[str] | None = None,
+        infra_ok: bool | None = None,
+        trade_path_state: str = "not_attempted",
+        ranked_blockers: list[dict[str, Any]] | None = None,
+        reason_chain: list[str] | None = None,
+        performance_gap: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        infra_ready = bool(preflight_ok if infra_ok is None else infra_ok)
+        top_blockers = list(ranked_blockers or [])
+        if not top_blockers and not ordering_allowed:
+            top_blockers = [
+                {
+                    "stage": "preflight",
+                    "code": str(reason),
+                    "classification": "structural",
+                    "contribution": 1.0,
+                    "hard": True,
+                }
+                for reason in list(blocking_reasons or [])
+                if str(reason).strip()
+            ]
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "runtime_mode": self.settings.execution_mode_enum().value,
             "rollout_stage": self.settings.rollout_stage().value,
+            "infra_ok": infra_ready,
             "ordering_allowed": ordering_allowed,
             "preflight_ok": preflight_ok,
+            "trade_path_state": trade_path_state,
+            "blocking_reasons": [] if ordering_allowed else list(blocking_reasons or []),
+            "top_blockers": top_blockers,
+            "reason_chain": list(reason_chain or []),
             "execution_attempts": int(throughput.get("execution_attempts", 0) or 0),
             "orders_submitted": int(throughput.get("orders_submitted", 0) or 0),
             "orders_rejected": int(throughput.get("orders_rejected", 0) or 0),
@@ -210,4 +245,5 @@ class RuntimeMetadataService:
             "submission_efficiency": float(throughput.get("submission_efficiency", 0.0) or 0.0),
             "fill_efficiency": float(throughput.get("fill_efficiency", 0.0) or 0.0),
             "failure_taxonomy": failure_taxonomy,
+            "performance_gap": dict(performance_gap or {}),
         }

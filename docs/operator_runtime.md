@@ -109,8 +109,8 @@ Interpretation:
 
 ## Rollout ladder
 - `paper`: offline deterministic execution only.
-- `shadow`: maps to `live_readonly`; market access and preflight only, no order placement.
-- `tiny_live`: maps to `live_testnet`; ordering allowed only after double unlock and valid provider/risk config.
+- `shadow`: operator-facing rollout stage resolved from `execution.mode=live_readonly`; market access and preflight only, no order placement.
+- `tiny_live`: explicit rollout stage on `execution.mode=live`; ordering allowed only after double unlock and valid provider/risk config.
 - `limited_live`: maps to `live` with canary-style profile (`canary` run dir or small base risk budget).
 - `normal_live`: maps to full `live` after canary controls and testnet validation.
 
@@ -119,6 +119,8 @@ Promotion is manual by config/profile choice. Downgrades are automatic through p
 `canary_live` is an additive rollout alias used by the meta-governor and operator reporting. It is derived from
 the current compatible live profile (`canary_mode=true`, `run_dir` containing `canary`, or equivalent small-budget profile).
 No existing CLI mode changed.
+
+Additive performance systems visible in runtime API and RCC remain non-authoritative unless `LIVE_AUTHORITY_BOUNDARY.md` and `PROMOTION_GATES.md` explicitly say otherwise.
 
 ## Restart-state confidence
 At live boot, the runtime now rehydrates local state from run artifacts and compares it with exchange positions/open orders.

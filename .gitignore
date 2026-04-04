@@ -13,7 +13,15 @@ node_modules/
 out/
 target/
 .DS_Store
-apps/
+apps/*
+!apps/
+!apps/robot-control-center/
+!apps/robot-control-center/**
+apps/robot-control-center/.next/
+apps/robot-control-center/node_modules/
+apps/robot-control-center/out/
+apps/robot-control-center/src-tauri/target/
+apps/robot-control-center/src-tauri/gen/
 logs/
 backups/
 secrets/
