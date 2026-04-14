@@ -38,6 +38,13 @@ RESET_EVIDENCE_NAMES = (
 )
 
 
+def _supports_exchange_session_rehydrate(settings: RobotSettings) -> bool:
+    return (
+        settings.execution.provider_id == "kraken_spot"
+        and settings.execution_mode_enum() == ExecutionMode.LIVE
+    )
+
+
 def _now_token() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -135,7 +142,29 @@ def prepare_tiny_live_run_dir(
         payload["action"] = "preserve_existing_session"
         payload["reason"] = f"exchange_probe_unavailable:{exchange.get('reason', 'unknown')}"
         return payload
-    if int(exchange.get("open_order_count", 0) or 0) > 0 or not bool(exchange.get("flat")):
+    open_order_count = int(exchange.get("open_order_count", 0) or 0)
+    if open_order_count > 0:
+        payload["action"] = "preserve_existing_session"
+        payload["reason"] = "exchange_open_orders_present"
+        return payload
+    if not bool(exchange.get("flat")) and _supports_exchange_session_rehydrate(settings):
+        archive_path = _archive_target(run_dir, archive_root)
+        shutil.move(str(run_dir), str(archive_path))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        payload["action"] = "archive_and_reset"
+        payload["reason"] = "exchange_inventory_session_rehydrate"
+        payload["archived_run_dir"] = str(archive_path)
+        archive_manifest = {
+            **payload,
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "rehydrate_expected_from_exchange_history": True,
+        }
+        (archive_path / "tiny_live_session_prepare.json").write_text(
+            json.dumps(archive_manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return payload
+    if not bool(exchange.get("flat")):
         payload["action"] = "preserve_existing_session"
         payload["reason"] = "exchange_session_active"
         return payload

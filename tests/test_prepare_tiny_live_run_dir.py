@@ -53,7 +53,7 @@ def test_prepare_tiny_live_run_dir_archives_flat_stale_local_state(monkeypatch) 
         assert (Path(payload["archived_run_dir"]) / "events_fills.jsonl").exists()
 
 
-def test_prepare_tiny_live_run_dir_preserves_existing_session_when_exchange_not_flat(monkeypatch) -> None:
+def test_prepare_tiny_live_run_dir_archives_non_flat_session_when_exchange_history_can_rebuild(monkeypatch) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp) / "runs" / "kraken_spot_tiny_live"
         archive_root = Path(tmp) / "run_archives"
@@ -74,9 +74,40 @@ def test_prepare_tiny_live_run_dir_preserves_existing_session_when_exchange_not_
 
         payload = MODULE.prepare_tiny_live_run_dir(settings, archive_root=archive_root)
 
-        assert payload["action"] == "preserve_existing_session"
-        assert payload["reason"] == "exchange_session_active"
+        assert payload["action"] == "archive_and_reset"
+        assert payload["reason"] == "exchange_inventory_session_rehydrate"
         assert run_dir.exists()
+        assert not (run_dir / "events_fills.jsonl").exists()
+        assert archive_root.exists()
+        archived = Path(payload["archived_run_dir"])
+        assert (archived / "events_fills.jsonl").exists()
+        manifest = json.loads((archived / "tiny_live_session_prepare.json").read_text(encoding="utf-8"))
+        assert manifest["rehydrate_expected_from_exchange_history"] is True
+
+
+def test_prepare_tiny_live_run_dir_preserves_existing_session_when_exchange_open_orders_present(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "runs" / "kraken_spot_tiny_live"
+        archive_root = Path(tmp) / "run_archives"
+        run_dir.mkdir(parents=True)
+        (run_dir / "events_fills.jsonl").write_text(json.dumps({"id": "fill"}) + "\n", encoding="utf-8")
+        settings = _Settings(str(run_dir))
+
+        monkeypatch.setattr(
+            MODULE,
+            "inspect_exchange_state",
+            lambda settings: {
+                "ok": True,
+                "flat": False,
+                "open_order_count": 1,
+                "reason": "exchange_session_active",
+            },
+        )
+
+        payload = MODULE.prepare_tiny_live_run_dir(settings, archive_root=archive_root)
+
+        assert payload["action"] == "preserve_existing_session"
+        assert payload["reason"] == "exchange_open_orders_present"
         assert (run_dir / "events_fills.jsonl").exists()
         assert not archive_root.exists()
 
