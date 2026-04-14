@@ -110,6 +110,82 @@ def test_live_state_coordinator_rehydrates_missing_exchange_fill_history(tmp_pat
     assert len(event_store.load("fills")) == 1
 
 
+def test_live_state_coordinator_trusts_authoritative_kraken_spot_exchange_history_boot(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+
+    class SpotConnector(FakeConnector):
+        provider_id = "kraken_spot"
+
+        def base_balance(self, symbol=None):  # noqa: ARG002
+            return {"total": "0.00017922", "free": "0.00017922", "used": "0.0"}
+
+        def book_ticker(self, symbol=None):  # noqa: ARG002
+            return {"bidPrice": "74078.9", "askPrice": "74079.0"}
+
+        def market_constraints(self, symbol=None):  # noqa: ARG002
+            return {"min_order_size": "0.0001"}
+
+    baseline_ts_ms = 1775382978325
+    live = SimpleNamespace(
+        connector=SpotConnector(
+            balances=[{"equity": "10.6726187728"}],
+            positions=[],
+            open_orders=[],
+        ),
+        rehydrate_state=lambda order_events, fill_events: {"orders": len(order_events), "fills": len(fill_events)},
+        authoritative_fill_history=lambda symbol, side, since_ms=None: (
+            [
+                NormalizedLiveFillRecord(
+                    fill=Fill(
+                        "kraken_spot",
+                        "order-1",
+                        "fill-1",
+                        symbol,
+                        "buy",
+                        12.02963,
+                        0.03,
+                        0.0,
+                        0,
+                        "filled",
+                    ),
+                    realized_pnl=0.0,
+                    fee_authoritative=True,
+                    realized_pnl_authoritative=False,
+                    metadata={"timestamp_ms": baseline_ts_ms, "price": 67029.3, "base_qty": 0.00017922},
+                    truth_evidence={"source": "kraken_spot_trade_history"},
+                )
+            ],
+            [],
+        ),
+        authoritative_realized_pnl=lambda symbol, since_ms=None: (0.0, []),
+        authoritative_unrealized_pnl=lambda symbol: (
+            UnrealizedPnlTruth(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                source="spot_trade_history_and_balance",
+                confidence="authoritative",
+                venue_value=1.2467904580000013,
+                reason="fifo_cost_basis_and_live_bid",
+                evidence={"remaining_qty": 0.00017922, "remaining_basis_quote": 12.02963, "bid": 74078.9},
+            ),
+            [],
+        ),
+    )
+
+    result = coordinator.rehydrate_state(live, "BTC/USD")
+
+    assert result.confidence == "trusted"
+    assert result.details["reason"] == "authoritative_exchange_history_rehydrate"
+    assert result.details["exchange_history_rehydrate"]["since_ms"] == baseline_ts_ms
+    assert result.details["truth_confidence"]["fill_truth_confidence"]["level"] == TruthConfidenceLevel.AUTHORITATIVE.value
+    assert result.details["truth_confidence"]["fee_truth_confidence"]["level"] == TruthConfidenceLevel.AUTHORITATIVE.value
+    assert result.details["truth_confidence"]["realized_pnl_confidence"]["level"] == TruthConfidenceLevel.AUTHORITATIVE.value
+    account_payload = event_store.load("account")[0]["payload"]
+    assert account_payload["metadata"]["baseline_recorded_at_ms"] == baseline_ts_ms
+
+
 def test_live_state_coordinator_skips_exchange_history_rehydrate_for_flat_boot_without_local_history(tmp_path):
     event_store = EventStore(str(tmp_path))
     portfolio = PortfolioService()

@@ -11,6 +11,16 @@ __pycache__
 *.pyc
 runs
 runs/
+run_archives
+run_archives/
+data
+data/
+logs
+logs/
+backups
+backups/
+ops/data
+ops/data/
 production_live.log
 data.xlsx
 database.db

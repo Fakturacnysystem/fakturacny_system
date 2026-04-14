@@ -698,6 +698,8 @@ class LiveStateCoordinator:
             return {"supported": False, "since_ms": None, "fetched": 0, "recovered": 0, "gaps": []}
         since_ms = self._history_since_ms(account_events, fill_events)
         records, gaps = live.authoritative_fill_history(symbol, side="buy", since_ms=since_ms)  # type: ignore[attr-defined]
+        effective_since_ms = since_ms
+        recovered_timestamps_ms: list[int] = []
         existing_fill_ids = {
             str(payload.get("fill_id", payload.get("fillId", "")))
             for event in fill_events
@@ -752,6 +754,15 @@ class LiveStateCoordinator:
                 self.inventory.update_from_fill(record.fill)
             existing_fill_ids.add(record.fill.fill_id)
             recovered += 1
+            metadata = record.metadata if isinstance(record.metadata, dict) else {}
+            raw_ts = metadata.get("timestamp_ms")
+            if raw_ts is not None:
+                try:
+                    recovered_timestamps_ms.append(int(raw_ts))
+                except Exception:
+                    pass
+        if effective_since_ms is None and recovered_timestamps_ms:
+            effective_since_ms = min(recovered_timestamps_ms)
         if records:
             self.event_store.append(
                 "account",
@@ -764,19 +775,57 @@ class LiveStateCoordinator:
                     self.portfolio.account_row(
                         venue=provider_id,
                         metadata={
+                            "baseline_recorded_at_ms": effective_since_ms,
                             "exchange_history_supported": True,
                             "exchange_history_recovered_fills": recovered,
+                            "exchange_history_rehydrate_source": "authoritative_fill_history",
                         },
                     ),
                 ),
             )
         return {
             "supported": True,
-            "since_ms": since_ms,
+            "since_ms": effective_since_ms,
             "fetched": len(records),
             "recovered": recovered,
             "gaps": list(gaps),
         }
+
+    def _can_trust_spot_exchange_history_boot(
+        self,
+        *,
+        provider_id: str,
+        had_local_runtime_history: bool,
+        exchange: LiveExchangeState,
+        history_rehydrate: dict[str, Any],
+        truth_confidence: TruthConfidenceSnapshot,
+        delta: float,
+        tolerance: float,
+    ) -> bool:
+        if provider_id != "kraken_spot":
+            return False
+        if had_local_runtime_history:
+            return False
+        if exchange.open_order_count > 0:
+            return False
+        if history_rehydrate.get("supported") is not True:
+            return False
+        if int(history_rehydrate.get("recovered", 0) or 0) <= 0:
+            return False
+        if history_rehydrate.get("gaps"):
+            return False
+        if history_rehydrate.get("since_ms") is None:
+            return False
+        if abs(delta) > tolerance:
+            return False
+        if truth_confidence.overall_action != "continue":
+            return False
+        unrealized_truth = exchange.unrealized_pnl_truth
+        if str(getattr(unrealized_truth, "confidence", "") or "").lower() != TruthConfidenceLevel.AUTHORITATIVE.value:
+            return False
+        if str(getattr(unrealized_truth, "source", "") or "") != "spot_trade_history_and_balance":
+            return False
+        return True
 
     def rehydrate_state(self, live: object, symbol: str) -> LiveRehydrationResult:
         order_events = self.event_store.load("orders")
@@ -784,6 +833,12 @@ class LiveStateCoordinator:
         position_events = self.event_store.load("positions")
         account_events = self.event_store.load("account")
         provider_id = getattr(getattr(live, "connector", None), "provider_id", "live")
+        had_local_runtime_history = self._has_local_runtime_history(
+            order_events=order_events,
+            fill_events=fill_events,
+            position_events=position_events,
+            account_events=account_events,
+        )
         rehydrated: dict[str, Any] = {}
         if hasattr(live, "rehydrate_state"):
             rehydrated = live.rehydrate_state(order_events, fill_events)
@@ -793,12 +848,7 @@ class LiveStateCoordinator:
         exchange = self.exchange_state(live, symbol)
         if (
             hasattr(live, "authoritative_fill_history")
-            and not self._has_local_runtime_history(
-                order_events=order_events,
-                fill_events=fill_events,
-                position_events=position_events,
-                account_events=account_events,
-            )
+            and not had_local_runtime_history
             and self._exchange_is_flat_for_boot(exchange)
         ):
             history_rehydrate = {
@@ -835,6 +885,17 @@ class LiveStateCoordinator:
         if abs(exchange.exposure_notional) <= tolerance and abs(local_state.exposure_notional) <= tolerance and exchange.open_order_count == 0:
             confidence = "trusted"
             reason = "flat_and_consistent"
+        elif self._can_trust_spot_exchange_history_boot(
+            provider_id=provider_id,
+            had_local_runtime_history=had_local_runtime_history,
+            exchange=exchange,
+            history_rehydrate=history_rehydrate,
+            truth_confidence=truth_confidence,
+            delta=delta,
+            tolerance=tolerance,
+        ):
+            confidence = "trusted"
+            reason = "authoritative_exchange_history_rehydrate"
         elif abs(exchange.exposure_notional) > tolerance and not fill_events and not position_events and history_rehydrate["recovered"] == 0:
             confidence = "insufficient"
             reason = "exchange_exposure_without_local_history"
