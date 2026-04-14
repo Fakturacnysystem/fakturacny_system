@@ -511,4 +511,142 @@ def test_recover_inflight_state_enters_safe_mode_boot_when_requested(tmp_path):
 
     assert decision.outcome == "safe_mode_boot"
     assert decision.action == "degrade"
-    assert decision.recovered_orders >= 1
+    assert decision.recovered_orders == 0
+    assert decision.metadata["effective_active_local_orders"][0]["state"] == "unknown"
+
+
+def test_recover_inflight_state_does_not_degrade_only_for_historical_timed_out_order(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    event_store.append(
+        "orders",
+        {"payload": {"clientOrderId": "cid-1", "orderId": "o-1", "status": "NEW", "symbol": "BTCUSDT"}},
+    )
+    coordinator = LiveStateCoordinator(event_store, PortfolioService(), ReconciliationService())
+    live = SimpleNamespace(
+        connector=FakeConnector(balances=[{"equity": "1000.0"}], positions=[], open_orders=[]),
+        lifecycle_snapshot=lambda: [
+            {
+                "order_key": "cid-1",
+                "client_order_id": "cid-1",
+                "order_id": "o-1",
+                "state": "timed_out",
+                "confidence": "local",
+            }
+        ],
+    )
+
+    decision = coordinator.recover_inflight_state(live, "BTCUSDT", restart_confidence="trusted", safe_mode_requested=False)
+
+    assert decision.outcome == "cold_restart"
+    assert decision.action == "continue"
+    assert decision.metadata["effective_active_local_orders"] == []
+    assert decision.metadata["effective_historical_local_orders"][0]["state"] == "timed_out"
+
+
+def test_reconcile_state_ignores_historical_timed_out_lifecycle_record_when_no_open_orders(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    portfolio = PortfolioService()
+    coordinator = LiveStateCoordinator(event_store, portfolio, ReconciliationService())
+    event_store.append(
+        "fills",
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "payload": {"fill_id": "fill-1", "order_id": "o-1", "symbol": "BTC/USD", "side": "buy", "notional": 11.99963},
+        },
+    )
+
+    class SpotConnector(FakeConnector):
+        provider_id = "kraken_spot"
+
+        def base_balance(self, symbol=None):  # noqa: ARG002
+            return {"total": "0.0001782", "free": "0.0001782", "used": "0.0"}
+
+        def book_ticker(self, symbol=None):  # noqa: ARG002
+            return {"bidPrice": "67263.0", "askPrice": "67270.0"}
+
+        def market_constraints(self, symbol=None):  # noqa: ARG002
+            return {"min_order_size": "0.0001"}
+
+        def quote_balance(self, symbol=None):  # noqa: ARG002
+            return {"asset": "USD", "total": "22.6006", "free": "22.6006", "used": "0.0"}
+
+    live = SimpleNamespace(
+        connector=SpotConnector(
+            balances=[{"equity": "24.5645888099"}],
+            positions=[],
+            open_orders=[],
+        ),
+        lifecycle_snapshot=lambda: [
+            {
+                "order_key": "cid-1",
+                "client_order_id": "cid-1",
+                "order_id": "o-1",
+                "state": "timed_out",
+                "confidence": "local",
+            }
+        ],
+        authoritative_unrealized_pnl=lambda symbol: (
+            UnrealizedPnlTruth(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                source="spot_trade_history_and_balance",
+                confidence="authoritative",
+                venue_value=1.2213266,
+                reason="fifo_cost_basis_and_live_bid",
+                evidence={"remaining_qty": 0.0001782, "remaining_basis_quote": 10.76494, "bid": 67263.0},
+            ),
+            [],
+        ),
+        authoritative_realized_pnl=lambda symbol, since_ms=None: (0.0, []),
+        authoritative_fill_history=lambda symbol, side, since_ms=None: ([], []),
+    )
+
+    report = coordinator.reconcile_state(live, "BTC/USD", internal_exposure=11.98688139)
+
+    assert report.ok is True
+    assert report.code == "ok"
+    assert report.details["order_lifecycle_confidence"] == TruthConfidenceLevel.AUTHORITATIVE.value
+    assert report.details["active_order_lifecycle_snapshot"] == []
+    assert report.details["order_lifecycle_snapshot"][0]["state"] == "timed_out"
+
+
+def test_exchange_state_uses_spot_base_balance_as_exposure_truth(tmp_path):
+    event_store = EventStore(str(tmp_path))
+    coordinator = LiveStateCoordinator(event_store, PortfolioService(), ReconciliationService())
+
+    class SpotConnector(FakeConnector):
+        provider_id = "kraken_spot"
+
+        def base_balance(self, symbol=None):  # noqa: ARG002
+            return {"total": "0.00017824", "free": "0.00017824", "used": "0.0"}
+
+        def book_ticker(self, symbol=None):  # noqa: ARG002
+            return {"bidPrice": "67323.0", "askPrice": "67330.0"}
+
+        def market_constraints(self, symbol=None):  # noqa: ARG002
+            return {"min_order_size": "0.0001"}
+
+    live = SimpleNamespace(
+        connector=SpotConnector(
+            balances=[{"equity": "33.0"}],
+            positions=[],
+            open_orders=[],
+        ),
+        authoritative_unrealized_pnl=lambda symbol: (
+            UnrealizedPnlTruth(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                source="spot_trade_history_and_balance",
+                confidence="authoritative",
+                venue_value=0.0,
+                reason="fifo_cost_basis_and_live_bid",
+                evidence={"remaining_qty": 0.00017824, "remaining_basis_quote": 11.99965, "bid": 67323.0},
+            ),
+            [],
+        ),
+    )
+
+    exchange = coordinator.exchange_state(live, "BTC/USD")
+
+    assert exchange.exposure_notional == 0.00017824 * 67323.0
+    assert exchange.position_count == 1

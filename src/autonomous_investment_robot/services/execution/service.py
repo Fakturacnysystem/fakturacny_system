@@ -71,10 +71,22 @@ class ExecutionService:
         payload = intent.why.get("market_integrity", {})
         return payload if isinstance(payload, dict) else {}
 
+    def _trade_admission_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("trade_admission", {})
+        return payload if isinstance(payload, dict) else {}
+
     def _doctrine_target_payload(self, intent: OrderIntent) -> dict[str, object]:
         if not isinstance(intent.why, dict):
             return {}
         payload = intent.why.get("doctrine_target", {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _execution_calibration_payload(self, intent: OrderIntent) -> dict[str, object]:
+        if not isinstance(intent.why, dict):
+            return {}
+        payload = intent.why.get("execution_calibration_feedback", {})
         return payload if isinstance(payload, dict) else {}
 
     def _mastermind_payload(self, intent: OrderIntent) -> dict[str, object]:
@@ -87,10 +99,12 @@ class ExecutionService:
         doctrine = self._doctrine_payload(intent)
         execution_simulation = self._execution_simulation_payload(intent)
         market_integrity = self._market_integrity_payload(intent)
+        trade_admission = self._trade_admission_payload(intent)
         mastermind = self._mastermind_payload(intent)
         meta_governor = intent.why.get("meta_governor", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("meta_governor", {}), dict) else {}
         human_escalation = intent.why.get("human_escalation", {}) if isinstance(intent.why, dict) and isinstance(intent.why.get("human_escalation", {}), dict) else {}
         doctrine_target = self._doctrine_target_payload(intent)
+        calibration_feedback = self._execution_calibration_payload(intent)
 
         doctrine_action = str(doctrine.get("recommended_action", "continue") or "continue")
         doctrine_size_multiplier = float(doctrine.get("size_multiplier", 1.0) or 1.0)
@@ -100,6 +114,20 @@ class ExecutionService:
         robustness_score = float(doctrine.get("robustness_score", 1.0) or 1.0)
         simulation_action = str(execution_simulation.get("recommended_action", "continue") or "continue")
         market_integrity_action = str(market_integrity.get("action", "continue") or "continue")
+        admission_action = str(trade_admission.get("recommended_action", "continue") or "continue")
+        admission_size_multiplier = float(trade_admission.get("recommended_size_multiplier", 1.0) or 1.0)
+        signal_decay_risk = float(trade_admission.get("signal_decay_risk", 0.0) or 0.0)
+        execution_survivability = min(
+            execution_survivability,
+            float(trade_admission.get("execution_survivability_score", execution_survivability) or execution_survivability),
+        )
+        floor_compatibility = float(trade_admission.get("floor_compatibility_score", 1.0) or 1.0)
+        recommended_execution_style = str(trade_admission.get("recommended_execution_style", "limit") or "limit")
+        calibration_confidence = float(calibration_feedback.get("confidence", 0.0) or 0.0)
+        realized_slippage_overshoot_bps = float(calibration_feedback.get("realized_slippage_overshoot_bps", 0.0) or 0.0)
+        fill_delay_destruction_bps = float(calibration_feedback.get("fill_delay_destruction_bps", 0.0) or 0.0)
+        edge_capture_efficiency = float(calibration_feedback.get("edge_capture_efficiency", 1.0) or 1.0)
+        calibration_conservative = False
         mastermind_action = str(mastermind.get("decision", "CONTINUE") or "CONTINUE").lower()
         mastermind_size_multiplier = float(mastermind.get("size_multiplier", 1.0) or 1.0)
         mastermind_execution_style = str(mastermind.get("execution_style_bias", "unchanged") or "unchanged")
@@ -115,6 +143,8 @@ class ExecutionService:
             hard_block = True
         if not reduce_only and doctrine_action in {"no_trade", "wait"}:
             hard_block = True
+        if not reduce_only and admission_action in {"no_trade", "wait"}:
+            hard_block = True
         if not reduce_only and simulation_action in {"no_trade", "wait"}:
             hard_block = True
         if not reduce_only and mastermind_action in {"no_trade", "wait", "hold"}:
@@ -128,18 +158,29 @@ class ExecutionService:
                 preferred_exit_style = "marketable_limit"
         else:
             preferred_exit_style = "limit"
-            if doctrine_action in {"probe", "trade_smaller"} or simulation_action == "trade_smaller" or mastermind_action in {"probe", "trade_smaller"}:
+            if recommended_execution_style == "marketable_limit" and signal_decay_risk >= 0.65 and execution_survivability >= 0.75 and floor_compatibility >= 0.80:
+                preferred_exit_style = "marketable_limit"
+            elif doctrine_action in {"probe", "trade_smaller"} or admission_action in {"probe", "trade_smaller"} or simulation_action == "trade_smaller" or mastermind_action in {"probe", "trade_smaller"}:
                 preferred_exit_style = "limit"
             elif market_integrity_action in {"degrade", "flatten_only"}:
                 preferred_exit_style = "limit"
+            if calibration_confidence >= 0.50 and (
+                realized_slippage_overshoot_bps > 3.0
+                or fill_delay_destruction_bps > 6.0
+                or edge_capture_efficiency < 0.65
+            ):
+                calibration_conservative = True
+                preferred_exit_style = "limit"
+                admission_size_multiplier = min(admission_size_multiplier, 0.75 if edge_capture_efficiency >= 0.50 else 0.60)
 
         return {
             "hard_block": hard_block,
             "doctrine_action": doctrine_action,
+            "admission_action": admission_action,
             "simulation_action": simulation_action,
             "market_integrity_action": market_integrity_action,
             "mastermind_action": mastermind_action,
-            "size_multiplier": max(0.0, min(1.0, min(doctrine_size_multiplier, mastermind_size_multiplier))),
+            "size_multiplier": max(0.0, min(1.0, min(doctrine_size_multiplier, mastermind_size_multiplier, admission_size_multiplier))),
             "uncertainty_pressure": max(0.0, min(1.0, uncertainty_pressure)),
             "partial_truth_penalty": max(0.0, min(1.0, partial_truth_penalty)),
             "execution_survivability_score": max(0.0, min(1.0, execution_survivability)),
@@ -147,6 +188,10 @@ class ExecutionService:
             "preferred_exit_style": preferred_exit_style,
             "mastermind_execution_style": mastermind_execution_style,
             "doctrine_long_only": bool(doctrine_target.get("long_only", False)),
+            "signal_decay_risk": max(0.0, min(1.0, signal_decay_risk)),
+            "floor_compatibility_score": max(0.0, min(1.0, floor_compatibility)),
+            "execution_calibration_feedback": calibration_feedback,
+            "calibration_conservative": calibration_conservative,
         }
 
     def forecast_execution_quality(
@@ -229,6 +274,7 @@ class ExecutionService:
             child_orders = max(1, min(child_orders, 2))
         if (
             str(doctrine_adjustments["doctrine_action"]) in {"probe", "trade_smaller"}
+            or str(doctrine_adjustments["admission_action"]) in {"probe", "trade_smaller"}
             or str(doctrine_adjustments["simulation_action"]) == "trade_smaller"
             or str(doctrine_adjustments["mastermind_action"]) in {"probe", "trade_smaller"}
             or float(doctrine_adjustments["uncertainty_pressure"]) >= 0.55
@@ -241,6 +287,15 @@ class ExecutionService:
             passive = True
             order_style = "limit"
             child_orders = 1 if str(doctrine_adjustments["doctrine_action"]) == "probe" else max(1, min(child_orders, 2))
+        elif (
+            not bool(doctrine_adjustments.get("calibration_conservative", False))
+            and float(doctrine_adjustments["signal_decay_risk"]) >= 0.65
+            and float(doctrine_adjustments["execution_survivability_score"]) >= 0.75
+            and float(doctrine_adjustments["floor_compatibility_score"]) >= 0.80
+        ):
+            passive = False
+            order_style = "marketable_limit"
+            child_orders = 1
         max_participation_rate = self.settings.max_participation_rate
         if passive:
             max_participation_rate = min(

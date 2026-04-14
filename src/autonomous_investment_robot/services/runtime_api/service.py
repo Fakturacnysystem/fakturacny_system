@@ -43,6 +43,7 @@ class QuoteSnapshot:
     ask: float
     latency_ms: int
     ts: str
+    source: str = "live_connector"
 
 
 @dataclass
@@ -252,6 +253,8 @@ def _latest_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 PERFORMANCE_ARTIFACT_NAMES = [
+    "trade_admission_summary",
+    "floor_compatibility_summary",
     "performance_target_translation",
     "performance_gap_report",
     "capital_envelope_summary",
@@ -289,12 +292,21 @@ PERFORMANCE_ARTIFACT_NAMES = [
     "signal_crowding_report",
     "no_trade_reason_histogram",
     "opportunity_miss_journal",
+    "decision_waterfall_journal",
+    "veto_attribution_journal",
+    "false_negative_review",
     "exit_decision_log",
+    "exit_state_machine_journal",
     "inventory_aging_report",
     "realized_exit_quality_report",
     "exit_reason_distribution",
     "exit_ladder_report",
     "hold_time_optimization_report",
+    "winner_monetization_journal",
+    "exit_path_decision_journal",
+    "realized_vs_forecast_exit_journal",
+    "winner_hold_vs_take_review",
+    "exit_family_comparison",
     "inventory_pressure_report",
     "adverse_excursion_report",
     "trade_lifecycle_scoring",
@@ -328,6 +340,28 @@ PERFORMANCE_ARTIFACT_NAMES = [
     "intraday_session_model_report",
     "meta_router_report",
     "confidence_calibration_report",
+    "realized_vs_forecast_execution_journal",
+    "cost_forecast_vs_realized",
+    "fill_delay_review",
+    "slippage_truth_review",
+    "edge_capture_efficiency_summary",
+    "symbol_execution_regime_review",
+    "edge_forecast_vs_realized_journal",
+    "forecast_error_decomposition",
+    "execution_forecast_error_summary",
+    "trade_realization_review",
+    "symbol_edge_truth_summary",
+    "execution_calibration_feedback",
+    "planning_bias_adjustment_review",
+    "calibration_confidence_snapshot",
+    "phase2_operator_summary",
+    "phase2_edge_capture_review",
+    "phase2_exit_effectiveness_review",
+    "phase2_execution_truth_review",
+    "post_trade_realization_summary",
+    "exit_effectiveness_truth",
+    "realized_fee_burden_review",
+    "realized_opportunity_cost_review",
     "experiment_registry",
     "experiment_results_summary",
     "promotion_gate_report",
@@ -337,6 +371,13 @@ PERFORMANCE_ARTIFACT_NAMES = [
     "strategy_capability_matrix",
     "rollout_readiness_report",
     "operator_start_procedure",
+    "module_value_summary",
+    "module_latency_budget_report",
+    "module_redundancy_report",
+    "module_opportunity_cost_report",
+    "profile_optimization_report",
+    "config_truth_diff_summary",
+    "live_profile_capability_delta",
 ]
 
 
@@ -644,9 +685,16 @@ class RuntimeApiService:
         latest_artifact_at = max(valid_mtimes) if valid_mtimes else now
         started_at = min(valid_mtimes) if valid_mtimes else now
 
+        operator_bundle_present = bool(operator_summary or operator_summary_journal)
+        replay_bundle_present = bool(replay_summary or replay_summary_journal)
+        replay_reconstruction_supported = bool(
+            operator_bundle_present
+            and (truth_events or risk_events or position_events or reconciliation or reconciliation_report)
+            and (market_context_summary or market_watch_journal or market_integrity_journal)
+        )
         artifact_fallback_active = not (
-            (run_dir / "kraken_spot_operator_summary.json").exists()
-            and (run_dir / "kraken_spot_replay_summary.json").exists()
+            operator_bundle_present
+            and (replay_bundle_present or replay_reconstruction_supported)
         )
         if artifact_fallback_active:
             warnings.append(
@@ -796,9 +844,31 @@ class RuntimeApiService:
                         "qualityScore": round(quality, 2),
                         "stale": stale,
                         "ts": quote.ts,
+                        "source": quote.source,
                     }
                 )
             except RuntimeApiError as exc:
+                artifact_quote = self._artifact_quote_snapshot(snapshot, symbol, provider_id)
+                if artifact_quote is not None:
+                    midpoint = (artifact_quote.bid + artifact_quote.ask) / 2 if artifact_quote.bid > 0 and artifact_quote.ask > 0 else 0.0
+                    spread_bps = ((artifact_quote.ask - artifact_quote.bid) / midpoint * 10_000.0) if midpoint > 0 else 0.0
+                    quality = max(0.0, min(100.0, 100.0 - spread_bps * 0.9 - artifact_quote.latency_ms * 0.08))
+                    stale = (self._now() - _safe_datetime_from_iso(artifact_quote.ts)).total_seconds() > self.config.quote_stale_after_seconds  # type: ignore[arg-type]
+                    results.append(
+                        {
+                            "symbol": symbol,
+                            "venue": provider_id,
+                            "bid": round(artifact_quote.bid, 6),
+                            "ask": round(artifact_quote.ask, 6),
+                            "spreadBps": round(spread_bps, 2),
+                            "latencyMs": artifact_quote.latency_ms,
+                            "qualityScore": round(quality, 2),
+                            "stale": stale,
+                            "ts": artifact_quote.ts,
+                            "source": artifact_quote.source,
+                        }
+                    )
+                    continue
                 error_message = str(exc)
                 results.append(
                     {
@@ -811,6 +881,7 @@ class RuntimeApiService:
                         "qualityScore": 0.0,
                         "stale": True,
                         "ts": _dt_to_iso(self._now()),
+                        "source": "unavailable",
                     }
                 )
         return results, error_message
@@ -945,6 +1016,91 @@ class RuntimeApiService:
         if snapshot.replay_summary_journal:
             return snapshot.replay_summary_journal
         return snapshot.replay_summary
+
+    def _latest_truth_confidence(self, snapshot: ArtifactSnapshot) -> dict[str, Any]:
+        snapshots = [
+            _as_object(row.get("payload"))
+            for row in snapshot.truth_events
+            if str(row.get("event_type") or "") == "TRUTH_CONFIDENCE_SNAPSHOT"
+        ]
+        if snapshots:
+            return snapshots[-1]
+        return {}
+
+    def _artifact_quote_snapshot(self, snapshot: ArtifactSnapshot, symbol: str, provider_id: str) -> QuoteSnapshot | None:
+        market_context = self._latest_market_context(snapshot)
+        market_integrity = self._latest_market_integrity(snapshot)
+        market_watch = self._latest_market_watch(snapshot)
+        operator_summary = self._canonical_operator_summary(snapshot)
+        truth_confidence = self._latest_truth_confidence(snapshot)
+        market_data_truth = _as_object(truth_confidence.get("market_data_truth_confidence"))
+
+        integrity_meta = _as_object(market_integrity.get("metadata"))
+        watch_meta = _as_object(market_watch.get("metadata"))
+        dead_market_reasoning = _as_object(watch_meta.get("dead_market_reasoning"))
+        integrity_evidence = _as_object(integrity_meta.get("integrity_evidence"))
+        capability_evidence = _as_object(integrity_meta.get("capability_evidence"))
+        operator_market_context = _as_object(operator_summary.get("market_context"))
+        operator_market_integrity = _as_object(operator_market_context.get("market_integrity"))
+        operator_cost_model = _as_object(
+            _as_object(
+                _as_object(_as_object(operator_summary.get("performance_architecture")).get("execution_alpha")).get("cost_model")
+            ).get("metadata")
+        )
+
+        mid_price = _optional_float(operator_cost_model.get("mid_price"))
+        spread_bps = (
+            _optional_float(integrity_meta.get("spread_bps"))
+            or _optional_float(watch_meta.get("spread_bps"))
+            or _optional_float(_as_object(operator_market_integrity.get("metadata")).get("spread_bps"))
+        )
+        freshness_seconds = (
+            _optional_float(integrity_evidence.get("feed_age_seconds"))
+            or _optional_float(capability_evidence.get("freshness_seconds"))
+            or _optional_float(dead_market_reasoning.get("seconds_since_distinct_book_change"))
+            or 0.0
+        )
+        public_market_connected = bool(dead_market_reasoning.get("public_market_data_connected"))
+        truth_level = str(market_data_truth.get("level") or "").lower()
+        truth_reason = str(market_data_truth.get("reason") or "").lower()
+        known_symbols = {
+            value
+            for value in [
+                _string_or_none(market_integrity.get("symbol")),
+                _string_or_none(market_watch.get("symbol")),
+                _string_or_none(market_context.get("symbol")),
+                _string_or_none(operator_summary.get("symbol")),
+            ]
+            if value
+        }
+
+        if known_symbols and symbol not in known_symbols:
+            return None
+        if mid_price is None or mid_price <= 0 or spread_bps is None or spread_bps < 0:
+            return None
+        if not public_market_connected and truth_level != "authoritative":
+            return None
+        if truth_level not in {"authoritative", "strong"} and truth_reason != "market_data_integrity_ok":
+            return None
+
+        half_spread = mid_price * (spread_bps / 10_000.0) / 2.0
+        bid = max(0.0, mid_price - half_spread)
+        ask = max(bid, mid_price + half_spread)
+        ts = (
+            _string_or_none(market_integrity.get("ts"))
+            or _string_or_none(market_watch.get("ts"))
+            or _string_or_none(market_context.get("ts"))
+            or _dt_to_iso(snapshot.latest_artifact_at)
+        )
+        return QuoteSnapshot(
+            symbol=symbol,
+            venue=provider_id,
+            bid=bid,
+            ask=ask,
+            latency_ms=max(1, int(max(0.0, freshness_seconds) * 1000)),
+            ts=ts,
+            source="runtime_artifacts",
+        )
 
     def _latest_account_snapshot(self, snapshot: ArtifactSnapshot) -> dict[str, Any]:
         latest = _latest_row(snapshot.account_events)
@@ -2563,6 +2719,10 @@ class RuntimeApiService:
         latest_reconciliation = self._latest_reconciliation_report(snapshot)
         latest_execution_plan = _latest_row(snapshot.execution_journal)
         performance = snapshot.performance_artifacts
+        phase2_operator_summary = _as_object(performance.get("phase2_operator_summary"))
+        phase2_execution_truth = _as_object(performance.get("phase2_execution_truth_review"))
+        phase2_edge_capture = _as_object(performance.get("phase2_edge_capture_review"))
+        phase2_exit_effectiveness = _as_object(performance.get("phase2_exit_effectiveness_review"))
 
         def normalize_order_status(raw_status: str) -> str:
             normalized = raw_status.lower().replace("_", " ").strip()
@@ -2887,6 +3047,12 @@ class RuntimeApiService:
             avg_fill_latency = round(sum(fill_latencies) / len(fill_latencies), 2)
         total_fees = round(sum(_coerce_float(_as_object(row.get("payload")).get("fee"), 0.0) for row in snapshot.fill_events), 8)
         total_slippage = round(sum(_coerce_float(_as_object(row.get("payload")).get("slippage_cost"), 0.0) for row in snapshot.fill_events), 8)
+        phase2_edge_capture_efficiency = _optional_float(phase2_edge_capture.get("edge_capture_efficiency"))
+        phase2_slippage_gap_bps = _optional_float(phase2_execution_truth.get("slippage_gap_bps"))
+        phase2_delay_gap_ms = _optional_float(phase2_execution_truth.get("delay_gap_ms"))
+        phase2_exit_efficiency = _optional_float(phase2_exit_effectiveness.get("exit_efficiency"))
+        phase2_feedback_confidence = _optional_float(phase2_execution_truth.get("feedback_confidence"))
+        phase2_feedback_sample_count = _optional_int(phase2_execution_truth.get("feedback_sample_count"))
 
         summary = [
             {
@@ -2947,10 +3113,47 @@ class RuntimeApiService:
             },
             {
                 "label": "Edge capture efficiency",
-                "value": None,
+                "value": phase2_edge_capture_efficiency,
                 "unit": "percent",
-                "detail": "Unavailable without direct fill-to-expected-edge attribution in the active run.",
-                "derived": False,
+                "detail": (
+                    "Direct from phase2_edge_capture_review.json when forecast-vs-realized edge truth exists."
+                    if phase2_edge_capture
+                    else "Unavailable without direct fill-to-expected-edge attribution in the active run."
+                ),
+                "derived": bool(phase2_edge_capture),
+            },
+            {
+                "label": "Slippage gap vs forecast",
+                "value": phase2_slippage_gap_bps,
+                "unit": "bps",
+                "detail": (
+                    "Positive values mean realized slippage was worse than forecast."
+                    if phase2_execution_truth
+                    else "Unavailable without realized execution calibration evidence."
+                ),
+                "derived": bool(phase2_execution_truth),
+            },
+            {
+                "label": "Fill delay gap vs forecast",
+                "value": phase2_delay_gap_ms,
+                "unit": "ms",
+                "detail": (
+                    "Positive values mean realized fill delay exceeded forecast."
+                    if phase2_execution_truth
+                    else "Unavailable without realized execution calibration evidence."
+                ),
+                "derived": bool(phase2_execution_truth),
+            },
+            {
+                "label": "Exit efficiency",
+                "value": phase2_exit_efficiency,
+                "unit": "ratio",
+                "detail": (
+                    "Direct from phase2_exit_effectiveness_review.json when realized exit truth exists."
+                    if phase2_exit_effectiveness
+                    else "Unavailable without realized exit attribution."
+                ),
+                "derived": bool(phase2_exit_effectiveness),
             },
         ]
 
@@ -2982,6 +3185,12 @@ class RuntimeApiService:
             data_notes.append("No authenticated user-stream audit artifacts are present for the active run.")
         if not snapshot.lifecycle_evidence:
             data_notes.append("No lifecycle_evidence_journal.jsonl artifact present for the active run.")
+        if not phase2_execution_truth:
+            data_notes.append("No phase2_execution_truth_review.json artifact present for the active run.")
+        if not phase2_edge_capture:
+            data_notes.append("No phase2_edge_capture_review.json artifact present for the active run.")
+        if not phase2_exit_effectiveness:
+            data_notes.append("No phase2_exit_effectiveness_review.json artifact present for the active run.")
 
         return {
             "runId": snapshot.run_id,
@@ -2992,6 +3201,28 @@ class RuntimeApiService:
             "venueTelemetry": venue_telemetry,
             "timeline": timeline,
             "dataNotes": data_notes,
+            "phase2Review": {
+                "operatorSummary": phase2_operator_summary,
+                "executionTruth": phase2_execution_truth,
+                "edgeTruth": phase2_edge_capture,
+                "exitTruth": phase2_exit_effectiveness,
+                "calibration": {
+                    "feedbackConfidence": phase2_feedback_confidence,
+                    "sampleCount": phase2_feedback_sample_count,
+                    "partial": bool(
+                        phase2_execution_truth.get("partial", True)
+                        if phase2_execution_truth
+                        else True
+                    ),
+                },
+                "linkedArtifacts": self._linked_artifacts(
+                    snapshot,
+                    "phase2_operator_summary.json",
+                    "phase2_execution_truth_review.json",
+                    "phase2_edge_capture_review.json",
+                    "phase2_exit_effectiveness_review.json",
+                ),
+            },
             "linkedArtifacts": self._linked_artifacts(
                 snapshot,
                 "events_orders.jsonl",
@@ -3006,6 +3237,10 @@ class RuntimeApiService:
                 "execution_simulation_journal.jsonl",
                 "trade_log.json",
                 "reconciliation_report.jsonl",
+                "phase2_operator_summary.json",
+                "phase2_execution_truth_review.json",
+                "phase2_edge_capture_review.json",
+                "phase2_exit_effectiveness_review.json",
             ),
             "alphaTelemetry": {
                 "privateStreamHealth": _as_object(performance.get("private_stream_health")),

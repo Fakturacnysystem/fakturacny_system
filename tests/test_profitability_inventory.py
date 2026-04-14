@@ -158,6 +158,41 @@ def test_profitability_service_marks_profit_lock_partial_exit_when_above_cost_ba
     assert exit_intent.metadata["profit_locking"] is True
 
 
+def test_profitability_service_emits_exit_path_comparison_and_reacceleration_hold_bias():
+    inventory = InventoryService()
+    ts = datetime.now(timezone.utc) - timedelta(hours=24)
+    inventory.update_from_fill(
+        Fill("paper", "o1", "f1", "BTCUSDT", "buy", 120.0, 0.5, 0.5, 10, "filled"),
+        ts=ts,
+    )
+    inventory_state = inventory.inventory_pressure(symbol="BTCUSDT", ts=datetime.now(timezone.utc), opportunity_cost_score=0.8)
+    svc = ProfitabilityService()
+    release, exit_intent = svc.evaluate_exit(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        inventory_state=inventory_state,
+        reserve_state=None,
+        current_exposure=135.0,
+        regime_label="RANGE",
+        liquidity_regime="GOOD",
+        execution_quality=ExecutionQualityForecast("BTCUSDT", datetime.now(timezone.utc), 0.8, 150, 1.0, 0.1, True, {}),
+        synthetic_affect=type("Affect", (), {"stress": 0.1, "conviction": 0.85, "fear": 0.1})(),
+        position_morph_plan=type("Morph", (), {"allow_runner": True, "runner_fraction": 0.2})(),
+    )
+
+    assert release.allowed is True
+    assert exit_intent is not None
+    assert exit_intent.metadata["requires_doctrine_sell_eligibility"] is True
+    assert exit_intent.metadata["selected_exit_family"] in {
+        "staged_partial_exit",
+        "volatility_trailing",
+        "reacceleration_hold",
+        "time_decay_exit",
+    }
+    assert exit_intent.metadata["exit_path_comparison"]["families"]
+    assert release.metadata["winner_monetization"]["state"] == exit_intent.metadata["selected_exit_family"]
+
+
 def test_reporting_coordinator_surfaces_deadlock_and_stagnation_flags(tmp_path):
     coordinator = ReportingCoordinator(observability=ObservabilityService(str(tmp_path), OpsService(str(tmp_path))))
 

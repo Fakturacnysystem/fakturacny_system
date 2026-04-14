@@ -70,8 +70,8 @@ export function buildUnavailableSummary(reasonText?: string, identity?: RuntimeI
       health_status: runtimeIdentity.stateKind,
       reasonCode: runtimeIdentity.reasonCode ?? "runtime_api_unavailable",
       reasonText:
-        reasonText ??
-        "Runtime API is configured, but no authoritative payload has loaded yet. Mock fallback is intentionally disabled in this mode.",
+      reasonText ??
+        "Runtime API je nastavené, ale ešte sa nenačítali prvé spoľahlivé údaje. Náhradné mock dáta sú v tomto režime zámerne vypnuté.",
       lastUpdatedAt: RUNTIME_UNAVAILABLE_TIMESTAMP,
     },
   };
@@ -88,7 +88,7 @@ export function buildUnavailableList<T>(
     reasonCode: identity?.reasonCode ?? "runtime_api_unavailable",
     reasonText:
       reasonText ??
-      "Runtime API is configured, but the resource has not produced an authoritative payload.",
+      "Runtime API je nastavené, ale tento zdroj ešte neposlal spoľahlivé údaje.",
     runtimeIdentity: unresolvedIdentity(reasonText, identity),
   };
 }
@@ -102,7 +102,7 @@ export function buildUnavailableHealth(reasonText?: string, identity?: RuntimeId
     lastUpdatedAt: RUNTIME_UNAVAILABLE_TIMESTAMP,
     warnings: [
       reasonText ??
-        "Runtime API is configured, but health state is unavailable. RCC is refusing to silently substitute mock health.",
+        "Runtime API je nastavené, ale zdravie systému zatiaľ nie je dostupné. Panel to neprikrýva náhradnými dátami.",
     ],
     details: [
       {
@@ -120,10 +120,10 @@ export function buildUnavailableIntegrity(reasonText?: string, identity?: Runtim
     doctrineStatus: "unknown",
     capabilityConfidence: "unknown",
     blockers: [identity?.reasonCode ?? "runtime_api_unavailable"],
-    unlockActions: ["restore authoritative runtime API connectivity"],
+    unlockActions: ["obnoviť spoľahlivé spojenie s runtime API"],
     warnings: [
       reasonText ??
-        "Integrity payload unavailable; do not trust control surfaces until runtime API recovers.",
+        "Údaje o spoľahlivosti chýbajú. Kým sa runtime API nespamätá, ovládanie nie je bezpečné brať ako pravdu.",
     ],
     degradationState: "runtime_api_unavailable",
     details: [
@@ -152,7 +152,7 @@ export function buildUnavailableReplay(reasonText?: string, identity?: RuntimeId
         label: "Runtime API",
         detail:
           reasonText ??
-          "Replay payload unavailable; forensic review requires runtime API recovery.",
+          "História priebehu nie je dostupná. Na spätnú kontrolu treba najprv obnoviť runtime API.",
         ts: RUNTIME_UNAVAILABLE_TIMESTAMP,
         severity: "danger",
       },
@@ -171,7 +171,7 @@ export function buildUnavailableBrain(reasonText?: string, identity?: RuntimeIde
     whyTrade: [],
     whyNotTrade: [
       reasonText ??
-        "Brain evidence is unavailable; RCC refuses to invent decision logic when runtime artifacts are missing.",
+        "Vysvetlenie rozhodovania nie je dostupné. Panel si nechýbajúcu logiku nevymýšľa.",
     ],
     blockingReasons: [identity?.reasonCode ?? "runtime_api_unavailable"],
     supportingSignals: [],
@@ -191,7 +191,7 @@ export function buildUnavailableBrain(reasonText?: string, identity?: RuntimeIde
     },
     evidenceNotes: [
       reasonText ??
-        "Brain payload unavailable; no decision pipeline or explainability surface can be trusted.",
+        "Vysvetlenie rozhodovania nie je dostupné, preto sa nedá spoľahlivo ukázať ani reťaz rozhodovania.",
     ],
     stateKind: identity?.stateKind ?? "unavailable",
     lastUpdatedAt: RUNTIME_UNAVAILABLE_TIMESTAMP,
@@ -208,7 +208,7 @@ export function buildUnavailableShield(reasonText?: string, identity?: RuntimeId
       {
         label: "Runtime API",
         status: "unsafe",
-        detail: reasonText ?? "Shield payload unavailable.",
+        detail: reasonText ?? "Bezpečnostné údaje nie sú dostupné.",
         evidence: [],
         ts: RUNTIME_UNAVAILABLE_TIMESTAMP,
       },
@@ -217,7 +217,7 @@ export function buildUnavailableShield(reasonText?: string, identity?: RuntimeId
     queuedCommand: null,
     userStream: {
       status: "unavailable",
-      detail: reasonText ?? "Shield payload unavailable.",
+      detail: reasonText ?? "Bezpečnostné údaje nie sú dostupné.",
       subscribedChannels: [],
       lastEventType: null,
       lastEventAt: null,
@@ -226,7 +226,7 @@ export function buildUnavailableShield(reasonText?: string, identity?: RuntimeId
     guardMatrix: [],
     truthNotes: [
       reasonText ??
-        "Shield payload unavailable; operator safety posture cannot be proven.",
+        "Bezpečnostné údaje chýbajú, preto sa nedá dokázať, že je systém bezpečný na zásah.",
     ],
     linkedArtifacts: [],
     stateKind: identity?.stateKind ?? "unavailable",
@@ -246,7 +246,7 @@ export function buildUnavailableExecution(reasonText?: string, identity?: Runtim
     timeline: [],
     dataNotes: [
       reasonText ??
-        "Execution payload unavailable; order, fill, and position telemetry cannot be trusted.",
+        "Údaje o obchodoch nie sú dostupné, preto sa nedá spoľahlivo ukázať priebeh pokynov, obchodov a pozícií.",
     ],
     linkedArtifacts: [],
     stateKind: identity?.stateKind ?? "unavailable",

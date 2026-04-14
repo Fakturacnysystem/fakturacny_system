@@ -5,7 +5,10 @@ import logging
 import os
 from typing import Any
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover - optional dependency guard
+    OpenAI = None  # type: ignore[assignment]
 
 logger = logging.getLogger("Oracle-Engine")
 
@@ -15,8 +18,8 @@ class OracleEngine:
         self.api_key = (api_key or os.getenv("NVIDIA_API_KEY", "")).strip()
         self.base_url = (base_url or os.getenv("NVIDIA_API_BASE_URL", "https://integrate.api.nvidia.com/v1")).strip()
         self.model = model
-        self.enabled = bool(self.api_key)
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key) if self.enabled else None
+        self.enabled = bool(self.api_key) and OpenAI is not None
+        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key) if self.enabled and OpenAI is not None else None
 
     def predict_move(self, ob_imbalance: float, sentiment: float, correlations: Any) -> dict[str, Any]:
         if not self.enabled or self.client is None:
@@ -24,7 +27,7 @@ class OracleEngine:
                 "direction": "STAGNATE",
                 "confidence": 0,
                 "enabled": False,
-                "reason": "oracle_disabled_missing_api_key",
+                "reason": "oracle_disabled_missing_api_key" if not self.api_key else "oracle_disabled_missing_openai_dependency",
             }
 
         prompt = (

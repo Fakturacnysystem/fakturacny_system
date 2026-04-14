@@ -30,6 +30,16 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
   - `PROMOTION_GATES.md`
   - `RUN_REVIEW_TEMPLATE.md`
   - `OPERATOR_RUNTIME_CHECKLIST.md`
+  - `docs/module_value_map.md`
+  - `docs/trade_admission_model.md`
+  - `docs/opportunity_scheduler.md`
+  - `docs/universe_policy.md`
+  - `docs/dynamic_cost_model.md`
+  - `docs/event_feed_runtime.md`
+  - `docs/execution_toxicity.md`
+  - `docs/decision_deadline_governor.md`
+  - `docs/false_negative_review.md`
+  - `docs/capability_truth_matrix.md`
 
 ## Architecture highlights
 - `RobotOrchestrator` now coordinates explicit bounded contexts for market data, regime, alpha, portfolio, health, learning, and observability while preserving existing entrypoints.
@@ -58,6 +68,9 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
 - Live runs additionally emit `truth_confidence_journal.jsonl`, `fills_journal.jsonl`, `accounting_truth_journal.jsonl`, `recovery_journal.jsonl`, `reconciliation_journal.jsonl`, `meta_governor_journal.jsonl`, `control_journal.jsonl`, `market_integrity_journal.jsonl`, `market_integrity_evidence_journal.jsonl`, `venue_limit_journal.jsonl`, and `provider_capability_journal.jsonl`.
 - Live and paper runs now emit `quantum_state_journal.jsonl`, `edge_immunity_journal.jsonl`, `mastermind_journal.jsonl`, `spre_journal.jsonl`, `shadow_rival_journal.jsonl`, `decision_doctrine_journal.jsonl`, `execution_simulation_journal.jsonl`, `human_escalation_journal.jsonl`, `analog_trade_lookup.jsonl`, and `counterfactual_review.jsonl`; SPRE/shadow/doctrine/mastermind journals now include action rankings, survival ratio, dominance gap, failure clusters, kill-path evidence, truth strength, partial-truth penalty, regret pressure, or bounded-safe advisory rationale depending on the channel. Paper and live runs can emit `pnl_attribution.jsonl`, `loss_autopsy.jsonl`, `post_trade_summary.jsonl`, `loss_review_summary.jsonl`, `decision_doctrine_summary.jsonl`, and `mastermind_summary.jsonl`.
 - Live runs now also refresh `kraken_spot_operator_summary.json`, `live_capability_matrix.json`, `live_activated_capabilities.json`, `live_still_gated_capabilities.json`, `live_doctrine_blocked_capabilities.json`, and `live_artifact_index.json` during the actual live loop.
+- Kraken SPOT readonly, tiny_live, and limited_live profiles now expose a bounded liquid board through `market_universe.pair_universe` while keeping `max_active_pairs=1`.
+- `PolicyService` now emits an authoritative `trade_admission` layer with expected utility, floor compatibility, capital-lock cost, and signal-decay reasoning before the final live decision.
+- The live loop now uses a bounded flat-state opportunity scheduler to choose among configured spot symbols only when there is no open inventory and no open order.
 
 ## Kraken SPOT doctrine profiles
 - Paper baseline: `config.kraken_spot.paper.yaml`

@@ -36,17 +36,27 @@ def main() -> int:
     operator = _read(run_dir / "kraken_spot_operator_summary.json")
     readiness = _read(run_dir / "readiness_summary.json") or _read(run_dir / "tiny_live_readiness_report.json")
     health = _read(run_dir / "health_summary.json")
+    live_safety = _read(run_dir / "live_safety_summary.json")
     config_truth = _read(run_dir / "config_truth_report.json")
     release_manifest = _read(run_dir / "release_manifest.json")
+    preflight_ok = (operator.get("preflight") or {}).get("ok")
+    if preflight_ok is None:
+        preflight_ok = health.get("preflight_ok")
+    ordering_allowed = operator.get("ordering_allowed")
+    if ordering_allowed is None:
+        ordering_allowed = health.get("ordering_allowed", live_safety.get("ordering_allowed"))
+    preflight_reason = (operator.get("preflight") or {}).get("reason")
+    if preflight_reason in {None, ""}:
+        preflight_reason = health.get("preflight_reason", live_safety.get("preflight_reason"))
     payload = {
         "run_dir": str(run_dir),
         "exists": run_dir.exists(),
         "provider_id": operator.get("provider_id"),
         "mode": operator.get("mode"),
         "rollout_stage": operator.get("rollout_stage") or readiness.get("stage") or readiness.get("rollout_stage"),
-        "ordering_allowed": operator.get("ordering_allowed"),
-        "preflight_ok": (operator.get("preflight") or {}).get("ok"),
-        "preflight_reason": (operator.get("preflight") or {}).get("reason"),
+        "ordering_allowed": ordering_allowed,
+        "preflight_ok": preflight_ok,
+        "preflight_reason": preflight_reason,
         "readiness_ready": readiness.get("readiness_ready", readiness.get("ready")),
         "config_hash": (operator.get("harmony") or {}).get("config_hash") or config_truth.get("config_hash"),
         "release_fingerprint": release_manifest.get("release_fingerprint"),

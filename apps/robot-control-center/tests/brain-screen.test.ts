@@ -11,10 +11,10 @@ describe("BrainScreen", () => {
       React.createElement(BrainScreen, { brain: mockBrain }),
     );
 
-    expect(html).toContain("Decision evidence graph");
+    expect(html).toContain("Prečo sa robot rozhodol takto");
     expect(html).toContain("BTC/EUR");
     expect(html).toContain("trade_smaller");
-    expect(html).toContain("Decision Pipeline Map");
+    expect(html).toContain("Mapa rozhodovania");
     expect(html).toContain("nextEligibleAction derived from decision intent plus live ordering gate");
   });
 
@@ -24,8 +24,8 @@ describe("BrainScreen", () => {
     );
 
     expect(html).toContain("brain_payload_missing");
-    expect(html).toContain("No decision pipeline evidence is available for the active run.");
-    expect(html).toContain("No symbol brain payload is available.");
+    expect(html).toContain("Reťaz rozhodovania pre tento beh zatiaľ nie je dostupná.");
+    expect(html).toContain("Zatiaľ nie je k dispozícii detailný pohľad na sledované páry.");
     expect(html).toContain("unavailable");
   });
 });

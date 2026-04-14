@@ -11,13 +11,13 @@ describe("ExecutionScreen", () => {
       React.createElement(ExecutionScreen, { execution: mockExecution }),
     );
 
-    expect(html).toContain("Order, position, and venue observability");
+    expect(html).toContain("Čo sa naozaj stalo pri pokynoch a obchodoch");
     expect(html).toContain("partially filled");
     expect(html).toContain("BTC/EUR");
-    expect(html).toContain("Account Truth");
-    expect(html).toContain("Venue / Lifecycle Truth");
+    expect(html).toContain("Skutočný stav účtu");
+    expect(html).toContain("Pravda o burze a priebehu");
     expect(html).toContain("openOrders");
-    expect(html).toContain("Execution Timeline");
+    expect(html).toContain("Časový priebeh obchodov");
     expect(html).toContain("events_orders.jsonl");
   });
 
@@ -27,8 +27,8 @@ describe("ExecutionScreen", () => {
     );
 
     expect(html).toContain("execution_payload_missing");
-    expect(html).toContain("No execution order lifecycle payload is available.");
-    expect(html).toContain("No open positions are observable from the active run.");
-    expect(html).toContain("No order is available to anchor a focused execution timeline.");
+    expect(html).toContain("Zatiaľ nie je k dispozícii priebeh pokynov.");
+    expect(html).toContain("Z tohto behu zatiaľ nie sú pozorovateľné žiadne otvorené pozície.");
+    expect(html).toContain("Nie je k dispozícii pokyn, na ktorom by sa dal ukázať detailný priebeh.");
   });
 });

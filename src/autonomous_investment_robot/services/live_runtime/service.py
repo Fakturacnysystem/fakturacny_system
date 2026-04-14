@@ -72,11 +72,44 @@ def _truth_snapshot_dict(snapshot: TruthConfidenceSnapshot) -> dict[str, Any]:
 
 
 class LiveStateCoordinator:
+    _TERMINAL_RECOVERY_STATES = {
+        "filled",
+        "cancelled",
+        "rejected",
+        "expired",
+        "recovered",
+        "timed_out",
+    }
+    _PROBLEM_RECOVERY_STATES = {
+        "acknowledged",
+        "accepted",
+        "working",
+        "partially_filled",
+        "cancel_pending",
+        "replace_pending",
+        "replace_rejected",
+        "cancel_rejected",
+        "orphaned",
+        "stuck",
+        "unknown",
+    }
+
     def __init__(self, event_store: EventStore, portfolio: PortfolioService, recon: ReconciliationService, inventory: Any | None = None) -> None:
         self.event_store = event_store
         self.portfolio = portfolio
         self.recon = recon
         self.inventory = inventory
+
+    def _active_lifecycle_snapshot(self, lifecycle_snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        active_records: list[dict[str, Any]] = []
+        for item in lifecycle_snapshot:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state", "")).lower()
+            if state in self._TERMINAL_RECOVERY_STATES:
+                continue
+            active_records.append(item)
+        return active_records
 
     def exchange_state(self, live: object, symbol: str) -> LiveExchangeState:
         positions = live.connector.position_risk(symbol)  # type: ignore[attr-defined]
@@ -91,6 +124,25 @@ class LiveStateCoordinator:
                 continue
             exposure += amt * mark
             count += 1
+        if exposure <= 0.0 and hasattr(live.connector, "base_balance") and hasattr(live.connector, "book_ticker"):  # type: ignore[attr-defined]
+            try:
+                base_balance = dict(live.connector.base_balance(symbol))  # type: ignore[attr-defined]
+                base_total = abs(float(base_balance.get("total", 0.0) or 0.0))
+                tolerance = 0.0
+                if hasattr(live.connector, "market_constraints"):  # type: ignore[attr-defined]
+                    try:
+                        constraints = dict(live.connector.market_constraints(symbol))  # type: ignore[attr-defined]
+                        tolerance = float(constraints.get("min_order_size", 0.0) or 0.0) * 0.5
+                    except Exception:
+                        tolerance = 0.0
+                if base_total > max(tolerance, 1e-12):
+                    book = dict(live.connector.book_ticker(symbol))  # type: ignore[attr-defined]
+                    bid = abs(float(book.get("bidPrice", 0.0) or 0.0))
+                    if bid > 0.0:
+                        exposure = base_total * bid
+                        count = max(count, 1)
+            except Exception:
+                pass
         if hasattr(live, "authoritative_unrealized_pnl"):
             unrealized_truth, gaps = live.authoritative_unrealized_pnl(symbol)  # type: ignore[attr-defined]
             if unrealized_truth is None:
@@ -441,8 +493,34 @@ class LiveStateCoordinator:
                 return "acknowledged"
             if seen_fill:
                 return "recovered"
-            return "timed_out"
+            return "unknown"
         return "recovered" if seen_fill else "stuck"
+
+    def _lifecycle_state_by_key(self, live: object) -> dict[str, str]:
+        if not hasattr(live, "lifecycle_snapshot"):
+            return {}
+        try:
+            snapshot = live.lifecycle_snapshot()
+        except Exception:
+            return {}
+        states: dict[str, str] = {}
+        if not isinstance(snapshot, list):
+            return states
+        for item in snapshot:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state", "")).strip().lower()
+            if not state:
+                continue
+            for key in (
+                item.get("order_key"),
+                item.get("client_order_id"),
+                item.get("order_id"),
+            ):
+                normalized = str(key or "").strip()
+                if normalized:
+                    states[normalized] = state
+        return states
 
     def recover_inflight_state(
         self,
@@ -455,6 +533,7 @@ class LiveStateCoordinator:
         order_events = self.event_store.load("orders")
         fill_events = self.event_store.load("fills")
         provider_id = getattr(getattr(live, "connector", None), "provider_id", "live")
+        lifecycle_states = self._lifecycle_state_by_key(live)
         local_orders: dict[str, dict[str, Any]] = {}
         local_fill_ids: list[str] = []
         local_filled_orders: set[str] = set()
@@ -525,7 +604,10 @@ class LiveStateCoordinator:
                         reasons.append(f"orphan_cancel_error:{exc}")
                 continue
             local_status = str(local.get("status", "NEW"))
-            state = self._order_recovery_state(local_status, seen_fill=bool(local_filled_orders), exchange_open=True)
+            state = lifecycle_states.get(
+                key,
+                self._order_recovery_state(local_status, seen_fill=bool(local_filled_orders), exchange_open=True),
+            )
             if ok:
                 recovered_orders += 1
             order_states.append({"order_key": key, "state": state, "local_status": local_status, "exchange_status": status})
@@ -535,12 +617,25 @@ class LiveStateCoordinator:
                 continue
             local_status = str(local.get("status", "NEW"))
             seen_fill = str(local.get("orderId", local.get("order_id", ""))) in local_filled_orders
-            state = self._order_recovery_state(local_status, seen_fill=seen_fill, exchange_open=False)
+            state = lifecycle_states.get(
+                key,
+                self._order_recovery_state(local_status, seen_fill=seen_fill, exchange_open=False),
+            )
             if state in {"recovered", "timed_out", "stuck"}:
                 recovered_orders += 1
-                if hasattr(live, "lifecycle_snapshot"):
-                    pass
             order_states.append({"order_key": key, "state": state, "local_status": local_status, "exchange_status": "missing"})
+
+        effective_active_local_orders = [
+            item
+            for item in order_states
+            if str(item.get("state", "")).lower() in self._PROBLEM_RECOVERY_STATES
+        ]
+        effective_historical_local_orders = [
+            item
+            for item in order_states
+            if str(item.get("state", "")).lower() in self._TERMINAL_RECOVERY_STATES
+        ]
+        active_fill_ids = bool(local_fill_ids and (exchange_keys or effective_active_local_orders))
 
         if restart_confidence == "insufficient":
             outcome = "insufficient_confidence_boot"
@@ -548,10 +643,10 @@ class LiveStateCoordinator:
         elif orphan_orders:
             outcome = "warm_restart"
             action = "flatten_only"
-        elif safe_mode_requested and (exchange_keys or local_orders):
+        elif safe_mode_requested and (exchange_keys or effective_active_local_orders):
             outcome = "safe_mode_boot"
             action = "degrade"
-        elif exchange_keys or local_orders or local_fill_ids:
+        elif exchange_keys or effective_active_local_orders or active_fill_ids:
             outcome = "warm_restart"
             action = "degrade" if recovered_orders or duplicate_repairs or out_of_order_repairs else "continue"
         else:
@@ -572,6 +667,8 @@ class LiveStateCoordinator:
             metadata={
                 "swept_order_ids": swept_order_ids,
                 "order_states": order_states,
+                "effective_active_local_orders": effective_active_local_orders,
+                "effective_historical_local_orders": effective_historical_local_orders,
                 "lifecycle_snapshot": live.lifecycle_snapshot() if hasattr(live, "lifecycle_snapshot") else [],
             },
         )
@@ -822,16 +919,17 @@ class LiveStateCoordinator:
             history_recovered=len(fill_events),
         )
         lifecycle_snapshot = live.lifecycle_snapshot() if hasattr(live, "lifecycle_snapshot") else []
+        active_lifecycle_snapshot = self._active_lifecycle_snapshot(lifecycle_snapshot)
         lifecycle_problem_states = {
             str(item.get("state", "")).lower()
-            for item in lifecycle_snapshot
+            for item in active_lifecycle_snapshot
             if isinstance(item, dict)
         }
-        if exchange.open_order_count > 0 and not lifecycle_snapshot:
+        if exchange.open_order_count > 0 and not active_lifecycle_snapshot:
             order_lifecycle_confidence = TruthConfidenceLevel.UNAVAILABLE.value
         elif lifecycle_problem_states & {"orphaned", "stuck", "unknown", "cancel_rejected"}:
             order_lifecycle_confidence = TruthConfidenceLevel.PROXY.value
-        elif any(str(item.get("confidence", "")).lower() in {"recovery", "local"} for item in lifecycle_snapshot if isinstance(item, dict)):
+        elif any(str(item.get("confidence", "")).lower() in {"recovery", "local"} for item in active_lifecycle_snapshot if isinstance(item, dict)):
             order_lifecycle_confidence = TruthConfidenceLevel.PROXY.value
         else:
             order_lifecycle_confidence = TruthConfidenceLevel.AUTHORITATIVE.value
@@ -847,7 +945,7 @@ class LiveStateCoordinator:
             truth_confidence=truth_confidence,
             stale_account_snapshot=since_ms is None and (exchange.position_count > 0 or exchange.open_order_count > 0),
             stale_market_snapshot=bool(market_health is not None and getattr(market_health, "feed_stale", False)),
-            lifecycle_snapshot=lifecycle_snapshot,
+            lifecycle_snapshot=active_lifecycle_snapshot,
             order_lifecycle_confidence=order_lifecycle_confidence,
         )
         report.details.setdefault("exchange_balance", exchange.balance_total)
@@ -866,6 +964,7 @@ class LiveStateCoordinator:
         report.details.setdefault("local_unrealized_pnl", local_state.unrealized_pnl)
         report.details.setdefault("order_lifecycle_confidence", order_lifecycle_confidence)
         report.details.setdefault("order_lifecycle_snapshot", lifecycle_snapshot)
+        report.details.setdefault("active_order_lifecycle_snapshot", active_lifecycle_snapshot)
         report.details.setdefault("reconciliation_since_ms", since_ms)
         self.event_store.append(
             "truth",

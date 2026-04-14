@@ -70,6 +70,10 @@ def _service(tmp_path: Path) -> RuntimeApiService:
     )
 
 
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def test_summary_uses_real_artifacts_and_live_quote_snapshot(tmp_path: Path) -> None:
     service = _service(tmp_path)
 
@@ -87,6 +91,83 @@ def test_summary_uses_real_artifacts_and_live_quote_snapshot(tmp_path: Path) -> 
     assert payload["runtimeIdentity"]["driftStatus"] == "locked"
     assert "performance" in payload
     assert set(payload["performance"].keys()) >= {"capitalUtilizationPct", "netExpectancyBps", "fillRate", "makerRatio", "targetGap"}
+
+
+def test_execution_surfaces_phase2_truth_when_artifacts_exist(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "phase2_operator_summary.json",
+        {
+            "ts": "2026-03-29T15:59:00+00:00",
+            "execution_truth": {"sample_count": 4},
+            "edge_truth": {"edge_capture_efficiency": 82.5},
+            "exit_truth": {"exit_efficiency": 0.74},
+        },
+    )
+    _write_json(
+        run_dir / "phase2_execution_truth_review.json",
+        {
+            "ts": "2026-03-29T15:59:01+00:00",
+            "realized_slippage_bps": 5.2,
+            "slippage_gap_bps": 1.4,
+            "delay_gap_ms": 320.0,
+            "feedback_confidence": 0.75,
+            "feedback_sample_count": 6,
+            "partial": False,
+        },
+    )
+    _write_json(
+        run_dir / "phase2_edge_capture_review.json",
+        {
+            "ts": "2026-03-29T15:59:02+00:00",
+            "edge_capture_efficiency": 82.5,
+            "forecast_net_edge_bps": 148.0,
+            "realized_net_edge_bps": 122.1,
+            "partial": False,
+        },
+    )
+    _write_json(
+        run_dir / "phase2_exit_effectiveness_review.json",
+        {
+            "ts": "2026-03-29T15:59:03+00:00",
+            "exit_efficiency": 0.74,
+            "expected_hold_minutes": 42.0,
+            "realized_hold_minutes": 38.0,
+            "partial": False,
+        },
+    )
+
+    payload = service.execution()
+
+    edge_metric = next(item for item in payload["summary"] if item["label"] == "Edge capture efficiency")
+    slippage_metric = next(item for item in payload["summary"] if item["label"] == "Slippage gap vs forecast")
+    delay_metric = next(item for item in payload["summary"] if item["label"] == "Fill delay gap vs forecast")
+    exit_metric = next(item for item in payload["summary"] if item["label"] == "Exit efficiency")
+
+    assert edge_metric["value"] == 82.5
+    assert slippage_metric["value"] == 1.4
+    assert delay_metric["value"] == 320.0
+    assert exit_metric["value"] == 0.74
+    assert payload["phase2Review"]["executionTruth"]["feedback_sample_count"] == 6
+    assert payload["phase2Review"]["calibration"]["feedbackConfidence"] == 0.75
+    assert payload["phase2Review"]["calibration"]["partial"] is False
+    assert "phase2_execution_truth_review.json" in payload["phase2Review"]["linkedArtifacts"]
+    assert "phase2_edge_capture_review.json" in payload["linkedArtifacts"]
+
+
+def test_execution_marks_missing_phase2_truth_explicitly_when_unavailable(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    payload = service.execution()
+
+    assert payload["phase2Review"]["executionTruth"] == {}
+    assert payload["phase2Review"]["edgeTruth"] == {}
+    assert payload["phase2Review"]["exitTruth"] == {}
+    assert payload["phase2Review"]["calibration"]["partial"] is True
+    assert any("No phase2_execution_truth_review.json artifact present" in note for note in payload["dataNotes"])
+    assert any("No phase2_edge_capture_review.json artifact present" in note for note in payload["dataNotes"])
+    assert any("No phase2_exit_effectiveness_review.json artifact present" in note for note in payload["dataNotes"])
 
 
 def test_shield_derives_operator_safe_performance_status_from_partial_artifacts(tmp_path: Path) -> None:
@@ -310,3 +391,132 @@ def test_summary_degrades_honestly_when_quote_connector_init_is_unavailable(
     assert payload["stateKind"] == "partial"
     assert payload["reasonCode"] == "market_quote_degraded"
     assert payload["restHealthy"] is False
+
+
+def test_summary_uses_authoritative_artifact_quotes_and_replay_reconstruction_when_live_quotes_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    (run_dir / "config_manifest.json").write_text(
+        json.dumps(
+            {
+                "provider_id": "kraken_spot",
+                "runtime_mode": "live",
+                "universe": ["BTC/USD"],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "report.json").write_text(json.dumps({"equity": 34.338}), encoding="utf-8")
+    (run_dir / "kraken_spot_operator_summary.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTC/USD",
+                "market_context": {
+                    "symbol": "BTC/USD",
+                    "market_integrity": {
+                        "symbol": "BTC/USD",
+                        "metadata": {
+                            "spread_bps": 0.0149,
+                        },
+                    },
+                },
+                "performance_architecture": {
+                    "execution_alpha": {
+                        "cost_model": {
+                            "metadata": {
+                                "mid_price": 66953.35,
+                            }
+                        }
+                    }
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events_truth.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "TRUTH_CONFIDENCE_SNAPSHOT",
+                "payload": {
+                    "market_data_truth_confidence": {
+                        "domain": "market_data_truth_confidence",
+                        "level": "authoritative",
+                        "reason": "market_data_integrity_ok",
+                    }
+                },
+                "ts": "2026-03-29T15:58:30+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    market_integrity = {
+        "symbol": "BTC/USD",
+        "ts": "2026-03-29T15:58:30+00:00",
+        "action": "continue",
+        "metadata": {
+            "spread_bps": 0.0149,
+            "integrity_evidence": {"feed_age_seconds": 0.0},
+            "capability_evidence": {"freshness_seconds": 0.0, "user_stream_connected": True},
+        },
+    }
+    market_watch = {
+        "symbol": "BTC/USD",
+        "ts": "2026-03-29T15:58:30+00:00",
+        "action": "continue",
+        "metadata": {
+            "spread_bps": 0.0149,
+            "dead_market_reasoning": {
+                "public_market_data_connected": True,
+                "seconds_since_distinct_book_change": 0.0,
+            },
+        },
+    }
+    (run_dir / "market_integrity_journal.jsonl").write_text(json.dumps(market_integrity) + "\n", encoding="utf-8")
+    (run_dir / "market_watch_journal.jsonl").write_text(json.dumps(market_watch) + "\n", encoding="utf-8")
+    (run_dir / "market_context_summary.jsonl").write_text(
+        json.dumps({"symbol": "BTC/USD", "market_integrity": market_integrity, "market_watch": market_watch}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "reconciliation_report.jsonl").write_text(
+        json.dumps({"ok": True, "code": "reconciled", "ts": "2026-03-29T15:58:30+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+
+    class BrokenKrakenSpotConnector:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise KrakenSpotConnectorError("ccxt_unavailable")
+
+    monkeypatch.setattr(
+        "autonomous_investment_robot.services.runtime_api.service.KrakenSpotConnector",
+        BrokenKrakenSpotConnector,
+    )
+
+    service = RuntimeApiService(
+        RuntimeApiServiceConfig(
+            repo_root=tmp_path,
+            run_dir=run_dir,
+            artifact_stale_after_seconds=600,
+        ),
+        now=lambda: datetime(2026, 3, 29, 16, 0, 0, tzinfo=UTC),
+    )
+
+    payload = service.summary()
+    symbols = service.symbols()
+    health = service.health()
+
+    assert payload["stateKind"] == "healthy"
+    assert payload["reasonCode"] is None
+    assert payload["restHealthy"] is True
+    assert symbols["items"][0]["source"] == "runtime_artifacts"
+    assert symbols["items"][0]["bid"] > 0
+    assert symbols["items"][0]["ask"] > symbols["items"][0]["bid"]
+    assert health["artifactFallbackActive"] is False

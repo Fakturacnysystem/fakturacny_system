@@ -62,6 +62,54 @@ def test_evaluate_decision_emits_no_trade_reason_for_low_confidence():
     assert "confidence_guard" in decision.no_trade.reasons
 
 
+def test_trade_admission_missing_evidence_stays_neutral_and_auditable():
+    svc = _policy()
+    fc = _forecast(confidence=0.82)
+    decision = svc.evaluate_decision(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0},
+        1.0,
+        0.1,
+    )
+
+    assert decision.trade_allowed is True
+    admission = decision.why["trade_admission"]
+    assert admission["evidence_state"] == "partial"
+    assert admission["missing_evidence"] == ["execution_quality", "portfolio_allocation", "provider_capability"]
+    assert admission["recommended_action"] == "continue"
+    assert "missing_evidence_neutral_no_floor_veto" in admission["rationale"]
+    assert decision.why["decision_waterfall"][-1]["layer"] == "final_decision"
+    assert decision.why["veto_attribution"]["primary_veto"] is None
+
+
+def test_trade_admission_blocks_non_positive_realized_edge():
+    svc = _policy()
+    svc.evaluate_strategies = lambda features, forecast: [  # type: ignore[method-assign]
+        StrategySignal(
+            name="unit",
+            target_notional=50.0,
+            confidence=0.9,
+            estimated_cost_bps=20.0,
+            expected_edge_bps=4.0,
+            why={"source": "test"},
+        )
+    ]
+    fc = _forecast(confidence=0.9)
+
+    decision = svc.evaluate_decision(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0},
+        10.0,
+        2.0,
+    )
+
+    assert decision.trade_allowed is False
+    assert decision.no_trade is not None
+    assert decision.no_trade.reason in {"trade_admission_no_trade", "no_edge_after_costs"}
+    assert decision.why["trade_admission"]["recommended_action"] == "no_trade"
+    assert decision.why["veto_attribution"]["primary_veto"] in {"trade_admission", "final_decision", "no_edge_after_costs"}
+
+
 def test_kraken_spot_doctrine_filter_removes_market_neutral_strategies() -> None:
     svc = _kraken_spot_policy()
     fc = _forecast()
@@ -483,6 +531,36 @@ def test_evaluate_decision_applies_probe_only_capital_throttle():
     assert decision.trade_allowed is True
     assert 0.0 < decision.target_notional < 50.0
     assert "capital_sovereignty_probe_only" in decision.why["capital_sovereignty"]["reasons"] or "capital_probe_only" in decision.why["capital_sovereignty"]["reasons"]
+
+
+def test_trade_admission_waterfall_records_probe_layer():
+    svc = _policy()
+    fc = _forecast(confidence=0.8)
+    decision = svc.evaluate_decision(
+        fc,
+        {"depth_notional": 1_000_000.0, "funding_rate": 0.0, "spread_proxy": 0.0},
+        1.0,
+        0.1,
+        mastermind_advisory=SimpleNamespace(
+            provider="local",
+            signal="probe_only",
+            confidence=0.6,
+            reason="controlled_probe",
+            decision="PROBE",
+            risk_level=35.0,
+            veto=False,
+            size_multiplier=0.25,
+            execution_style_bias="passive_limit",
+            reasons=["mastermind_probe"],
+            heuristic=True,
+            raw={},
+        ),
+    )
+
+    assert decision.trade_allowed is True
+    waterfall = decision.why["decision_waterfall"]
+    assert any(item["layer"] == "trade_admission" for item in waterfall)
+    assert decision.why["veto_attribution"]["primary_veto"] is None
 
 
 def test_evaluate_decision_prioritizes_adaptive_exit_before_new_trade():

@@ -22,13 +22,13 @@ const monoFont = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Robot Control Center",
-  description: "Runtime control surface for guarded crypto-bot operations.",
+  title: "Riadiaci panel robota",
+  description: "Zrozumiteľný riadiaci panel pre sledovanie a bezpečné ovládanie obchodného robota.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="sk" data-theme="dark">
       <body className={`${displayFont.variable} ${bodyFont.variable} ${monoFont.variable}`}>{children}</body>
     </html>
   );

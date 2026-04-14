@@ -12,6 +12,7 @@ from autonomous_investment_robot.config.settings import (
     HarmonySettings,
     LiveUnlockSettings,
     MarketWatchSettings,
+    RolloutStage,
     RiskLimits,
     RobotSettings,
     SafetySettings,
@@ -126,13 +127,36 @@ class FakeKrakenSpotConnector:
     def trade_history(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
         return list(self.trade_rows[offset : offset + limit])
 
+    def trade_history_page(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+        from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotTradeHistoryPage
+
+        return KrakenSpotTradeHistoryPage(
+            rows=list(self.trade_rows[offset : offset + limit]),
+            fetched_count=max(0, min(limit, len(self.trade_rows) - offset)),
+            total_count=len(self.trade_rows),
+        )
+
+    def symbol_from_market_id(self, market_id):  # noqa: ARG002
+        return "BTC/USD"
+
     def normalize_amount(self, symbol, amount):  # noqa: ARG002
         return round(float(amount), 8)
 
     def normalize_price(self, symbol, price):  # noqa: ARG002
         return round(float(price), 8)
 
-    def validate_order_preview(self, *, symbol, side, amount, price, post_only=False):  # noqa: ARG002
+    def validate_order_preview(
+        self,
+        *,
+        symbol,
+        side,
+        amount,
+        price,
+        post_only=False,
+        client_order_id="",
+        time_in_force="",
+        expire_seconds=None,
+    ):  # noqa: ARG002
         return (True, "validated") if self.preview_ok else (False, "preview_failed")
 
     def query_order(self, symbol, client_order_id):  # noqa: ARG002
@@ -176,7 +200,7 @@ class FakeKrakenSpotConnector:
         order["status"] = "CANCELED"
         return order
 
-    def open_orders(self):
+    def open_orders(self, symbol=None):  # noqa: ARG002
         return []
 
     def position_risk(self, symbol=None):  # noqa: ARG002
@@ -330,6 +354,205 @@ def test_kraken_spot_execute_requires_successful_preflight(monkeypatch: pytest.M
     assert out.reason == "preflight_not_completed"
 
 
+def test_kraken_spot_prepare_tiny_live_canary_uses_passive_gtd_preview(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    settings = _settings(monkeypatch, tmp_path)
+    settings.canary_mode = False
+    settings.rollout_stage_override = RolloutStage.TINY_LIVE.value
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    assert svc.preflight() == (True, "ok")
+
+    plan = svc.prepare_tiny_live_canary(symbol="BTC/USD", passive_offset_bps=100.0, expiry_seconds=15)
+
+    assert plan["ok"] is True
+    assert plan["preview_ok"] is True
+    assert plan["symbol"] == "BTC/USD"
+    assert plan["side"] == "buy"
+    assert plan["post_only"] is True
+    assert plan["time_in_force"] == "GTD"
+    assert plan["expiry_seconds"] == 15
+    assert plan["price"] < fake.bid
+    assert plan["qty"] * plan["price"] >= plan["min_notional"]
+    assert str(plan["client_order_id"]).startswith("tlc")
+
+
+def test_kraken_spot_submit_tiny_live_canary_submits_once_with_gtd_and_cancels_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class CanaryConnector(FakeKrakenSpotConnector):
+        def __init__(self) -> None:
+            super().__init__()
+            self.query_counts: dict[str, int] = {}
+
+        def place_order(self, payload):
+            self.placed_payloads.append(dict(payload))
+            cid = str(payload["newClientOrderId"])
+            order = {
+                "clientOrderId": cid,
+                "orderId": f"order-{len(self.orders) + 1}",
+                "status": "NEW",
+                "symbol": str(payload["symbol"]),
+                "side": str(payload["side"]).upper(),
+                "executedQty": "0",
+                "avgPrice": "0",
+                "filledNotional": "0",
+                "raw": {"order_id": f"order-{len(self.orders) + 1}"},
+            }
+            self.orders[cid] = order
+            return dict(order)
+
+        def query_order(self, symbol, client_order_id):  # noqa: ARG002
+            order = dict(self.orders.get(client_order_id, {}))
+            count = self.query_counts.get(client_order_id, 0) + 1
+            self.query_counts[client_order_id] = count
+            if count >= 2 and order:
+                order["status"] = "CANCELED"
+                self.orders[client_order_id] = dict(order)
+            return order or None
+
+    fake = CanaryConnector()
+    settings = _settings(monkeypatch, tmp_path)
+    settings.canary_mode = False
+    settings.rollout_stage_override = RolloutStage.TINY_LIVE.value
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    assert svc.preflight() == (True, "ok")
+    plan = svc.prepare_tiny_live_canary(symbol="BTC/USD", passive_offset_bps=100.0, expiry_seconds=1)
+
+    result = svc.submit_tiny_live_canary(plan)
+
+    assert result.status == "submitted"
+    assert result.order is not None
+    assert result.order["clientOrderId"] == plan["client_order_id"]
+    assert fake.placed_payloads[0]["postOnly"] is True
+    assert fake.placed_payloads[0]["timeInForce"] == "GTD"
+    assert fake.placed_payloads[0]["expireSeconds"] == 1
+    snapshot = svc.lifecycle_snapshot()
+    states = {str(item.get("state", "")).lower() for item in snapshot if isinstance(item, dict)}
+    assert "cancelled" in states or "canceled" in states
+
+
+def test_authoritative_inventory_state_uses_local_user_stream_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FastPathConnector(FakeKrakenSpotConnector):
+        def trade_history_page(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+            raise AssertionError("exchange_trade_history_should_not_be_used")
+
+    fake = FastPathConnector()
+    fake.trade_rows = []
+    fake.balance_total = 0.00018
+    fake.balance_free = 0.00018
+    settings = _settings(monkeypatch, tmp_path)
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    local_rows = [
+        KrakenSpotTradeRow(
+            trade_id="local-buy-1",
+            order_id="local-order-1",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.00018,
+            quote_cost=10.0,
+            fee_quote=0.0,
+            price=55555.55,
+            timestamp_ms=1_700_000_000_000,
+            raw={"source": "kraken_private_ws_ownTrades"},
+        )
+    ]
+    monkeypatch.setattr(svc, "_local_user_stream_trade_rows", lambda symbol: list(local_rows))
+
+    state = svc._authoritative_inventory_state("BTC/USD")
+
+    assert state["ok"] is True
+    assert state["reason"] == "local_user_stream_inventory_truth"
+    assert state["history_source"] == "kraken_private_ws_ownTrades"
+    assert state["balance_total_qty"] == pytest.approx(0.00018)
+
+
+def test_authoritative_inventory_state_uses_local_conservative_fallback_before_exchange_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FastPathConnector(FakeKrakenSpotConnector):
+        def trade_history_page(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+            raise AssertionError("exchange_trade_history_should_not_be_used")
+
+    fake = FastPathConnector()
+    fake.trade_rows = []
+    fake.balance_total = 0.00017936
+    fake.balance_free = 0.00017936
+    settings = _settings(monkeypatch, tmp_path)
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    local_rows = [
+        KrakenSpotTradeRow(
+            trade_id="buy-1",
+            order_id="order-1",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.00030,
+            quote_cost=15.0,
+            fee_quote=0.0,
+            price=50000.0,
+            timestamp_ms=1_700_000_000_000,
+            raw={"source": "kraken_private_ws_ownTrades"},
+        ),
+        KrakenSpotTradeRow(
+            trade_id="sell-1",
+            order_id="order-2",
+            symbol="BTC/USD",
+            side="sell",
+            base_qty=0.00040,
+            quote_cost=20.0,
+            fee_quote=0.0,
+            price=50000.0,
+            timestamp_ms=1_700_000_000_100,
+            raw={"source": "kraken_private_ws_ownTrades"},
+        ),
+    ]
+    monkeypatch.setattr(svc, "_local_user_stream_trade_rows", lambda symbol: list(local_rows))
+
+    state = svc._authoritative_inventory_state("BTC/USD")
+
+    assert state["ok"] is True
+    assert state["reason"] == "conservative_buy_basis_fallback"
+    assert state["history_source"] == "kraken_private_ws_ownTrades"
+    assert state["basis_conservative"] is True
+    assert state["balance_total_qty"] == pytest.approx(0.00017936)
+
+
+def test_authoritative_fill_history_prefers_local_user_stream_when_since_ms_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FastPathConnector(FakeKrakenSpotConnector):
+        def trade_history_page(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+            raise AssertionError("exchange_trade_history_should_not_be_used")
+
+    fake = FastPathConnector()
+    fake.trade_rows = []
+    settings = _settings(monkeypatch, tmp_path)
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    local_rows = [
+        KrakenSpotTradeRow(
+            trade_id="local-buy-1",
+            order_id="local-order-1",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.00018,
+            quote_cost=10.0,
+            fee_quote=0.0,
+            price=55555.55,
+            timestamp_ms=1_700_000_000_000,
+            raw={"source": "kraken_private_ws_ownTrades"},
+        )
+    ]
+    monkeypatch.setattr(svc, "_local_user_stream_trade_rows", lambda symbol: list(local_rows))
+
+    records, gaps = svc.authoritative_fill_history("BTC/USD", side="buy", since_ms=1_699_999_999_000)
+
+    assert gaps == []
+    assert len(records) == 1
+    assert records[0].fill.fill_id == "local-buy-1"
+
+
 def test_kraken_spot_flatten_requires_successful_preflight(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=FakeKrakenSpotConnector())
 
@@ -476,6 +699,160 @@ def test_kraken_spot_buy_fill_history_returns_empty_without_gap_for_empty_window
     assert gaps == []
 
 
+def test_kraken_spot_sparse_trade_history_paginates_by_raw_page_size(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class SparsePagedConnector(FakeKrakenSpotConnector):
+        def __init__(self) -> None:
+            super().__init__()
+            self.balance_total = 0.4
+            self.balance_free = 0.4
+
+        def trade_history(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+            raise AssertionError("trade_history should not be used when trade_history_page is available")
+
+        def trade_history_page(self, symbol, *, offset=0, limit=50):  # noqa: ARG002
+            from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotTradeHistoryPage
+
+            if offset == 0:
+                return KrakenSpotTradeHistoryPage(
+                    rows=[
+                        KrakenSpotTradeRow(
+                            trade_id="sell-1",
+                            order_id="sell-order-1",
+                            symbol="BTC/USD",
+                            side="sell",
+                            base_qty=0.2,
+                            quote_cost=24.0,
+                            fee_quote=0.1,
+                            price=120.0,
+                            timestamp_ms=1_700_000_000_100,
+                            raw={},
+                        )
+                    ],
+                    fetched_count=50,
+                    total_count=100,
+                )
+            if offset == 50:
+                return KrakenSpotTradeHistoryPage(
+                    rows=[
+                        KrakenSpotTradeRow(
+                            trade_id="buy-1",
+                            order_id="buy-order-1",
+                            symbol="BTC/USD",
+                            side="buy",
+                            base_qty=0.6,
+                            quote_cost=60.0,
+                            fee_quote=0.2,
+                            price=100.0,
+                            timestamp_ms=1_700_000_000_000,
+                            raw={},
+                        )
+                    ],
+                    fetched_count=20,
+                    total_count=100,
+                )
+            return KrakenSpotTradeHistoryPage(rows=[], fetched_count=0, total_count=100)
+
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=SparsePagedConnector())
+
+    inventory = svc._authoritative_inventory_state("BTC/USD")  # type: ignore[attr-defined]
+
+    assert inventory["ok"] is True
+    assert inventory["remaining_qty"] == pytest.approx(0.4)
+
+
+def test_kraken_spot_inventory_truth_merges_current_run_own_trade_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.balance_total = 0.0001782
+    fake.balance_free = 0.0001782
+    fake.trade_rows = []
+    fake.symbol_from_market_id = lambda market_id: "XBT/USD"  # type: ignore[attr-defined]
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+    svc._runtime_event_store.append(  # type: ignore[attr-defined]
+        "user_stream",
+        {
+            "type": "message",
+            "payload": [
+                {
+                    "TCBFUM-N5AZB-3NUXHW": {
+                        "ordertxid": "OLTL46-BDPDW-SGE72N",
+                        "pair": "XBT/USD",
+                        "type": "buy",
+                        "vol": "0.00017820",
+                        "cost": "11.99963",
+                        "fee": "0.03000",
+                        "price": "67337.99",
+                        "time": 1_775_344_927.335805,
+                    }
+                },
+                "ownTrades",
+                {"sequence": 7, "channelName": "ownTrades"},
+            ],
+        },
+    )
+
+    inventory = svc._authoritative_inventory_state("BTC/USD")  # type: ignore[attr-defined]
+
+    assert inventory["ok"] is True
+    assert inventory["remaining_qty"] == pytest.approx(0.0001782)
+    assert inventory["avg_cost_quote"] == pytest.approx((11.99963 + 0.03) / 0.0001782)
+
+
+def test_kraken_spot_inventory_truth_uses_conservative_buy_basis_fallback_when_fifo_window_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.balance_total = 0.2
+    fake.balance_free = 0.2
+    fake.trade_rows = [
+        KrakenSpotTradeRow(
+            trade_id="sell-1",
+            order_id="sell-order-1",
+            symbol="BTC/USD",
+            side="sell",
+            base_qty=0.4,
+            quote_cost=44.0,
+            fee_quote=0.1,
+            price=110.0,
+            timestamp_ms=1_700_000_000_100,
+            raw={},
+        ),
+        KrakenSpotTradeRow(
+            trade_id="buy-1",
+            order_id="buy-order-1",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.1,
+            quote_cost=10.0,
+            fee_quote=0.01,
+            price=100.0,
+            timestamp_ms=1_700_000_000_200,
+            raw={},
+        ),
+        KrakenSpotTradeRow(
+            trade_id="buy-2",
+            order_id="buy-order-2",
+            symbol="BTC/USD",
+            side="buy",
+            base_qty=0.2,
+            quote_cost=24.0,
+            fee_quote=0.02,
+            price=120.0,
+            timestamp_ms=1_700_000_000_300,
+            raw={},
+        ),
+    ]
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    inventory = svc._authoritative_inventory_state("BTC/USD")  # type: ignore[attr-defined]
+
+    assert inventory["ok"] is True
+    assert inventory["reason"] == "conservative_buy_basis_fallback"
+    assert inventory["basis_conservative"] is True
+    assert inventory["remaining_qty"] == pytest.approx(0.2)
+    assert inventory["avg_cost_quote"] == pytest.approx((24.0 + 0.02) / 0.2)
+
+
 def test_kraken_spot_capability_evidence_treats_missing_book_timestamp_as_connected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake = FakeKrakenSpotConnector()
     svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
@@ -531,6 +908,105 @@ def test_kraken_spot_user_stream_queue_updates_lifecycle_mirror(monkeypatch: pyt
     assert snapshot[0]["state"] == "accepted"
     assert transitions
     assert transitions[0]["source"] == "exchange_order_update"
+
+
+def test_kraken_spot_rehydrate_state_replays_lifecycle_transition_events(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    result = svc.rehydrate_state(
+        [
+            {
+                "event_type": "ORDER_LIFECYCLE_TRANSITION",
+                "payload": {
+                    "symbol": "BTC/USD",
+                    "order_key": "cid-1",
+                    "to_state": "timed_out",
+                    "source": "local_timeout",
+                    "ts": "2026-04-04T22:00:00+00:00",
+                    "metadata": {"raw": {"orderId": "ord-1", "clientOrderId": "cid-1"}},
+                },
+            }
+        ],
+        [],
+    )
+
+    assert result["orders"] == 0
+    assert result["lifecycle_transitions"] == 1
+    snapshot = svc.lifecycle_snapshot()
+    assert snapshot
+    assert snapshot[0]["state"] == "timed_out"
+    assert snapshot[0]["order_id"] == "ord-1"
+
+
+def test_kraken_spot_rehydrate_state_promotes_timed_out_lifecycle_to_filled_when_fill_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = FakeKrakenSpotConnector()
+    svc = LiveKrakenSpotService(_settings(monkeypatch, tmp_path), run_id="r1", connector=fake)
+
+    result = svc.rehydrate_state(
+        [
+            {
+                "event_type": "ORDER_LIFECYCLE_TRANSITION",
+                "payload": {
+                    "symbol": "BTC/USD",
+                    "order_key": "cid-1",
+                    "to_state": "timed_out",
+                    "source": "local_timeout",
+                    "ts": "2026-04-04T22:00:00+00:00",
+                    "metadata": {"raw": {"orderId": "ord-1", "clientOrderId": "cid-1"}},
+                },
+            }
+        ],
+        [
+            {
+                "event_type": "FILL_REHYDRATED_FROM_EXCHANGE",
+                "payload": {
+                    "fill_id": "fill-1",
+                    "order_id": "ord-1",
+                    "clientOrderId": "cid-1",
+                    "symbol": "BTC/USD",
+                    "filledNotional": 11.99933,
+                    "notional": 11.99933,
+                },
+            }
+        ],
+    )
+
+    assert result["fills"] == 1
+    snapshot = svc.lifecycle_snapshot()
+    assert snapshot
+    assert snapshot[0]["state"] == "filled"
+    assert snapshot[0]["order_id"] == "ord-1"
+
+
+def test_kraken_spot_prepare_tiny_live_canary_uses_min_order_size_when_min_notional_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = FakeKrakenSpotConnector()
+    fake.quote_total = 50.0
+    fake.quote_free = 50.0
+
+    original_constraints = fake.market_constraints
+
+    def constraints_without_cost_floor(symbol):  # noqa: ARG001
+        payload = dict(original_constraints(symbol))
+        payload["min_notional"] = 0.0
+        payload["min_order_size"] = 0.0001
+        return payload
+
+    fake.market_constraints = constraints_without_cost_floor  # type: ignore[method-assign]
+    settings = _settings(monkeypatch, tmp_path)
+    settings.rollout_stage_override = RolloutStage.TINY_LIVE.value
+    svc = LiveKrakenSpotService(settings, run_id="r1", connector=fake)
+    assert svc.preflight() == (True, "ok")
+
+    plan = svc.prepare_tiny_live_canary(symbol="BTC/USD", passive_offset_bps=100.0, expiry_seconds=15)
+
+    assert plan["ok"] is True
+    assert float(plan["qty"]) >= 0.0001
+    assert float(plan["validation_target_notional"]) > 0.0
 
 
 def test_kraken_spot_execute_allows_reduce_only_profitable_sell(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

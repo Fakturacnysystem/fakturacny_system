@@ -54,9 +54,9 @@ export function RuntimeIdentityCard({
   return (
     <GlassPanel className="rtc-runtime-identity-card" elevated>
       <SectionHeader
-        eyebrow="Runtime lock"
-        title="Runtime identity"
-        subtitle="Effective robot selection is persistent and explicit. No operator should have to infer which run the cockpit is watching."
+        eyebrow="Zamknutý výber"
+        title="Čo teraz sleduješ"
+        subtitle="Tu vždy vidíš, ktorý konkrétny beh robota je otvorený. Panel nesmie potichu preskočiť na iný beh bez toho, aby to bolo jasne vidieť."
         meta={(
           <div className="rtc-pill-row rtc-runtime-identity-badges">
             <StatusBadge tone={toneForStatus(identity.selectionMode)} value={identity.selectionMode} />
@@ -69,23 +69,23 @@ export function RuntimeIdentityCard({
 
       <div className="rtc-runtime-identity-grid">
         <div className="rtc-runtime-identity-column">
-          <div className="rtc-runtime-identity-keyline">Effective run ID</div>
+          <div className="rtc-runtime-identity-keyline">Aktívny beh robota</div>
           <div className="rtc-runtime-identity-run">{identity.runId}</div>
           <div className="rtc-kv rtc-runtime-identity-meta">
             <div className="rtc-kv-row">
-              <span>Provider / mode</span>
+              <span>Burza / režim</span>
               <strong>{identity.providerId} / {identity.mode}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Resolution source</span>
+              <span>Odkiaľ bol vybraný</span>
               <strong>{identity.resolutionSource}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Run path</span>
-              <strong>{identity.runPath || "unresolved"}</strong>
+              <span>Cesta k dátam</span>
+              <strong>{identity.runPath || "nepodarilo sa nájsť"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Reason code</span>
+              <span>Dôvodový kód</span>
               <strong>{identity.reasonCode}</strong>
             </div>
           </div>
@@ -94,24 +94,24 @@ export function RuntimeIdentityCard({
         <div className="rtc-runtime-identity-column">
           <div className="rtc-runtime-identity-signal-grid">
             <article className="rtc-summary-card" data-tone={toneForStatus(identity.pinIntegrityStatus)}>
-              <div className="rtc-summary-label">Pin integrity</div>
+              <div className="rtc-summary-label">Pevné pripnutie</div>
               <div className="rtc-summary-value">{identity.pinIntegrityStatus}</div>
-              <div className="rtc-summary-hint">Pinned mode must never drift silently.</div>
+              <div className="rtc-summary-hint">Ak je beh pripnutý napevno, panel nesmie potichu prejsť inde.</div>
             </article>
             <article className="rtc-summary-card" data-tone={toneForStatus(identity.endpointConsistencyStatus)}>
-              <div className="rtc-summary-label">Endpoint consistency</div>
+              <div className="rtc-summary-label">Zhoda dát</div>
               <div className="rtc-summary-value">{identity.endpointConsistencyStatus}</div>
-              <div className="rtc-summary-hint">Cross-endpoint run truth agreement.</div>
+              <div className="rtc-summary-hint">Či sa všetky časti aplikácie pozerajú na ten istý beh.</div>
             </article>
             <article className="rtc-summary-card" data-tone={toneForStatus(identity.replayAlignmentStatus)}>
-              <div className="rtc-summary-label">Replay alignment</div>
+              <div className="rtc-summary-label">Zhoda s históriou</div>
               <div className="rtc-summary-value">{identity.replayAlignmentStatus}</div>
-              <div className="rtc-summary-hint">Replay must point at the same effective run.</div>
+              <div className="rtc-summary-hint">Aj história a vysvetlenia musia patriť k tomu istému behu.</div>
             </article>
             <article className="rtc-summary-card" data-tone={toneForStatus(identity.freshnessStatus)}>
-              <div className="rtc-summary-label">Freshness</div>
+              <div className="rtc-summary-label">Čerstvosť dát</div>
               <div className="rtc-summary-value">{identity.freshnessAgeLabel}</div>
-              <div className="rtc-summary-hint">{identity.lastArtifactUpdateAt || "awaiting artifact timestamp"}</div>
+              <div className="rtc-summary-hint">{identity.lastArtifactUpdateAt || "čaká sa na čas poslednej aktualizácie"}</div>
             </article>
           </div>
         </div>
@@ -139,13 +139,13 @@ export function RuntimeIdentityCard({
 
       {showPinnedFailure ? (
         <div className="rtc-banner" data-tone="danger">
-          Pinned run is unresolved or failed integrity checks. The cockpit is refusing to present that state as a healthy target.
+          Pripnutý beh sa nepodarilo spoľahlivo nájsť alebo neprešiel kontrolou. Aplikácia ho preto naschvál neukazuje ako zdravý stav.
         </div>
       ) : null}
 
       {showMismatchBanner ? (
         <div className="rtc-banner" data-tone="danger">
-          Runtime identity mismatch detected across endpoints or replay evidence. Treat the surface as inconsistent until the run selection is reconciled.
+          Niektoré časti aplikácie ukazujú iný beh alebo inú históriu. Kým sa to nezrovná, ber panel ako nekonzistentný.
         </div>
       ) : null}
 
@@ -157,14 +157,14 @@ export function RuntimeIdentityCard({
 
       <div className="rtc-runtime-selector">
         <SectionHeader
-          eyebrow="Selection"
-          title="Run selector"
-          subtitle="Observation target stays explicit. Pinned selection never drifts silently, and latest tracking stays visibly non-pinned."
+          eyebrow="Výber"
+          title="Vyber sledovaný beh"
+          subtitle="Tu rozhodneš, či chceš sledovať konkrétny beh robota napevno, alebo len najnovší dostupný beh."
           compact
         />
         <div className="rtc-runtime-selector-grid">
           <label className="rtc-label">
-            Available runs
+            Dostupné behy
             <select
               className="rtc-select"
               value={selectedRunId}
@@ -190,7 +190,7 @@ export function RuntimeIdentityCard({
                 type="button"
                 onClick={() => onTrackLatest?.()}
               >
-                {selectionPending ? "Applying…" : "Track latest"}
+                {selectionPending ? "Pracujem…" : "Sledovať najnovší"}
               </button>
               <button
                 className="rtc-button"
@@ -198,21 +198,21 @@ export function RuntimeIdentityCard({
                 type="button"
                 onClick={() => selectedRunId && onPinRun?.(selectedRunId)}
               >
-                {selectionPending ? "Applying…" : "Pin selected run"}
+                {selectionPending ? "Pracujem…" : "Pripnúť vybraný beh"}
               </button>
             </div>
 
             <div className="rtc-inline-note">
               {runs?.unresolvedSelection
-                ? `Current selection target is unresolved: ${runs.selectionTarget}`
-                : `Selection target: ${runs?.selectionTarget ?? identity.runPath}`}
+                ? `Aktuálne vybraný cieľ sa nepodarilo nájsť: ${runs.selectionTarget}`
+                : `Aktuálne sleduješ: ${runs?.selectionTarget ?? identity.runPath}`}
             </div>
 
             {selectionResponse ? (
               <div className="rtc-code">
                 selectionMode={selectionResponse.selectionMode}
                 {"\n"}
-                runId={selectionResponse.runId ?? "unresolved"}
+                runId={selectionResponse.runId ?? "nenájdené"}
                 {"\n"}
                 operatorMessage={selectionResponse.operatorMessage}
               </div>
@@ -229,8 +229,8 @@ export function RuntimeIdentityCard({
                 <div className="rtc-live-card-header">
                   <strong>{run.runId}</strong>
                   <div className="rtc-pill-row">
-                    {run.current ? <StatusBadge tone="good" value="current" subtle /> : null}
-                    {run.latest ? <StatusBadge tone="info" value="latest" subtle /> : null}
+                    {run.current ? <StatusBadge tone="good" value="aktuálny" subtle /> : null}
+                    {run.latest ? <StatusBadge tone="info" value="najnovší" subtle /> : null}
                   </div>
                 </div>
                 <div className="rtc-inline-note">{run.runPath}</div>
@@ -238,7 +238,7 @@ export function RuntimeIdentityCard({
                   <span>{run.providerId}</span>
                   <span>{run.mode}</span>
                   <span>{run.stateKind}</span>
-                  <span>{run.artifactFreshnessStatus ?? "unavailable"}</span>
+                  <span>{run.artifactFreshnessStatus ?? "nedostupné"}</span>
                 </div>
               </article>
             ))}

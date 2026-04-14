@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from autonomous_investment_robot.config.settings import ExecutionMode, RobotSettings
-from autonomous_investment_robot.connectors.cex.kraken_spot import KrakenSpotConnector, KrakenSpotTradeRow
+from autonomous_investment_robot.connectors.cex.kraken_spot import (
+    KrakenSpotConnector,
+    KrakenSpotTradeHistoryPage,
+    KrakenSpotTradeRow,
+)
 from autonomous_investment_robot.core.contracts import UnrealizedPnlTruth
 from autonomous_investment_robot.services.event_store.service import EventStore
 from autonomous_investment_robot.services.execution.kraken_spot_user_stream import KrakenSpotUserStream
@@ -584,7 +588,27 @@ class LiveKrakenSpotService:
         self._fill_ids_seen.add(fill_id)
         order_key = str(fill.get("order_id", fill.get("orderId", "")))
         if order_key:
-            self._lifecycle.note_fill(order_key=order_key)
+            client_order_id = str(
+                fill.get("clientOrderId", fill.get("client_order_id", fill.get("origClientOrderId", "")))
+            )
+            symbol = str(fill.get("symbol", ""))
+            self._lifecycle.fill_confirmed(
+                symbol=symbol,
+                order_key=order_key,
+                order_id=order_key,
+                client_order_id=client_order_id,
+                metadata={"raw": dict(fill)},
+            )
+        elif str(fill.get("clientOrderId", fill.get("client_order_id", fill.get("origClientOrderId", "")))):
+            client_order_id = str(fill.get("clientOrderId", fill.get("client_order_id", fill.get("origClientOrderId", ""))))
+            symbol = str(fill.get("symbol", ""))
+            self._lifecycle.fill_confirmed(
+                symbol=symbol,
+                order_key=client_order_id,
+                order_id=str(fill.get("orderId", fill.get("order_id", ""))),
+                client_order_id=client_order_id,
+                metadata={"raw": dict(fill)},
+            )
         return True, "ok"
 
     def rehydrate_state(self, order_events: list[dict[str, Any]], fill_events: list[dict[str, Any]]) -> dict[str, int]:
@@ -592,10 +616,17 @@ class LiveKrakenSpotService:
         self._fill_ids_seen = set()
         self._lifecycle.reset()
         order_count = 0
+        lifecycle_count = 0
         fill_count = 0
         for event in order_events:
             payload = event.get("payload", event) if isinstance(event, dict) else {}
             if isinstance(payload, dict):
+                event_type = str(event.get("event_type", event.get("type", ""))) if isinstance(event, dict) else ""
+                if event_type == "ORDER_LIFECYCLE_TRANSITION" and payload.get("to_state"):
+                    ok, _ = self._lifecycle.rehydrate_transition(payload)
+                    if ok:
+                        lifecycle_count += 1
+                    continue
                 ok, _ = self.apply_order_update(payload)
                 if ok:
                     order_count += 1
@@ -605,7 +636,7 @@ class LiveKrakenSpotService:
                 ok, _ = self.apply_fill_update(payload)
                 if ok:
                     fill_count += 1
-        return {"orders": order_count, "fills": fill_count}
+        return {"orders": order_count, "fills": fill_count, "lifecycle_transitions": lifecycle_count}
 
     def drain_lifecycle_transitions(self) -> list[dict[str, Any]]:
         self._consume_user_stream_events()
@@ -620,18 +651,92 @@ class LiveKrakenSpotService:
         seen: set[str] = set()
         offset = 0
         for _ in range(max_pages):
-            page = self.connector.trade_history(symbol, offset=offset, limit=limit)
-            if not page:
+            fetched_count = 0
+            if hasattr(self.connector, "trade_history_page"):
+                page_result = self.connector.trade_history_page(symbol, offset=offset, limit=limit)
+                if isinstance(page_result, KrakenSpotTradeHistoryPage):
+                    page = list(page_result.rows)
+                    fetched_count = int(page_result.fetched_count)
+                else:
+                    page = list(page_result or [])
+            else:
+                page = self.connector.trade_history(symbol, offset=offset, limit=limit)
+            if not page and fetched_count <= 0:
                 break
             new_rows = [row for row in page if row.trade_id not in seen]
-            if not new_rows:
+            if not new_rows and fetched_count <= 0:
                 break
             rows.extend(new_rows)
             for row in new_rows:
                 seen.add(row.trade_id)
-            if len(page) < limit:
+            if fetched_count <= 0:
+                fetched_count = limit
+            if fetched_count < limit:
                 break
-            offset += len(page)
+            offset += fetched_count
+        local_rows = self._local_user_stream_trade_rows(symbol)
+        for row in local_rows:
+            if row.trade_id in seen:
+                continue
+            rows.append(row)
+            seen.add(row.trade_id)
+        rows.sort(key=lambda item: (item.timestamp_ms, item.trade_id))
+        return rows
+
+    def _symbol_key(self, symbol: str) -> str:
+        normalized = str(symbol or "").upper().replace("-", "/").replace("XBT", "BTC")
+        return normalized.replace("/", "").replace(" ", "")
+
+    def _local_user_stream_trade_rows(self, symbol: str) -> list[KrakenSpotTradeRow]:
+        rows: list[KrakenSpotTradeRow] = []
+        seen: set[str] = set()
+        symbol_key = self._symbol_key(symbol)
+        for event in self._runtime_event_store.load("user_stream"):
+            if not isinstance(event, dict):
+                continue
+            raw_message = event.get("payload")
+            if not isinstance(raw_message, list):
+                continue
+            if self._user_stream is not None:
+                channel, payload, _ = self._user_stream.parse_channel_message(raw_message)
+                if channel != "ownTrades":
+                    continue
+            else:
+                payload = raw_message[0] if raw_message else None
+                channel = "ownTrades" if any(item == "ownTrades" for item in raw_message) else ""
+                if channel != "ownTrades":
+                    continue
+            for item in payload if isinstance(payload, list) else [payload]:
+                if not isinstance(item, dict):
+                    continue
+                for trade_id, body in item.items():
+                    if not isinstance(body, dict) or str(trade_id) in seen:
+                        continue
+                    pair = str(body.get("pair", "") or "")
+                    if pair and hasattr(self.connector, "symbol_from_market_id"):
+                        row_symbol = self.connector.symbol_from_market_id(pair)
+                    else:
+                        row_symbol = symbol
+                    if self._symbol_key(row_symbol) != symbol_key and self._symbol_key(pair) != symbol_key:
+                        continue
+                    try:
+                        rows.append(
+                            KrakenSpotTradeRow(
+                                trade_id=str(trade_id),
+                                order_id=str(body.get("ordertxid", "") or ""),
+                                symbol=symbol,
+                                side=str(body.get("type", "")).lower(),
+                                base_qty=float(body.get("vol", 0.0) or 0.0),
+                                quote_cost=float(body.get("cost", 0.0) or 0.0),
+                                fee_quote=float(body.get("fee", 0.0) or 0.0),
+                                price=float(body.get("price", 0.0) or 0.0),
+                                timestamp_ms=int(float(body.get("time", 0.0) or 0.0) * 1000),
+                                raw={"id": trade_id, **body, "source": "kraken_private_ws_ownTrades"},
+                            )
+                        )
+                    except Exception:
+                        continue
+                    seen.add(str(trade_id))
         rows.sort(key=lambda item: (item.timestamp_ms, item.trade_id))
         return rows
 
@@ -643,6 +748,19 @@ class LiveKrakenSpotService:
         order_id: str | None = None,
         since_ms: int | None = None,
     ) -> list[KrakenSpotTradeRow]:
+        if since_ms is not None or order_id is not None:
+            local_rows = self._local_user_stream_trade_rows(symbol)
+            filtered_local: list[KrakenSpotTradeRow] = []
+            for row in local_rows:
+                if since_ms is not None and int(row.timestamp_ms) < int(since_ms):
+                    continue
+                if order_id is not None and str(row.order_id) != str(order_id):
+                    continue
+                if side is not None and str(row.side).lower() != str(side).lower():
+                    continue
+                filtered_local.append(row)
+            if filtered_local:
+                return filtered_local
         rows = self._all_trade_history(symbol)
         filtered: list[KrakenSpotTradeRow] = []
         for row in rows:
@@ -671,6 +789,9 @@ class LiveKrakenSpotService:
 
     def _reconstruct_inventory_state(self, symbol: str) -> dict[str, Any]:
         rows = self._all_trade_history(symbol)
+        return self._reconstruct_inventory_state_from_rows(rows)
+
+    def _reconstruct_inventory_state_from_rows(self, rows: list[KrakenSpotTradeRow]) -> dict[str, Any]:
         lots: list[dict[str, float]] = []
         realized_total = 0.0
         for row in rows:
@@ -718,16 +839,112 @@ class LiveKrakenSpotService:
             "history_rows": rows,
         }
 
-    def _authoritative_inventory_state(self, symbol: str) -> dict[str, Any]:
-        state = self._reconstruct_inventory_state(symbol)
+    def _local_inventory_state_fast_path(
+        self,
+        symbol: str,
+        *,
+        target_qty: float,
+        tolerance: float,
+    ) -> dict[str, Any] | None:
+        if target_qty <= tolerance:
+            return None
+        rows = self._local_user_stream_trade_rows(symbol)
+        if not rows:
+            return None
+        state = self._reconstruct_inventory_state_from_rows(rows)
         if not state["ok"]:
-            return state
+            fallback = self._conservative_inventory_fallback_from_rows(
+                rows,
+                target_qty=target_qty,
+                tolerance=tolerance,
+                prior_reason=str(state.get("reason", "")),
+                history_source="kraken_private_ws_ownTrades",
+            )
+            return fallback
+        remaining_qty = float(state.get("remaining_qty", 0.0) or 0.0)
+        if abs(remaining_qty - float(target_qty)) > tolerance:
+            return None
+        return {
+            **state,
+            "reason": "local_user_stream_inventory_truth",
+            "history_source": "kraken_private_ws_ownTrades",
+        }
+
+    def _conservative_inventory_fallback_from_rows(
+        self,
+        rows: list[KrakenSpotTradeRow],
+        *,
+        target_qty: float,
+        tolerance: float,
+        prior_reason: str,
+        history_source: str,
+    ) -> dict[str, Any] | None:
+        if target_qty <= tolerance:
+            return None
+        if str(prior_reason) != "trade_history_sell_exceeds_buys":
+            return None
+        buy_lots: list[dict[str, float]] = []
+        for row in rows:
+            qty = float(row.base_qty or 0.0)
+            if qty <= 0.0 or str(row.side).lower() != "buy":
+                continue
+            unit_cost = (float(row.quote_cost) + float(row.fee_quote)) / max(qty, 1e-12)
+            buy_lots.append({"qty": qty, "unit_cost": unit_cost})
+        if not buy_lots:
+            return None
+        buy_lots.sort(key=lambda item: float(item["unit_cost"]), reverse=True)
+        remaining = float(target_qty)
+        selected: list[dict[str, float]] = []
+        for lot in buy_lots:
+            if remaining <= tolerance:
+                break
+            take = min(float(lot["qty"]), remaining)
+            if take <= 0.0:
+                continue
+            selected.append({"qty": take, "unit_cost": float(lot["unit_cost"])})
+            remaining -= take
+        if remaining > tolerance:
+            return None
+        remaining_basis_quote = sum(float(lot["qty"]) * float(lot["unit_cost"]) for lot in selected)
+        avg_cost = remaining_basis_quote / max(target_qty, 1e-12)
+        return {
+            "ok": True,
+            "reason": "conservative_buy_basis_fallback",
+            "lots": selected,
+            "remaining_qty": float(target_qty),
+            "remaining_basis_quote": remaining_basis_quote,
+            "avg_cost_quote": avg_cost,
+            "trade_count": len(rows),
+            "history_rows": rows,
+            "basis_conservative": True,
+            "prior_reason": str(prior_reason),
+            "history_source": history_source,
+        }
+
+    def _authoritative_inventory_state(self, symbol: str) -> dict[str, Any]:
         try:
             inventory_balance = self._inventory_balance_state(symbol)
         except Exception as exc:
-            return {**state, "ok": False, "reason": f"balance_or_constraints_error:{exc}"}
+            return {"ok": False, "reason": f"balance_or_constraints_error:{exc}"}
         total_qty = float(inventory_balance["total_qty"])
         tolerance = float(inventory_balance["tolerance_qty"])
+        state = self._local_inventory_state_fast_path(
+            symbol,
+            target_qty=total_qty,
+            tolerance=tolerance,
+        )
+        if state is None:
+            state = self._reconstruct_inventory_state(symbol)
+        if not state["ok"]:
+            fallback = self._conservative_inventory_fallback(
+                symbol,
+                target_qty=total_qty,
+                tolerance=tolerance,
+                prior_state=state,
+            )
+            if fallback is None:
+                return state
+            state = fallback
         if abs(total_qty - float(state["remaining_qty"])) > tolerance:
             return {
                 **state,
@@ -742,6 +959,23 @@ class LiveKrakenSpotService:
             "balance_total_qty": total_qty,
             "balance_free_qty": float(inventory_balance["free_qty"]),
         }
+
+    def _conservative_inventory_fallback(
+        self,
+        symbol: str,
+        *,
+        target_qty: float,
+        tolerance: float,
+        prior_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        rows = self._all_trade_history(symbol)
+        return self._conservative_inventory_fallback_from_rows(
+            rows,
+            target_qty=target_qty,
+            tolerance=tolerance,
+            prior_reason=str(prior_state.get("reason", "")),
+            history_source="kraken_spot_trade_history",
+        )
 
     def _basis_quote_for_qty(self, symbol: str, qty: float) -> tuple[float | None, list[str]]:
         state = self._authoritative_inventory_state(symbol)
@@ -982,6 +1216,279 @@ class LiveKrakenSpotService:
         if style not in {"limit", "passive_limit", "marketable_limit"}:
             return "passive_limit"
         return style
+
+    def _tiny_live_canary_guard(self, symbol: str) -> tuple[bool, str]:
+        if self.settings.execution.provider_id != "kraken_spot":
+            return False, f"unsupported_provider:{self.settings.execution.provider_id}"
+        if self.settings.execution_mode_enum() != ExecutionMode.LIVE:
+            return False, f"invalid_mode:{self.settings.execution_mode_enum().value}"
+        if str(self.settings.rollout_stage().value) != "tiny_live":
+            return False, f"invalid_rollout_stage:{self.settings.rollout_stage().value}"
+        if symbol not in self.settings.universe:
+            return False, f"symbol_not_in_universe:{symbol}"
+        ordering_ok, ordering_reason = self._ordering_authorized()
+        if not ordering_ok:
+            return False, ordering_reason
+        return True, "ok"
+
+    def _tiny_live_canary_client_order_id(self) -> str:
+        return datetime.now(timezone.utc).strftime("tlc%y%m%d%H%M%S")
+
+    def prepare_tiny_live_canary(
+        self,
+        *,
+        symbol: str,
+        passive_offset_bps: float = 100.0,
+        quote_buffer_pct: float = 0.02,
+        expiry_seconds: int = 15,
+        client_order_id: str = "",
+    ) -> dict[str, Any]:
+        guard_ok, guard_reason = self._tiny_live_canary_guard(symbol)
+        if not guard_ok:
+            return {"ok": False, "reason": guard_reason}
+        try:
+            constraints = dict(self.connector.market_constraints(symbol))
+            bid, ask = self._book_prices(symbol)
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc)}
+        if not bool(constraints.get("post_only_supported", False)):
+            return {"ok": False, "reason": "post_only_unsupported"}
+        if not bool(constraints.get("expire_supported", False)):
+            return {"ok": False, "reason": "expire_unsupported"}
+        offset = max(5.0, float(passive_offset_bps))
+        quote_buffer = max(0.0, float(quote_buffer_pct))
+        price_seed = bid * max(0.5, 1.0 - (offset / 10000.0))
+        canary_price = 0.0
+        for multiplier in (1.0, 0.999, 0.995, 0.99, 0.985):
+            try:
+                candidate = float(self.connector.normalize_price(symbol, price_seed * multiplier))
+            except Exception as exc:
+                return {"ok": False, "reason": str(exc)}
+            if math.isfinite(candidate) and 0.0 < candidate < bid:
+                canary_price = candidate
+                break
+        if not math.isfinite(canary_price) or canary_price <= 0.0 or canary_price >= bid:
+            return {"ok": False, "reason": "canary_price_not_passive"}
+        min_qty = max(0.0, float(constraints.get("min_order_size", 0.0) or 0.0))
+        min_notional = max(0.0, float(constraints.get("min_notional", 0.0) or 0.0))
+        min_qty_notional = min_qty * max(ask, canary_price, 0.0)
+        target_quote = max(
+            min_notional * (1.0 + quote_buffer),
+            min_notional + 0.25,
+            min_qty_notional * (1.0 + quote_buffer),
+        )
+        qty = 0.0
+        order_notional = 0.0
+        for _ in range(8):
+            try:
+                qty = float(self.connector.normalize_amount(symbol, target_quote / max(canary_price, 1e-12)))
+            except Exception as exc:
+                return {"ok": False, "reason": str(exc)}
+            order_notional = qty * canary_price
+            if qty >= min_qty and order_notional >= min_notional:
+                break
+            target_quote *= 1.05
+        if not math.isfinite(qty) or qty <= 0.0:
+            return {"ok": False, "reason": f"invalid_canary_qty:{qty}"}
+        if qty < min_qty:
+            return {"ok": False, "reason": f"below_min_order_size:{qty:.8f}"}
+        if order_notional < min_notional:
+            return {"ok": False, "reason": f"below_min_notional:{order_notional:.8f}"}
+        validation_target_notional = qty * ask
+        intent = OrderIntent(
+            symbol=symbol,
+            side="buy",
+            target_notional=validation_target_notional,
+            why={
+                "doctrine_target": {"provider": "kraken_spot", "product": "spot", "long_only": True},
+                "market_watch": {"action": "continue"},
+                "market_integrity": {"action": "continue"},
+                "execution_plan": {"order_style": "passive_limit"},
+                "canary": {
+                    "enabled": True,
+                    "phase": "tiny_live_canary",
+                    "operator_label": "one_shot_passive_probe",
+                    "passive_offset_bps": offset,
+                    "expiry_seconds": int(max(1, expiry_seconds)),
+                },
+            },
+        )
+        validation_error, validation_meta = self._pre_submit_validate_intent(intent)
+        client_id = str(client_order_id or self._tiny_live_canary_client_order_id())
+        preview_ok = False
+        preview_reason = validation_error or "validation_failed"
+        if validation_error is None:
+            preview_ok, preview_reason = self.connector.validate_order_preview(
+                symbol=symbol,
+                side="buy",
+                amount=qty,
+                price=canary_price,
+                post_only=True,
+                client_order_id=client_id,
+                time_in_force="GTD",
+                expire_seconds=max(1, int(expiry_seconds)),
+            )
+        return {
+            "ok": bool(validation_error is None and preview_ok),
+            "reason": preview_reason,
+            "symbol": symbol,
+            "side": "buy",
+            "client_order_id": client_id,
+            "qty": qty,
+            "price": canary_price,
+            "expiry_seconds": max(1, int(expiry_seconds)),
+            "post_only": True,
+            "time_in_force": "GTD",
+            "passive_offset_bps": offset,
+            "min_order_size": min_qty,
+            "min_notional": min_notional,
+            "order_notional": order_notional,
+            "validation_target_notional": validation_target_notional,
+            "constraints": constraints,
+            "bid": bid,
+            "ask": ask,
+            "validation": validation_meta,
+            "intent": intent,
+            "preview_ok": preview_ok,
+            "preview_reason": preview_reason,
+        }
+
+    def submit_tiny_live_canary(self, plan: dict[str, Any]) -> LiveExecutionResult:
+        if not bool(plan.get("ok", False)):
+            return LiveExecutionResult(status="blocked", reason=str(plan.get("reason", "canary_validation_failed")))
+        symbol = str(plan.get("symbol", "") or "")
+        guard_ok, guard_reason = self._tiny_live_canary_guard(symbol)
+        if not guard_ok:
+            return LiveExecutionResult(status="blocked", reason=guard_reason)
+        try:
+            open_orders = self.connector.open_orders(symbol)
+        except Exception as exc:
+            return LiveExecutionResult(status="blocked", reason=f"open_orders_probe_failed:{exc}")
+        if isinstance(open_orders, list) and open_orders:
+            return LiveExecutionResult(status="blocked", reason="canary_open_orders_present")
+        active_states = {
+            str(item.get("state", "")).lower()
+            for item in self.lifecycle_snapshot()
+            if isinstance(item, dict)
+        }
+        if active_states - {"filled", "cancelled", "canceled", "rejected", "expired", "closed"}:
+            return LiveExecutionResult(status="blocked", reason="canary_non_terminal_lifecycle_present")
+        symbol = str(plan["symbol"])
+        cid = str(plan["client_order_id"])
+        qty = float(plan["qty"])
+        price = float(plan["price"])
+        expiry_seconds = max(1, int(plan["expiry_seconds"]))
+        intent = plan.get("intent")
+        if not isinstance(intent, OrderIntent):
+            return LiveExecutionResult(status="blocked", reason="canary_intent_missing")
+        now = time.time()
+        self._lifecycle.submit(
+            symbol=symbol,
+            order_key=cid,
+            metadata={"side": "buy", "canary": True, "requested_order_style": "passive_limit"},
+        )
+        self._update_lifecycle_proof(
+            submitted=True,
+            mode_active=False,
+            requested=False,
+            submit_source="tiny_live_canary_submit",
+            reject_source="",
+            last_client_order_id=cid,
+            last_reason="tiny_live_canary_submit",
+        )
+        payload = {
+            "symbol": symbol,
+            "side": "BUY",
+            "quantity": f"{qty:.8f}",
+            "newClientOrderId": cid,
+            "type": "LIMIT",
+            "price": f"{price:.8f}",
+            "postOnly": True,
+            "timeInForce": "GTD",
+            "expireSeconds": expiry_seconds,
+        }
+        self._userref_to_client_order_id[str(self._client_order_userref(cid))] = cid
+        try:
+            placed = self.connector.place_order(payload)
+            self.apply_order_update(placed)
+        except Exception as exc:
+            self._lifecycle.rejected(symbol=symbol, order_key=cid, error=str(exc))
+            self._update_lifecycle_proof(
+                exchange_acknowledged=False,
+                terminal_observed=True,
+                last_terminal_state="REJECTED",
+                last_reason=str(exc),
+                reject_source="tiny_live_canary_submit_exception",
+            )
+            out = self._reject_guard(f"canary_reject:{exc}", cid=cid)
+            out.metadata = self._result_metadata(
+                extra={"canary_plan": {k: v for k, v in plan.items() if k != "intent"}}
+            )
+            return out
+        if self._is_filled(placed):
+            ledger_records, gaps = self._ledger_records_from_order(placed, intent)
+            return LiveExecutionResult(
+                status="filled_maker",
+                order=placed,
+                ledger_records=ledger_records,
+                gaps=gaps,
+                metadata=self._result_metadata(
+                    extra={"canary_plan": {k: v for k, v in plan.items() if k != "intent"}}
+                ),
+            )
+        deadline = now + expiry_seconds + 2.0
+        last_seen = placed
+        while time.time() < deadline:
+            current = self._query_existing(symbol, cid)
+            if current is not None:
+                last_seen = current
+                self.apply_order_update(current)
+                state = str(current.get("status", "")).upper()
+                if state in {"FILLED", "PARTIALLY_FILLED", "EXECUTED", "CLOSED"}:
+                    ledger_records, gaps = self._ledger_records_from_order(current, intent)
+                    return LiveExecutionResult(
+                        status="filled_maker",
+                        order=current,
+                        ledger_records=ledger_records,
+                        gaps=gaps,
+                        metadata=self._result_metadata(
+                            extra={"canary_plan": {k: v for k, v in plan.items() if k != "intent"}}
+                        ),
+                    )
+                if state in {"CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}:
+                    return LiveExecutionResult(
+                        status="submitted",
+                        reason=state.lower(),
+                        order=current,
+                        metadata=self._result_metadata(
+                            extra={"canary_plan": {k: v for k, v in plan.items() if k != "intent"}}
+                        ),
+                    )
+            time.sleep(0.5)
+        cancel_reason = "canary_timeout_cancelled"
+        try:
+            self._lifecycle.cancel_requested(symbol=symbol, order_key=cid)
+            canceled = self.connector.cancel_order(symbol, cid)
+            self.apply_order_update(canceled)
+            last_seen = canceled
+            cancel_reason = "operator_canary_cleanup_cancelled"
+        except Exception as exc:
+            self._lifecycle.cancel_rejected(symbol=symbol, order_key=cid, error=str(exc))
+            cancel_reason = f"canary_cleanup_cancel_failed:{exc}"
+        self._lifecycle.timed_out(symbol=symbol, order_key=cid)
+        self._update_lifecycle_proof(
+            terminal_observed=True,
+            last_terminal_state=str(last_seen.get("status", "CANCELED")).upper(),
+            last_reason=cancel_reason,
+        )
+        return LiveExecutionResult(
+            status="submitted",
+            reason=cancel_reason,
+            order=last_seen,
+            metadata=self._result_metadata(
+                extra={"canary_plan": {k: v for k, v in plan.items() if k != "intent"}}
+            ),
+        )
 
     def _doctrine_target_ok(self, intent: OrderIntent) -> tuple[bool, str]:
         payload = intent.why if isinstance(intent.why, dict) else {}

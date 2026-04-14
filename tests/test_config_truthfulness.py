@@ -57,6 +57,18 @@ def test_kraken_spot_live_configs_truthfully_separate_tiny_limited_and_full_stag
     assert full_stage["canary_mode"] is False
 
 
+def test_kraken_spot_profiles_enable_bounded_multi_symbol_scheduler() -> None:
+    for rel_path in (
+        "config.kraken_spot.tiny_live.yaml",
+        "config.kraken_spot.live.yaml",
+        "config.kraken_spot.readonly_analysis.yaml",
+    ):
+        payload = json.loads((REPO_ROOT / rel_path).read_text(encoding="utf-8"))
+        universe = payload["market_universe"]
+        assert universe["max_active_pairs"] == 1, rel_path
+        assert universe["pair_universe"] == ["BTC/USD", "ETH/USD", "SOL/USD"], rel_path
+
+
 def test_tiny_live_config_is_stricter_than_normal_live() -> None:
     tiny = json.loads((REPO_ROOT / "config.kraken_spot.tiny_live.yaml").read_text(encoding="utf-8"))
     normal = json.loads((REPO_ROOT / "config.kraken_spot.live_profit.yaml").read_text(encoding="utf-8"))
@@ -83,3 +95,10 @@ def test_root_compose_is_sanitized_legacy_manifest() -> None:
     services = payload["services"]
     assert "legacy-root-compose-blocked" in services
     assert "build" not in services["legacy-root-compose-blocked"]
+
+
+def test_entrypoint_defaults_use_kraken_spot_readonly_profile() -> None:
+    main_text = (REPO_ROOT / "src" / "autonomous_investment_robot" / "__main__.py").read_text(encoding="utf-8")
+
+    assert 'p_ro.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")' in main_text
+    assert 'p_record.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")' in main_text

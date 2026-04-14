@@ -33,6 +33,13 @@ class KrakenSpotTradeRow:
     raw: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class KrakenSpotTradeHistoryPage:
+    rows: list[KrakenSpotTradeRow]
+    fetched_count: int
+    total_count: int | None
+
+
 class KrakenSpotConnector:
     provider_id = "kraken_spot"
     supports_live_trading = True
@@ -322,7 +329,12 @@ class KrakenSpotConnector:
         quote_qty = abs(executed_qty * avg_price)
         return {
             "clientOrderId": str(client_order_id or order.get("clientOrderId", info.get("cl_ord_id", info.get("userref", "")))),
-            "orderId": str(order.get("id", info.get("txid", ""))),
+            "orderId": str(
+                order.get("id")
+                or info.get("id")
+                or (info.get("txid", [""])[0] if isinstance(info.get("txid"), list) and info.get("txid") else info.get("txid", ""))
+                or ""
+            ),
             "status": status,
             "symbol": symbol,
             "side": str(order.get("side", info.get("descr", {}).get("type", ""))).upper(),
@@ -357,11 +369,28 @@ class KrakenSpotConnector:
                 return self._normalize_order(order, client_order_id=client_order_id)
         return None
 
-    def validate_order_preview(self, *, symbol: str, side: str, amount: float, price: float, post_only: bool = False) -> tuple[bool, str]:
+    def validate_order_preview(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: float,
+        post_only: bool = False,
+        client_order_id: str = "",
+        time_in_force: str = "",
+        expire_seconds: int | None = None,
+    ) -> tuple[bool, str]:
         self._require_private_access()
         params: dict[str, Any] = {"validate": True}
+        if client_order_id:
+            params["cl_ord_id"] = client_order_id
         if post_only:
             params["postOnly"] = True
+        if time_in_force:
+            params["timeinforce"] = str(time_in_force)
+        if expire_seconds is not None:
+            params["expiretm"] = f"+{max(1, int(expire_seconds))}"
         try:
             self.exchange.create_order(symbol, "limit", side.lower(), amount, price, params)
         except Exception as exc:
@@ -383,6 +412,10 @@ class KrakenSpotConnector:
             params["postOnly"] = True
         if bool(payload.get("validate", False)):
             params["validate"] = True
+        if payload.get("timeInForce"):
+            params["timeinforce"] = str(payload.get("timeInForce"))
+        if payload.get("expireSeconds") is not None:
+            params["expiretm"] = f"+{max(1, int(payload.get('expireSeconds')))}"
         try:
             created = self.exchange.create_order(
                 symbol,
@@ -419,7 +452,7 @@ class KrakenSpotConnector:
             raise KrakenSpotConnectorError(f"cancel_order_failed:{exc}") from exc
         return self._normalize_order(result if isinstance(result, dict) else {"id": order.get("orderId"), "symbol": symbol, "status": "canceled"}, client_order_id=client_order_id)
 
-    def trade_history(self, symbol: str, *, offset: int = 0, limit: int = 50) -> list[KrakenSpotTradeRow]:
+    def trade_history_page(self, symbol: str, *, offset: int = 0, limit: int = 50) -> KrakenSpotTradeHistoryPage:
         self._require_private_access()
         market = self._market(symbol)
         market_id = str(market.get("id", ""))
@@ -429,6 +462,12 @@ class KrakenSpotConnector:
             raise KrakenSpotConnectorError(f"trade_history_fetch_failed:{exc}") from exc
         result = payload.get("result", {}) if isinstance(payload, dict) else {}
         trades = result.get("trades", {}) if isinstance(result, dict) else {}
+        fetched_count = len(trades) if isinstance(trades, dict) else 0
+        total_count_raw = result.get("count") if isinstance(result, dict) else None
+        try:
+            total_count = int(total_count_raw) if total_count_raw is not None else None
+        except Exception:
+            total_count = None
         rows: list[KrakenSpotTradeRow] = []
         for trade_id, row in trades.items() if isinstance(trades, dict) else []:
             if not isinstance(row, dict):
@@ -454,7 +493,10 @@ class KrakenSpotConnector:
             except Exception:
                 continue
         rows.sort(key=lambda item: (item.timestamp_ms, item.trade_id))
-        return rows[:limit]
+        return KrakenSpotTradeHistoryPage(rows=rows[:limit], fetched_count=fetched_count, total_count=total_count)
+
+    def trade_history(self, symbol: str, *, offset: int = 0, limit: int = 50) -> list[KrakenSpotTradeRow]:
+        return self.trade_history_page(symbol, offset=offset, limit=limit).rows
 
     def get_account_summary(self) -> tuple[float, float]:
         try:

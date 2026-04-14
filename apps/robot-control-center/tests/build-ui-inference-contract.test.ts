@@ -103,7 +103,7 @@ describe("buildUiInferenceContract", () => {
     });
 
     expect(oversight.status).toBe("breach");
-    expect(oversight.rules.find((rule) => rule.label === "Runtime source explicit")?.status).toBe("fail");
+    expect(oversight.rules.find((rule) => rule.label === "Zdroj dát je jasný")?.status).toBe("fail");
     expect(oversight.derivedFieldCount).toBeGreaterThan(0);
     expect(oversight.unavailableFieldCount).toBeGreaterThan(0);
     expect(oversight.surfaces.find((surface) => surface.id === "execution")?.derivedFieldCount).toBeGreaterThan(0);
@@ -165,7 +165,7 @@ describe("buildUiInferenceContract", () => {
     });
 
     expect(oversight.status).toBe("breach");
-    expect(oversight.rules.find((rule) => rule.label === "Run identity lock")?.status).toBe("fail");
-    expect(oversight.notes.some((note) => note.includes("Pinned run missing-live-run is unresolved"))).toBe(true);
+    expect(oversight.rules.find((rule) => rule.label === "Výber behu je zamknutý")?.status).toBe("fail");
+    expect(oversight.notes.some((note) => note.includes("Pripnutý beh missing-live-run má stav unresolved"))).toBe(true);
   });
 });

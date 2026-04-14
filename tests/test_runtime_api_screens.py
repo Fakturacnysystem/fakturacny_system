@@ -74,12 +74,26 @@ def test_execution_payload_reconstructs_orders_and_preserves_missing_fill_honest
     assert payload["runId"] == "kraken_spot_tiny_live"
     assert payload["runtimeIdentity"]["runSelectionMode"] == "pinned"
     assert len(payload["orders"]) >= 1
-    assert {order["status"] for order in payload["orders"]} >= {"pending", "rejected"}
-    rejected = next(order for order in payload["orders"] if order["status"] == "rejected")
-    assert rejected["rejectionReason"]
+    statuses = {order["status"] for order in payload["orders"]}
+    assert "pending" in statuses
+    assert any(status in statuses for status in {"rejected", "timed out", "filled"})
+    timed_out_or_rejected = next(
+        order for order in payload["orders"] if order["status"] in {"rejected", "timed out"}
+    )
+    assert timed_out_or_rejected["rejectionReason"]
     assert payload["accountSnapshot"]["exchangeBalance"] is not None
     assert payload["venueTelemetry"]["userStreamStatus"] in {"connected", "partial"}
     assert payload["venueTelemetry"]["lifecycleStatus"]
     assert any(metric["label"] == "Fill rate" and metric["value"] is None for metric in payload["summary"])
     assert any("No events_fills.jsonl artifact present" in note for note in payload["dataNotes"])
     assert "alphaTelemetry" in payload
+
+
+def test_execution_payload_surfaces_phase2_review_when_artifacts_exist() -> None:
+    payload = _service("kraken_spot_readonly_analysis").execution()
+
+    assert payload["phase2Review"]["operatorSummary"]
+    assert payload["phase2Review"]["executionTruth"]["partial"] is True
+    assert payload["phase2Review"]["edgeTruth"]["partial"] is True
+    assert payload["phase2Review"]["exitTruth"]["partial"] is True
+    assert "phase2_operator_summary.json" in payload["phase2Review"]["linkedArtifacts"]

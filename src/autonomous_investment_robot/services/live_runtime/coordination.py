@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -845,6 +845,65 @@ class LiveDecisionCoordinator:
             else:
                 self.observability.journal(channel, payload)
 
+    def _recent_execution_calibration_feedback(self, *, symbol: str) -> dict[str, Any]:
+        run_dir = Path(getattr(self.observability, "run_dir", ""))
+        if not str(run_dir):
+            return {}
+
+        def _read(name: str) -> list[dict[str, Any]]:
+            path = run_dir / name
+            if not path.exists():
+                return []
+            rows: list[dict[str, Any]] = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict) and (not payload.get("symbol") or str(payload.get("symbol")) == symbol):
+                    rows.append(payload)
+            return rows[-12:]
+
+        exec_rows = _read("realized_vs_forecast_execution_journal.jsonl")
+        edge_rows = _read("edge_forecast_vs_realized_journal.jsonl")
+        sample_count = max(len(exec_rows), len(edge_rows))
+        if sample_count <= 0:
+            return {"confidence": 0.0, "sample_count": 0, "partial": True, "reasons": ["no_realized_execution_samples"]}
+
+        def _avg(rows: list[dict[str, Any]], key: str, default: float = 0.0) -> float:
+            values = []
+            for row in rows:
+                raw = row.get(key)
+                if raw is None:
+                    continue
+                try:
+                    values.append(float(raw))
+                except Exception:
+                    continue
+            return default if not values else sum(values) / len(values)
+
+        slippage_overshoot = max(0.0, _avg(exec_rows, "slippage_gap_bps"))
+        delay_destruction = max(0.0, _avg(exec_rows, "delay_gap_ms") / 100.0)
+        edge_capture_efficiency = max(0.0, min(1.25, _avg(edge_rows, "edge_capture_efficiency", 1.0)))
+        confidence = 0.0 if sample_count < 3 else min(1.0, sample_count / 8.0)
+        action = "continue"
+        if confidence >= 0.5 and (slippage_overshoot > 3.0 or delay_destruction > 6.0 or edge_capture_efficiency < 0.65):
+            action = "degrade_execution"
+        return {
+            "symbol": symbol,
+            "confidence": confidence,
+            "sample_count": sample_count,
+            "realized_slippage_overshoot_bps": slippage_overshoot,
+            "fill_delay_destruction_bps": delay_destruction,
+            "edge_capture_efficiency": edge_capture_efficiency,
+            "action": action,
+            "partial": confidence < 0.5,
+            "reasons": [] if confidence >= 0.5 else ["low_sample_execution_calibration"],
+        }
+
     def evaluate(
         self,
         *,
@@ -1173,6 +1232,77 @@ class LiveDecisionCoordinator:
                     market_integrity=(getattr(policy_decision, "why", {}) or {}).get("market_integrity"),
                     provider_capability=(getattr(policy_decision, "why", {}) or {}).get("provider_capability"),
                 )
+        trade_admission_payload = getattr(policy_decision, "why", {}).get("trade_admission") if isinstance(getattr(policy_decision, "why", None), dict) else None
+        if isinstance(trade_admission_payload, dict):
+            payload = {"symbol": symbol, "ts": market.now_dt, **dict(trade_admission_payload)}
+            self.observability.journal("trade_admission_journal", payload)
+            self.observability.journal(
+                "trade_admission_summary",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "recommended_action": trade_admission_payload.get("recommended_action"),
+                    "expected_utility_score": trade_admission_payload.get("expected_utility_score"),
+                    "floor_compatibility_score": trade_admission_payload.get("floor_compatibility_score"),
+                    "floor_reach_probability": trade_admission_payload.get("floor_reach_probability"),
+                    "expected_realized_net_edge_bps": trade_admission_payload.get("expected_realized_net_edge_bps"),
+                },
+            )
+            self.observability.journal(
+                "admission_feature_snapshot",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "signal_decay_risk": trade_admission_payload.get("signal_decay_risk"),
+                    "execution_survivability_score": trade_admission_payload.get("execution_survivability_score"),
+                    "capital_lock_cost_score": trade_admission_payload.get("capital_lock_cost_score"),
+                    "expected_time_to_floor_minutes": trade_admission_payload.get("expected_time_to_floor_minutes"),
+                    "missing_evidence": trade_admission_payload.get("missing_evidence", []),
+                },
+            )
+            self.observability.journal(
+                "opportunity_cost_journal",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "capital_lock_cost_score": trade_admission_payload.get("capital_lock_cost_score"),
+                    "expected_utility_score": trade_admission_payload.get("expected_utility_score"),
+                    "expected_time_to_floor_minutes": trade_admission_payload.get("expected_time_to_floor_minutes"),
+                },
+            )
+            self.observability.journal(
+                "floor_compatibility_summary",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "floor_compatibility_score": trade_admission_payload.get("floor_compatibility_score"),
+                    "floor_reach_probability": trade_admission_payload.get("floor_reach_probability"),
+                    "recommended_action": trade_admission_payload.get("recommended_action"),
+                },
+            )
+        waterfall_payload = getattr(policy_decision, "why", {}).get("decision_waterfall") if isinstance(getattr(policy_decision, "why", None), dict) else None
+        if isinstance(waterfall_payload, list):
+            self.observability.journal(
+                "decision_waterfall_journal",
+                {"symbol": symbol, "ts": market.now_dt, "items": waterfall_payload},
+            )
+        veto_payload = getattr(policy_decision, "why", {}).get("veto_attribution") if isinstance(getattr(policy_decision, "why", None), dict) else None
+        if isinstance(veto_payload, dict):
+            self.observability.journal("veto_attribution_journal", {"symbol": symbol, "ts": market.now_dt, **veto_payload})
+            no_trade = getattr(policy_decision, "no_trade", None)
+            if no_trade is not None and trade_admission_payload is not None:
+                self.observability.journal(
+                    "false_negative_review",
+                    {
+                        "symbol": symbol,
+                        "ts": market.now_dt,
+                        "primary_veto": veto_payload.get("primary_veto"),
+                        "expected_utility_score": trade_admission_payload.get("expected_utility_score"),
+                        "floor_compatibility_score": trade_admission_payload.get("floor_compatibility_score"),
+                        "false_negative_candidate": bool(float(trade_admission_payload.get("expected_utility_score", 0.0) or 0.0) >= 0.60),
+                        "reasons": list(getattr(no_trade, "reasons", []) or []),
+                    },
+                )
         if human_escalation_decision is not None and human_escalation_decision.action in {"manual_review", "flatten_only"}:
             no_trade_reason = "manual_review_required" if human_escalation_decision.action == "manual_review" else "human_escalation_flatten_only"
             blocked_policy = OrderIntent(symbol=symbol, side="sell", target_notional=abs(exposure_notional), why={"human_escalation": asdict(human_escalation_decision)})
@@ -1205,6 +1335,12 @@ class LiveDecisionCoordinator:
                 inventory_state=inventory_state,
                 reserve_state=reserve_state,
                 current_exposure=exposure_notional,
+                regime_label=str(getattr(market.forecast, "regime", "") or ""),
+                liquidity_regime=str(getattr(market.forecast, "liquidity_regime", "") or ""),
+                execution_quality=market.execution_quality,
+                event_intelligence=market.event_intelligence_report,
+                synthetic_affect=synthetic_affect_state,
+                position_morph_plan=position_morph_plan,
             )
             if self.adaptive_exit_allocator is not None:
                 adaptive_exit_allocation = self.adaptive_exit_allocator.evaluate(
@@ -1221,6 +1357,34 @@ class LiveDecisionCoordinator:
                 profitability_context = profitability_context or {}
                 profitability_context["capital_release"] = asdict(exit_release_decision)
                 exit_intent = computed_exit_intent
+                exit_metadata = getattr(exit_intent, "metadata", {}) if exit_intent is not None else {}
+                if isinstance(exit_metadata, dict):
+                    self.observability.journal(
+                        "exit_state_machine_journal",
+                        {"symbol": symbol, "ts": market.now_dt, **dict(exit_metadata.get("exit_state_machine", {}) or {})},
+                    )
+                    self.observability.journal(
+                        "winner_monetization_journal",
+                        {"symbol": symbol, "ts": market.now_dt, **dict(exit_metadata.get("winner_monetization", {}) or {})},
+                    )
+                    self.observability.journal(
+                        "exit_path_decision_journal",
+                        {
+                            "symbol": symbol,
+                            "ts": market.now_dt,
+                            "selected_family": exit_metadata.get("selected_exit_family"),
+                            "selected_action": exit_metadata.get("selected_exit_action"),
+                            "reason": getattr(exit_intent, "reason", ""),
+                        },
+                    )
+                    self.observability.journal(
+                        "exit_family_comparison",
+                        {
+                            "symbol": symbol,
+                            "ts": market.now_dt,
+                            **dict(exit_metadata.get("exit_path_comparison", {}) or {}),
+                        },
+                    )
         if exit_intent is not None and adaptive_exit_allocation is not None and adaptive_exit_allocation.total_exit_notional > 0.0:
             exit_intent = ExitIntent(
                 symbol=exit_intent.symbol,
@@ -1505,6 +1669,28 @@ class LiveDecisionCoordinator:
                 "reduce_only": False,
             },
         )
+        calibration_feedback = self._recent_execution_calibration_feedback(symbol=symbol)
+        if calibration_feedback:
+            adjusted_intent = OrderIntent(
+                adjusted_intent.symbol,
+                adjusted_intent.side,
+                adjusted_intent.target_notional,
+                {
+                    **dict(adjusted_intent.why),
+                    "execution_calibration_feedback": calibration_feedback,
+                },
+            )
+            self.observability.journal("execution_calibration_feedback", {"symbol": symbol, "ts": market.now_dt, **calibration_feedback})
+            self.observability.journal(
+                "calibration_confidence_snapshot",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "confidence": calibration_feedback.get("confidence", 0.0),
+                    "sample_count": calibration_feedback.get("sample_count", 0),
+                    "partial": calibration_feedback.get("partial", True),
+                },
+            )
         execution_started = time.perf_counter()
         execution_plan = self.execution.build_execution_plan(
             adjusted_intent,
@@ -1582,6 +1768,22 @@ class LiveDecisionCoordinator:
                     execution_stage_ms=(time.perf_counter() - execution_started) * 1000.0,
                 )
         self.observability.journal("execution_journal", {"plan": self._payload_dict(execution_plan), "forecast": self._payload_dict(market.execution_quality)})
+        if calibration_feedback:
+            adjustments = {}
+            if hasattr(execution_plan, "reasons") and isinstance(execution_plan.reasons, dict):
+                adjustments = dict(execution_plan.reasons.get("global_execution_adjustments", {}) or {})
+            self.observability.journal(
+                "planning_bias_adjustment_review",
+                {
+                    "symbol": symbol,
+                    "ts": market.now_dt,
+                    "feedback_action": calibration_feedback.get("action", "continue"),
+                    "confidence": calibration_feedback.get("confidence", 0.0),
+                    "order_style": getattr(execution_plan, "order_style", ""),
+                    "target_notional": getattr(execution_plan, "target_notional", 0.0),
+                    "size_multiplier": adjustments.get("size_multiplier"),
+                },
+            )
         execution_stage_ms = (time.perf_counter() - execution_started) * 1000.0
         adjusted_intent = self._with_execution_plan(adjusted_intent, execution_plan)
         return LiveDecisionContext(
@@ -1644,7 +1846,7 @@ class LiveReconciliationCoordinator:
             if self.forensics is not None and not report.ok:
                 self.forensics.record_runtime_anomaly(
                     symbol=symbol,
-                    ts=datetime.utcnow(),
+                    ts=datetime.now(UTC),
                     venue=str(getattr(getattr(live, "connector", None), "provider_id", "live")),
                     category="reconciliation",
                     reason=report.code,

@@ -46,15 +46,15 @@ export function AppShell({
           <section className="rtc-screen-nav-card rtc-card rtc-panel rtc-panel-elevated">
             <div className="rtc-panel-inner rtc-card-inner rtc-screen-nav-inner">
               <div>
-                <div className="rtc-section-eyebrow">Operator console</div>
-                <h1 className="rtc-screen-nav-title">Robot Control Center</h1>
+                <div className="rtc-section-eyebrow">Riadiaci panel</div>
+                <h1 className="rtc-screen-nav-title">Riadiaci panel robota</h1>
                 <p className="rtc-section-subtitle rtc-screen-nav-subtitle">
-                  High-signal operator surface with explicit run truth, safety posture, execution observability, and audit-preserving controls.
+                  Jasný prehľad o tom, čo robot robí, v akom je stave, či je to bezpečné, a čo môžeš urobiť bez toho, aby si musel rozumieť technickým detailom.
                 </p>
               </div>
               <div className="rtc-screen-nav-hints">
-                <span className="rtc-inline-note">Use keys 1-4 to switch screens</span>
-                <span className="rtc-inline-note">Press R to refresh runtime telemetry</span>
+                <span className="rtc-inline-note">Klávesy 1-4 prepínajú obrazovky</span>
+                <span className="rtc-inline-note">Kláves R obnoví živé údaje</span>
               </div>
             </div>
             <div className="rtc-screen-tab-grid">
@@ -72,7 +72,7 @@ export function AppShell({
                     transition={tabTransition}
                     onClick={() => onSelectScreen(tab.id)}
                   >
-                    <span className="rtc-screen-tab-eyebrow">[{tab.hotkey}] screen</span>
+                    <span className="rtc-screen-tab-eyebrow">[{tab.hotkey}] obrazovka</span>
                     <span className="rtc-screen-tab-label">{tab.label}</span>
                     <span className="rtc-screen-tab-detail">{tab.detail}</span>
                     {active ? <motion.span className="rtc-screen-tab-indicator" layoutId="rtc-tab-indicator" transition={motionSprings.snappy} /> : null}

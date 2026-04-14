@@ -92,6 +92,38 @@ def test_runtime_status_and_healthcheck_scripts_read_artifacts(tmp_path: Path) -
     assert json.loads(health.stdout)["status"] == "ok"
 
 
+def test_runtime_status_falls_back_to_health_and_live_safety_when_runtime_summary_omits_top_level_gate_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "kraken_spot_operator_summary.json").write_text(
+        json.dumps(
+            {
+                "provider_id": "kraken_spot",
+                "mode": "live",
+                "rollout_stage": "tiny_live",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "readiness_summary.json").write_text(json.dumps({"readiness_ready": True}), encoding="utf-8")
+    (run_dir / "live_safety_summary.json").write_text(
+        json.dumps({"ordering_allowed": True, "preflight_reason": "ok"}),
+        encoding="utf-8",
+    )
+    (run_dir / "health_summary.json").write_text(
+        json.dumps({"preflight_ok": True, "ordering_allowed": True}),
+        encoding="utf-8",
+    )
+
+    status = _run("python3", "scripts/runtime_status.py", "--run-dir", str(run_dir))
+
+    assert status.returncode == 0
+    payload = json.loads(status.stdout)
+    assert payload["preflight_ok"] is True
+    assert payload["ordering_allowed"] is True
+    assert payload["preflight_reason"] == "ok"
+
+
 def test_runtime_healthcheck_allows_readonly_using_health_summary_fallback(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -119,6 +151,50 @@ def test_runtime_healthcheck_allows_readonly_using_health_summary_fallback(tmp_p
     assert payload["status"] == "ok"
     assert payload["preflight_ok"] is True
     assert payload["ordering_allowed"] is False
+
+
+def test_runtime_status_reads_current_run_boot_progress_summary_truth(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "kraken_spot_operator_summary.json").write_text(
+        json.dumps(
+            {
+                "provider_id": "kraken_spot",
+                "mode": "live",
+                "rollout_stage": "tiny_live",
+                "boot_phase": "preflight_pending",
+                "status": "booting",
+                "ordering_allowed": False,
+                "preflight": {"ok": None, "reason": "boot_pending", "phase": "preflight_pending"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "readiness_summary.json").write_text(
+        json.dumps({"readiness_ready": False, "boot_phase": "preflight_pending"}),
+        encoding="utf-8",
+    )
+    (run_dir / "live_safety_summary.json").write_text(
+        json.dumps({"safety_ready": False, "boot_phase": "preflight_pending"}),
+        encoding="utf-8",
+    )
+    (run_dir / "health_summary.json").write_text(
+        json.dumps({"preflight_ok": False, "ordering_allowed": False, "boot_phase": "preflight_pending"}),
+        encoding="utf-8",
+    )
+
+    status = _run("python3", "scripts/runtime_status.py", "--run-dir", str(run_dir))
+    health = _run("python3", "scripts/runtime_healthcheck.py", "--run-dir", str(run_dir))
+
+    assert status.returncode == 0
+    status_payload = json.loads(status.stdout)
+    assert status_payload["mode"] == "live"
+    assert status_payload["rollout_stage"] == "tiny_live"
+    assert status_payload["ordering_allowed"] is False
+    assert status_payload["preflight_ok"] is False
+    assert status_payload["preflight_reason"] == "boot_pending"
+    assert health.returncode == 1
+    assert json.loads(health.stdout)["status"] == "blocked"
 
 
 def test_collect_diagnostics_bundle_creates_manifest_and_tarball(tmp_path: Path) -> None:

@@ -192,6 +192,36 @@ def test_execution_service_preserves_lifecycle_proof_submitted_notional_for_krak
     }
 
 
+def test_execution_service_degrades_style_under_high_confidence_bad_realized_feedback():
+    svc = ExecutionService(ExecutionSettings(provider_id="kraken_spot"))
+    intent = OrderIntent(
+        symbol="BTC/USD",
+        side="buy",
+        target_notional=100.0,
+        why={
+            "trade_admission": {
+                "recommended_action": "continue",
+                "recommended_size_multiplier": 1.0,
+                "signal_decay_risk": 0.8,
+                "execution_survivability_score": 0.85,
+                "floor_compatibility_score": 0.9,
+                "recommended_execution_style": "marketable_limit",
+            },
+            "execution_calibration_feedback": {
+                "confidence": 0.75,
+                "realized_slippage_overshoot_bps": 5.0,
+                "fill_delay_destruction_bps": 7.0,
+                "edge_capture_efficiency": 0.45,
+            },
+        },
+    )
+
+    plan = svc.build_execution_plan(intent, depth_notional=100000.0, spread_bps=2.0, regime="RANGE", liquidity_regime="GOOD")
+
+    assert plan.order_style == "limit"
+    assert plan.reasons["global_execution_adjustments"]["execution_calibration_feedback"]["confidence"] == pytest.approx(0.75)
+
+
 def test_execution_service_exposes_provider_capability_matrix():
     svc = ExecutionService(ExecutionSettings(provider_id="kraken_derivatives"))
 

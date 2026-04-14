@@ -36,14 +36,14 @@ def main() -> None:
     p_rep_report.add_argument("--config", required=True)
 
     p_ro = sub.add_parser("live-readonly")
-    p_ro.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
+    p_ro.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")
 
     p_live = sub.add_parser("live")
     p_live.add_argument("--config", required=True)
     p_live.add_argument("--kill", action="store_true")
 
     p_record = sub.add_parser("record")
-    p_record.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
+    p_record.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")
     p_record.add_argument("--run-id", default="latest")
     p_record.add_argument("--duration-seconds", type=int, default=0)
     p_record.add_argument("--poll-interval-seconds", type=float, default=1.0)

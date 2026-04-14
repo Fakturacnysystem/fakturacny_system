@@ -58,6 +58,27 @@ def test_adaptive_exit_allocator_prioritizes_risk_exit_when_event_turns_hostile(
     assert allocation.execution_style == "marketable_limit"
 
 
+def test_adaptive_exit_allocator_preserves_runner_bias_for_reacceleration_hold():
+    allocation = AdaptiveExitAllocator().evaluate(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        current_exposure=120.0,
+        capital_release_decision=SimpleNamespace(
+            allowed=True,
+            recommended_notional=24.0,
+            reason="profit_lock_partial_exit",
+            metadata={"exit_path_comparison": {"selected_family": "reacceleration_hold"}},
+        ),
+        position_morph_plan=SimpleNamespace(reduce_notional=10.0, runner_fraction=0.2),
+        synthetic_affect=SimpleNamespace(stress=0.1, fear=0.1),
+        event_intelligence=SimpleNamespace(recommended_action="continue", overall_risk_score=0.1),
+    )
+
+    assert allocation.action in {"hold", "partial_exit"}
+    assert allocation.execution_style == "passive_limit"
+    assert allocation.metadata["selected_exit_family"] == "reacceleration_hold"
+
+
 def test_synthetic_affect_shifts_to_no_trade_under_stress():
     affect = SyntheticAffectEngine().evaluate(
         symbol="BTCUSDT",

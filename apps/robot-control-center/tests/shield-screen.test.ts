@@ -7,12 +7,12 @@ import { buildUnavailableShield } from "@/lib/runtime/unavailable-data";
 import type { ControlsContract } from "@/types/contracts";
 
 const controls: ControlsContract = {
-  statusLine: "operator session active",
+  statusLine: "operátor je prihlásený",
   provenanceLine: "ops.mh / local",
   canWriteIncidentNotes: true,
   actions: [
-    { action: "pause", label: "Pause entries", enabled: true, tone: "warn" },
-    { action: "freeze", label: "Freeze", enabled: true, tone: "danger" },
+    { action: "pause", label: "Pozastaviť", enabled: true, tone: "warn" },
+    { action: "freeze", label: "Zmraziť", enabled: true, tone: "danger" },
   ],
   lastResponse: null,
 };
@@ -31,14 +31,14 @@ describe("ShieldScreen", () => {
       }),
     );
 
-    expect(html).toContain("Runtime trust and safety surface");
+    expect(html).toContain("Dá sa tomuto robotovi práve teraz veriť?");
     expect(html).toContain("caution");
     expect(html).toContain("Max exposure");
     expect(html).toContain("Spread guard");
-    expect(html).toContain("Control Safety Panel");
-    expect(html).toContain("Applied control");
-    expect(html).toContain("force_degraded via meta_governor");
-    expect(html).toContain("User stream");
+    expect(html).toContain("Bezpečné ovládanie");
+    expect(html).toContain("Čo momentálne platí");
+    expect(html).toContain("force_degraded cez meta_governor");
+    expect(html).toContain("Používateľský stream");
   });
 
   it("renders unsafe degraded state honestly when shield payload is unavailable", () => {
@@ -57,6 +57,6 @@ describe("ShieldScreen", () => {
     expect(html).toContain("unsafe");
     expect(html).toContain("runtime_api_unavailable");
     expect(html).toContain("shield_payload_missing");
-    expect(html).toContain("no linked artifacts");
+    expect(html).toContain("bez napojených dôkazov");
   });
 });

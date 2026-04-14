@@ -155,11 +155,11 @@ function buildCommandSurface(dashboard: DashboardContract): UiInferenceSurfaceCo
     (dashboard.healthState.artifactFallbackActive ? 1 : 0);
   const notes = [
     dashboard.source === "mock"
-      ? "Command Center is fed by typed mock data; it is not authoritative runtime truth."
-      : "Command Center cards are fed by runtime summary, health, integrity, symbols, decisions, and alerts.",
+      ? "Hlavný panel berie údaje z mockov, nie zo skutočného runtime."
+      : "Hlavný panel berie údaje zo súhrnu runtime, zdravia systému, integrity, symbolov, rozhodnutí a upozornení.",
     dashboard.healthState.artifactFallbackActive
-      ? "Artifact fallback is active and is called out explicitly in health and integrity state."
-      : "Artifact fallback is inactive.",
+      ? "Náhradná obnova z artefaktov je zapnutá a panel to priznáva v stave systému."
+      : "Náhradná obnova z artefaktov nie je zapnutá.",
   ];
   if (dashboard.warnings[0]) {
     notes.push(dashboard.warnings[0]);
@@ -167,7 +167,7 @@ function buildCommandSurface(dashboard: DashboardContract): UiInferenceSurfaceCo
 
   return {
     id: "command",
-    label: "Command Center",
+    label: "Hlavný panel",
     status: surfaceStatus(derivedFieldCount, unavailableFieldCount, dashboard.source === "mock"),
     directEvidenceCount:
       dashboard.badges.length +
@@ -198,7 +198,7 @@ function buildBrainSurface(brain: BrainState): UiInferenceSurfaceContract {
 
   return {
     id: "brain",
-    label: "Brain",
+    label: "Rozhodovanie",
     status: surfaceStatus(
       derivedFieldCount,
       brainUnavailableCount(brain, selectedSymbolView),
@@ -233,7 +233,7 @@ function buildShieldSurface(shield: ShieldState): UiInferenceSurfaceContract {
 
   return {
     id: "shield",
-    label: "Shield",
+    label: "Bezpečnosť",
     status: surfaceStatus(
       derivedFieldCount,
       unavailableFieldCount,
@@ -274,7 +274,7 @@ function buildExecutionSurface(execution: ExecutionState): UiInferenceSurfaceCon
 
   return {
     id: "execution",
-    label: "Execution",
+    label: "Obchody",
     status: surfaceStatus(
       derivedFieldCount,
       unavailableFieldCount,
@@ -304,15 +304,15 @@ function buildRules(
 
   return [
     {
-      label: "Runtime source explicit",
+      label: "Zdroj dát je jasný",
       status: dashboard.source === "runtime-api" ? "pass" : "fail",
       detail:
         dashboard.source === "runtime-api"
-          ? "UI is bound to runtime API data."
-          : "UI is running in explicit mock mode.",
+          ? "Aplikácia je napojená na runtime API."
+          : "Aplikácia beží v priznanom mock režime.",
     },
     {
-      label: "Run identity lock",
+      label: "Výber behu je zamknutý",
       status:
         runtimeIdentity.selectionMode === "pinned"
           ? runtimeIdentity.pinIntegrityStatus === "ok" && runtimeIdentity.driftStatus === "locked"
@@ -322,10 +322,10 @@ function buildRules(
       detail:
         runtimeIdentity.selectionMode === "pinned"
           ? `${runtimeIdentity.pinIntegrityStatus} / ${runtimeIdentity.driftStatus}`
-          : "Tracking latest stays explicit and non-pinned.",
+          : "Sleduje sa najnovší beh, nie pevne vybraný.",
     },
     {
-      label: "Endpoint consistency",
+      label: "Všetky časti ukazujú to isté",
       status:
         runtimeIdentity.endpointConsistencyStatus === "consistent"
           ? "pass"
@@ -335,7 +335,7 @@ function buildRules(
       detail: runtimeIdentity.endpointConsistencyStatus,
     },
     {
-      label: "Replay alignment",
+      label: "História sedí s aktuálnym behom",
       status:
         runtimeIdentity.replayAlignmentStatus === "aligned"
           ? "pass"
@@ -345,20 +345,20 @@ function buildRules(
       detail: runtimeIdentity.replayAlignmentStatus,
     },
     {
-      label: "Derived fields disclosed",
+      label: "Odvodené polia sú priznané",
       status: "pass",
       detail:
         derivedTotal > 0
-          ? `${derivedTotal} derived fields are explicitly tagged across the cockpit.`
-          : "No derived fields are currently surfaced.",
+          ? `${derivedTotal} odvodených polí je v aplikácii jasne označených.`
+          : "Momentálne sa nezobrazujú žiadne odvodené polia.",
     },
     {
-      label: "Unavailable stays unavailable",
+      label: "Chýbajúce údaje sa nevymýšľajú",
       status: "pass",
       detail:
         unavailableTotal > 0
-          ? `${unavailableTotal} unavailable values stayed explicit instead of being back-filled by the UI.`
-          : "No active unavailable values are being surfaced.",
+          ? `${unavailableTotal} chýbajúcich hodnôt zostalo priznaných namiesto toho, aby si ich UI domyslelo.`
+          : "Momentálne sa nezobrazujú žiadne chýbajúce hodnoty.",
     },
   ];
 }
@@ -406,17 +406,17 @@ export function buildUiInferenceContract({
 
   const notes = [
     dashboard.source === "mock"
-      ? "Mock mode is explicit and cannot be mistaken for live runtime truth."
-      : "Runtime API is the active truth path for the cockpit.",
+      ? "Mock režim je priznaný a nedá sa zameniť za živé údaje."
+      : "Hlavná pravda pre tento panel ide z runtime API.",
     runtimeIdentity.selectionMode === "pinned"
-      ? `Pinned run ${runtimeIdentity.runId} is ${runtimeIdentity.pinIntegrityStatus}.`
-      : "Cockpit is tracking latest; the observation target can move and is labeled as such.",
+      ? `Pripnutý beh ${runtimeIdentity.runId} má stav ${runtimeIdentity.pinIntegrityStatus}.`
+      : "Panel sleduje najnovší beh, takže cieľ sa môže meniť a je to viditeľne označené.",
     derivedFieldCount > 0
-      ? "Derived values are permitted only when individually tagged and traceable."
-      : "No current derived values require operator review.",
+      ? "Odvodené hodnoty sú dovolené len vtedy, keď sú označené a dajú sa dohľadať."
+      : "Momentálne nie sú žiadne odvodené hodnoty, ktoré by si musel kontrolovať.",
     unavailableFieldCount > 0
-      ? "Unavailable values remain explicit so the UI never fabricates hidden confidence."
-      : "No active unavailable values are being surfaced.",
+      ? "Keď údaj chýba, aplikácia to povie otvorene a nič si nedomýšľa."
+      : "Momentálne sa nezobrazujú žiadne chýbajúce hodnoty.",
   ];
 
   return {

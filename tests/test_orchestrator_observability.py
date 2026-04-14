@@ -45,6 +45,8 @@ def test_paper_run_emits_observability_journals():
     assert (run_dir / "learning_records.jsonl").exists()
     assert (run_dir / "pnl_attribution.jsonl").exists()
     assert (run_dir / "post_trade_summary.jsonl").exists()
+    assert (run_dir / "realized_vs_forecast_execution_journal.jsonl").exists()
+    assert (run_dir / "edge_forecast_vs_realized_journal.jsonl").exists()
 
 
 def test_orchestrator_wires_live_runtime_observability():
@@ -228,9 +230,15 @@ def test_readonly_analysis_emits_performance_artifacts(tmp_path):
     assert (tmp_path / "pair_ranking_report.json").exists()
     assert (tmp_path / "expectancy_engine_report.json").exists()
     assert (tmp_path / "private_stream_health.json").exists()
+    assert (tmp_path / "module_value_summary.json").exists()
+    assert (tmp_path / "phase2_operator_summary.json").exists()
+    assert (tmp_path / "phase2_execution_truth_review.json").exists()
+    assert (tmp_path / "profile_optimization_report.json").exists()
     operator_summary = json.loads(Path(result["operator_summary_path"]).read_text(encoding="utf-8"))
     assert operator_summary["performance_architecture"]["capital_envelope"]["deployable_capital"] == 0.0
     assert operator_summary["performance_architecture"]["market_universe"]["active_symbols"] == ["BTC/USD"]
+    assert "module_value" in operator_summary["performance_architecture"]
+    assert "profile_truth" in operator_summary["performance_architecture"]
     assert operator_summary["performance_architecture"]["execution_alpha"]["private_stream_health"]["status"] == "degraded"
 
 
@@ -265,7 +273,11 @@ def test_live_runtime_summary_emits_decision_collapse_trace_and_trade_path_healt
     )
     orchestrator = RobotOrchestrator(settings)
     orchestrator._last_live_preflight_ok = True
+    orchestrator._last_live_preflight_reason = "ok"
     orchestrator._last_live_ordering_allowed = True
+    orchestrator._last_live_restart_confidence = "trusted"
+    orchestrator._last_live_recovery_action = "continue"
+    orchestrator._last_live_truth_confidence_action = "continue"
     orchestrator._last_live_blocking_reasons = []
     market = SimpleNamespace(
         forecast=SimpleNamespace(symbol="BTCUSDT", regime="RANGE", liquidity_regime="GOOD"),
@@ -430,6 +442,8 @@ def test_live_runtime_summary_emits_decision_collapse_trace_and_trade_path_healt
     trace_latest = json.loads((Path(settings.storage.run_dir) / "decision_collapse_trace_latest.json").read_text(encoding="utf-8"))
     explainability = json.loads((Path(settings.storage.run_dir) / "decision_explainability.json").read_text(encoding="utf-8"))
     health_summary = json.loads((Path(settings.storage.run_dir) / "health_summary.json").read_text(encoding="utf-8"))
+    readiness_summary = json.loads((Path(settings.storage.run_dir) / "readiness_summary.json").read_text(encoding="utf-8"))
+    live_safety_summary = json.loads((Path(settings.storage.run_dir) / "live_safety_summary.json").read_text(encoding="utf-8"))
     operator_summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
 
     assert trace_latest["trade_path_state"] == "blocked_by_decision"
@@ -646,7 +660,11 @@ def test_live_runtime_summary_surfaces_affordability_veto_as_top_blocker(tmp_pat
     )
     orchestrator = RobotOrchestrator(settings)
     orchestrator._last_live_preflight_ok = True
+    orchestrator._last_live_preflight_reason = "ok"
     orchestrator._last_live_ordering_allowed = True
+    orchestrator._last_live_restart_confidence = "trusted"
+    orchestrator._last_live_recovery_action = "continue"
+    orchestrator._last_live_truth_confidence_action = "continue"
     orchestrator._last_live_blocking_reasons = []
     market = SimpleNamespace(
         forecast=SimpleNamespace(symbol="BTC/USD", regime="RANGE", liquidity_regime="GOOD"),
@@ -822,6 +840,8 @@ def test_live_runtime_summary_surfaces_affordability_veto_as_top_blocker(tmp_pat
     trace_latest = json.loads((Path(settings.storage.run_dir) / "decision_collapse_trace_latest.json").read_text(encoding="utf-8"))
     explainability = json.loads((Path(settings.storage.run_dir) / "decision_explainability.json").read_text(encoding="utf-8"))
     health_summary = json.loads((Path(settings.storage.run_dir) / "health_summary.json").read_text(encoding="utf-8"))
+    readiness_summary = json.loads((Path(settings.storage.run_dir) / "readiness_summary.json").read_text(encoding="utf-8"))
+    live_safety_summary = json.loads((Path(settings.storage.run_dir) / "live_safety_summary.json").read_text(encoding="utf-8"))
     operator_summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
 
     assert trace_latest["ranked_blockers"][0]["code"] == "free_quote_reserve_breached"
@@ -831,6 +851,10 @@ def test_live_runtime_summary_surfaces_affordability_veto_as_top_blocker(tmp_pat
     assert explainability["collapse_stage"] == "final_execution_gate"
     assert explainability["top_blocker_type"] == "affordability_veto"
     assert health_summary["top_blockers"][0]["code"] == "free_quote_reserve_breached"
+    assert readiness_summary["ordering_allowed"] is True
+    assert readiness_summary["readiness_ready"] is True
+    assert live_safety_summary["ordering_allowed"] is True
+    assert live_safety_summary["safety_ready"] is True
     assert operator_summary["current_blocker_chain"][0]["code"] == "free_quote_reserve_breached"
 
 
@@ -1155,3 +1179,172 @@ def test_live_readiness_artifacts_overwrite_stale_execution_lifecycle_report(tmp
     assert execution_lifecycle["reason"] is None
     assert execution_lifecycle["trade_path_state"] == "not_attempted"
     assert execution_lifecycle["top_blockers"][0]["code"] == "restart_state:degraded"
+
+
+def test_live_readiness_artifacts_mark_clean_preflight_as_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    monkeypatch.setenv("TESTNET_VALIDATED", "true")
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        universe=["BTC/USD"],
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True)),
+        harmony=HarmonySettings(enabled=True, default_order_cadence_s=7.0),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        market_watch=MarketWatchSettings(
+            enabled=True,
+            blackout_windows=[],
+            entry_block_max_spread_bps=18.0,
+            entry_degrade_max_spread_bps=10.0,
+            entry_block_min_depth_notional=50000.0,
+            entry_degrade_min_depth_notional=80000.0,
+            liquidity_map_min_depth_notional=80000.0,
+            block_new_entries_on_blackout=True,
+        ),
+        risk=RiskLimits(
+            max_daily_loss_pct=1.0,
+            max_weekly_loss_pct=2.0,
+            max_drawdown_pct=2.0,
+            max_position_notional=35.0,
+            max_exposure_notional=35.0,
+            max_symbol_exposure_notional=35.0,
+            max_cluster_exposure_notional=35.0,
+            max_orders_per_min=2,
+            leverage=0,
+            max_spread_bps=12.0,
+            min_depth_notional=80000.0,
+            stale_data_seconds=8.0,
+            min_margin_buffer=2.0,
+            max_funding_cost_per_day=0.0,
+            max_oi_spike_pct=0.0,
+            max_liquidation_spike=0.0,
+            divergence_threshold_bps=8.0,
+            crowding_score_kill=10.0,
+        ),
+        tco=TCOSettings(max_total_cost_bps=55.0, max_impact_bps=20.0),
+        rollout_stage_override="tiny_live",
+    )
+    orchestrator = RobotOrchestrator(settings)
+
+    orchestrator._emit_live_readiness_artifacts(
+        symbol="BTC/USD",
+        mode=settings.execution_mode_enum(),
+        harmony_payload={"live_gate_status": {"doctrine_launch_safe": True}},
+        preflight_ok=True,
+        preflight_reason="ok",
+        confidence="trusted",
+        confidence_details={"truth_confidence": {"overall_action": "continue"}},
+        recovery_decision=SimpleNamespace(action="continue"),
+        ordering_allowed=True,
+    )
+
+    trace = json.loads((Path(settings.storage.run_dir) / "decision_collapse_trace_latest.json").read_text(encoding="utf-8"))
+    explainability = json.loads((Path(settings.storage.run_dir) / "decision_explainability.json").read_text(encoding="utf-8"))
+
+    assert trace["final_decision"] == "preflight_ready"
+    assert trace["reason_chain"] == ["preflight:ready:ok"]
+    assert trace["ranked_blockers"] == []
+    assert explainability["action_state"] == "preflight_ready"
+    assert explainability["stage_actions"]["final_execution_gate"] == "preflight_ready"
+
+
+def test_live_boot_progress_artifacts_refresh_top_level_summaries_for_current_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    monkeypatch.setenv("TESTNET_VALIDATED", "true")
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        universe=["BTC/USD"],
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True)),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True),
+        market_watch=MarketWatchSettings(enabled=True),
+        risk=RiskLimits(
+            max_daily_loss_pct=1.0,
+            max_weekly_loss_pct=2.0,
+            max_drawdown_pct=2.0,
+            max_position_notional=10.0,
+            max_exposure_notional=10.0,
+            max_symbol_exposure_notional=10.0,
+            max_cluster_exposure_notional=10.0,
+            max_orders_per_min=5,
+            leverage=0,
+            max_spread_bps=10.0,
+            min_depth_notional=10.0,
+            stale_data_seconds=10.0,
+            min_margin_buffer=2.0,
+            max_funding_cost_per_day=1.0,
+            max_oi_spike_pct=1.0,
+            max_liquidation_spike=1.0,
+            divergence_threshold_bps=10.0,
+            crowding_score_kill=10.0,
+        ),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+        rollout_stage_override="tiny_live",
+    )
+    orchestrator = RobotOrchestrator(settings)
+
+    for name in [
+        "kraken_spot_operator_summary.json",
+        "readiness_summary.json",
+        "health_summary.json",
+        "live_safety_summary.json",
+    ]:
+        (Path(settings.storage.run_dir) / name).write_text(
+            json.dumps({"status": "stale", "ts": "2000-01-01T00:00:00+00:00"}, indent=2),
+            encoding="utf-8",
+        )
+
+    paths = orchestrator._emit_live_boot_progress_artifacts(
+        symbol="BTC/USD",
+        mode=settings.execution_mode_enum(),
+        harmony_payload={},
+        phase="preflight_pending",
+        preflight_ok=None,
+        preflight_reason="boot_pending",
+        confidence="booting",
+        confidence_details={"boot_phase": "preflight_pending"},
+        recovery_action="pending",
+        truth_confidence_action="pending",
+    )
+
+    operator_summary = json.loads((Path(settings.storage.run_dir) / "kraken_spot_operator_summary.json").read_text(encoding="utf-8"))
+    readiness_summary = json.loads((Path(settings.storage.run_dir) / "readiness_summary.json").read_text(encoding="utf-8"))
+    live_safety_summary = json.loads((Path(settings.storage.run_dir) / "live_safety_summary.json").read_text(encoding="utf-8"))
+    health_summary = json.loads((Path(settings.storage.run_dir) / "health_summary.json").read_text(encoding="utf-8"))
+
+    assert paths["operator_summary"].endswith("kraken_spot_operator_summary.json")
+    assert operator_summary["boot_phase"] == "preflight_pending"
+    assert operator_summary["status"] == "booting"
+    assert operator_summary["preflight"]["ok"] is None
+    assert operator_summary["ordering_allowed"] is False
+    assert readiness_summary["boot_phase"] == "preflight_pending"
+    assert readiness_summary["readiness_ready"] is False
+    assert readiness_summary["blocking_reasons"] == ["boot_phase:preflight_pending"]
+    assert live_safety_summary["boot_phase"] == "preflight_pending"
+    assert live_safety_summary["safety_ready"] is False
+    assert health_summary["boot_phase"] == "preflight_pending"
+    assert health_summary["trade_path_state"] == "boot_in_progress"
+    assert health_summary["top_blockers"][0]["code"] == "boot_phase:preflight_pending"

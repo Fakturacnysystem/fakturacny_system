@@ -18,6 +18,7 @@ import { staggerContainer } from "@/lib/ui/motion";
 import type { RuntimeControlAction } from "@/types/runtime";
 import {
   formatMoment,
+  humanizeRuntimeText,
   toneFromSeverity,
   toneFromVerdict,
 } from "@/components/screen-formatters";
@@ -38,37 +39,37 @@ const controlCopy: Record<RuntimeControlAction, ControlCopy> = {
   pause: {
     icon: "∥",
     tone: "warn",
-    detail: "Block new entries while preserving live telemetry and runtime visibility.",
-    confirmTitle: "Pause new entries",
-    confirmSubtitle: "This keeps the robot observable but stops additional entry flow until the operator explicitly resumes.",
-    confirmLabel: "Pause entries",
+    detail: "Zastaví nové vstupy, ale panel aj živé údaje zostanú ďalej viditeľné.",
+    confirmTitle: "Pozastaviť nové vstupy",
+    confirmSubtitle: "Robot budeš ďalej vidieť, ale prestane otvárať nové obchody, kým to znova nepovolíš.",
+    confirmLabel: "Pozastaviť",
     requiresConfirmation: true,
   },
   resume: {
     icon: "→",
     tone: "good",
-    detail: "Return to guarded normal execution posture.",
-    confirmTitle: "Resume guarded execution",
-    confirmSubtitle: "Resume only after reviewing blockers, trust posture, and effective run identity.",
-    confirmLabel: "Resume",
+    detail: "Vráti robot do bežného chodu, ak tomu nebránia problémy alebo blokácie.",
+    confirmTitle: "Pokračovať v chode",
+    confirmSubtitle: "Pokračovanie dávaj len vtedy, keď je jasné, že stav systému je v poriadku.",
+    confirmLabel: "Pokračovať",
     requiresConfirmation: false,
   },
   freeze: {
     icon: "✦",
     tone: "danger",
-    detail: "Stop runtime execution while keeping diagnostic and safety surfaces available.",
-    confirmTitle: "Freeze runtime execution",
-    confirmSubtitle: "Freeze is a safety intervention. Use it when current alerts or trust posture imply continued execution is unsafe.",
-    confirmLabel: "Freeze runtime",
+    detail: "Zastaví vykonávanie, ale diagnostika a bezpečnostné údaje zostanú k dispozícii.",
+    confirmTitle: "Zmraziť vykonávanie",
+    confirmSubtitle: "Toto je bezpečnostný zásah. Použi ho, keď by ďalšie pokračovanie nebolo bezpečné.",
+    confirmLabel: "Zmraziť",
     requiresConfirmation: true,
   },
   flatten: {
     icon: "↓",
     tone: "danger",
-    detail: "Request immediate reduction of live exposure and collapse risk posture.",
-    confirmTitle: "Flatten live exposure",
-    confirmSubtitle: "Flatten is destructive by design. Confirm only if the active run must exit exposure immediately.",
-    confirmLabel: "Flatten exposure",
+    detail: "Požiada o rýchle uzavretie otvoreného rizika a zníženie expozície.",
+    confirmTitle: "Núdzovo zavrieť expozíciu",
+    confirmSubtitle: "Toto je tvrdý zásah. Potvrď ho len vtedy, keď chceš otvorené riziko zavrieť čo najskôr.",
+    confirmLabel: "Núdzovo zavrieť",
     requiresConfirmation: true,
   },
 };
@@ -123,7 +124,7 @@ export function RobotControlCenterApp() {
   const [incidentSeverity, setIncidentSeverity] = useState("SEV-2");
   const [incidentTags, setIncidentTags] = useState("manual-review,replay");
   const [incidentNote, setIncidentNote] = useState(
-    "Observed degraded runtime API posture. Control action reason and replay follow-up documented.",
+    "Pozorovaný zhoršený stav runtime API. Dôvod zásahu aj nadväzná kontrola histórie boli zapísané.",
   );
   const [activeScreen, setActiveScreen] = useState<ScreenId>("command");
   const [confirmAction, setConfirmAction] = useState<RuntimeControlAction | null>(null);
@@ -232,29 +233,29 @@ export function RobotControlCenterApp() {
   const screenTabs: AppShellTab[] = [
     {
       id: "command",
-      label: "Command Center",
+      label: "Hlavný panel",
       detail: `${dashboard.mode} / ${dashboard.healthState.status}`,
       tone: toneFromStateKind(dashboard.healthState.status),
       hotkey: "1",
     },
     {
       id: "brain",
-      label: "Brain",
+      label: "Rozhodovanie",
       detail: `${contract.brain.selectedSymbol} / ${contract.brain.actionState}`,
       tone: toneFromStateKind(contract.brain.stateKind),
       hotkey: "2",
     },
     {
       id: "shield",
-      label: "Shield",
-      detail: `trust ${contract.shield.trustVerdict}`,
+      label: "Bezpečnosť",
+      detail: `dôvera ${contract.shield.trustVerdict}`,
       tone: toneFromVerdict(contract.shield.trustVerdict),
       hotkey: "3",
     },
     {
       id: "execution",
-      label: "Execution",
-      detail: `${contract.execution.orders.length} orders / ${contract.execution.positions.length} positions`,
+      label: "Obchody",
+      detail: `${contract.execution.orders.length} pokynov / ${contract.execution.positions.length} pozícií`,
       tone: toneFromStateKind(contract.execution.stateKind),
       hotkey: "4",
     },
@@ -262,12 +263,12 @@ export function RobotControlCenterApp() {
 
   const floatingBar = (
     <FloatingActionBar
-      title="Operator action zone"
-      subtitle="Controls remain reason-coded and audit-preserving. Destructive actions are separated, sticky, and never visually mixed with routine operations."
+      title="Rýchle ovládanie"
+      subtitle="Tu sú najdôležitejšie akcie. Rizikové zásahy sú oddelené od bežných úkonov a vždy zostávajú dohľadateľné v histórii."
       status={(
         <div className="rtc-pill-row">
-          <StatusBadge tone={toneFromStateKind(dashboard.healthState.status)} label="runtime" value={dashboard.healthState.status} />
-          <StatusBadge tone={toneFromVerdict(shield.trustVerdict)} label="trust" value={shield.trustVerdict} />
+          <StatusBadge tone={toneFromStateKind(dashboard.healthState.status)} label="systém" value={dashboard.healthState.status} />
+          <StatusBadge tone={toneFromVerdict(shield.trustVerdict)} label="dôvera" value={shield.trustVerdict} />
         </div>
       )}
       primary={(
@@ -311,10 +312,10 @@ export function RobotControlCenterApp() {
       aside={(
         <div className="rtc-floating-bar-side-stack">
           <div className="rtc-inline-note">
-            Applied: {shield.appliedControl ? `${shield.appliedControl.action} via ${shield.appliedControl.controlSurface}` : "unavailable"}
+            Aktuálne platí: {shield.appliedControl ? `${shield.appliedControl.action} cez ${shield.appliedControl.controlSurface}` : "nedostupné"}
           </div>
           <button className="rtc-button rtc-button-quiet" type="button" onClick={refreshAll}>
-            Refresh telemetry
+            Obnoviť údaje
           </button>
         </div>
       )}
@@ -324,19 +325,19 @@ export function RobotControlCenterApp() {
   const missionDeck = (
     <GlassPanel className="rtc-hero rtc-screen-hero-card" elevated>
       <SectionHeader
-        eyebrow="Mission deck"
-        title="Runtime posture at a glance"
-        subtitle="The shell keeps effective run identity, health posture, live quote fabric, and active decision pressure readable in under two seconds."
+        eyebrow="Rýchly prehľad"
+        title="Najdôležitejšie na prvý pohľad"
+        subtitle="Za pár sekúnd vidíš, čo sleduješ, v akom je to stave, či sú údaje čerstvé a či robot práve niečo rieši."
         meta={(
           <div className="rtc-pill-row">
-            <StatusBadge tone={dashboard.source === "runtime-api" ? "good" : "danger"} label="source" value={dashboard.source} />
-            <StatusBadge tone={toneFromStateKind(contract.runtimeIdentity.stateKind)} label="state" value={contract.runtimeIdentity.stateKind} />
-            <StatusBadge tone={contract.runtimeIdentity.selectionMode === "pinned" ? "good" : "warn"} label="selection" value={contract.runtimeIdentity.selectionMode} />
+            <StatusBadge tone={dashboard.source === "runtime-api" ? "good" : "danger"} label="zdroj" value={dashboard.source} />
+            <StatusBadge tone={toneFromStateKind(contract.runtimeIdentity.stateKind)} label="stav" value={contract.runtimeIdentity.stateKind} />
+            <StatusBadge tone={contract.runtimeIdentity.selectionMode === "pinned" ? "good" : "warn"} label="výber" value={contract.runtimeIdentity.selectionMode} />
           </div>
         )}
         actions={(
           <button className="rtc-button rtc-button-quiet" type="button" onClick={refreshAll}>
-            Refresh runtime
+            Obnoviť stav
           </button>
         )}
       />
@@ -362,26 +363,26 @@ export function RobotControlCenterApp() {
 
       <div className="rtc-live-ribbon">
         <LiveFeedList
-          title="Market monitor"
-          subtitle="Direct quote path, latency, spread, and staleness for the leading symbols in the active run."
+          title="Prehľad trhu"
+          subtitle="Tu vidíš základný stav trhu pre hlavné páry v práve sledovanom behu."
           items={featuredSymbols}
           empty={(
             <EmptyState
-              title="No live symbol snapshots"
-              description="The active run has not emitted symbol snapshots yet."
+              title="Zatiaľ nie sú k dispozícii trhové snímky"
+              description="Tento beh zatiaľ neposlal údaje o sledovaných pároch."
             />
           )}
           renderItem={(symbol) => (
             <article className="rtc-feed-card rtc-live-card" key={`${symbol.symbol}-${symbol.ts}`}>
               <div className="rtc-live-card-header">
                 <strong>{symbol.symbol}</strong>
-                <StatusBadge tone={symbol.stale ? "warn" : "good"} value={symbol.stale ? "stale" : "live"} subtle />
+                <StatusBadge tone={symbol.stale ? "warn" : "good"} value={symbol.stale ? "staré" : "živé"} subtle />
               </div>
               <div className="rtc-live-price">
                 {symbol.bid.toFixed(2)} <span>/</span> {symbol.ask.toFixed(2)}
               </div>
               <div className="rtc-live-meta">
-                <span>{symbol.venue}</span>
+                <span>{humanizeRuntimeText(symbol.venue)}</span>
                 <span>{symbol.spreadBps.toFixed(2)} bps</span>
                 <span>{symbol.latencyMs} ms</span>
                 <span>q {symbol.qualityScore.toFixed(1)}</span>
@@ -391,13 +392,13 @@ export function RobotControlCenterApp() {
         />
 
         <LiveFeedList
-          title="Decision pressure"
-          subtitle="Latest intent, risk verdict, and top reasons remain visible before the operator enters deeper replay or explainability screens."
+          title="Posledné rozhodnutia"
+          subtitle="Tu rýchlo vidíš, čo robot naposledy chcel urobiť a čo ho pri tom brzdilo."
           items={featuredDecisions}
           empty={(
             <EmptyState
-              title="No decision records"
-              description="The active run has not emitted decision rows yet."
+              title="Zatiaľ nie sú k dispozícii rozhodnutia"
+              description="Tento beh zatiaľ neposlal žiadne rozhodnutia."
             />
           )}
           renderItem={(decision) => (
@@ -411,7 +412,7 @@ export function RobotControlCenterApp() {
                 <span>conf {decision.confidence.toFixed(2)}</span>
                 <span>edge {decision.expectedEdgeBps.toFixed(1)} bps</span>
               </div>
-              <div className="rtc-inline-note">{decision.topReasons.join(", ") || "no blockers"}</div>
+              <div className="rtc-inline-note">{decision.topReasons.length > 0 ? decision.topReasons.map(humanizeRuntimeText).join(", ") : "bez prekážok"}</div>
             </article>
           )}
         />
@@ -425,9 +426,9 @@ export function RobotControlCenterApp() {
     <div className="rtc-screen-panel">
       <GlassPanel>
         <SectionHeader
-          eyebrow="Loading"
-          title="Bootstrapping cockpit"
-          subtitle="Waiting for authoritative runtime payloads before rendering the operator surface."
+          eyebrow="Načítavam"
+          title="Pripravujem panel"
+          subtitle="Aplikácia čaká na spoľahlivé údaje, aby nezobrazila nič nepresné."
         />
         <SkeletonState blocks={4} />
       </GlassPanel>
@@ -437,9 +438,9 @@ export function RobotControlCenterApp() {
       <section className="rtc-grid rtc-grid-main rtc-grid-main-balanced">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Identity"
-            title="Operator session"
-            subtitle="Local persisted identity is explicit, not hidden. POST controls and incident notes stay blocked until a named operator session is bound."
+            eyebrow="Prihlásenie"
+            title="Kto panel ovláda"
+            subtitle="Najprv musí byť jasné, kto panel používa. Kým nikto nie je prihlásený, dôležité zásahy zostanú zablokované."
           />
 
           <div className="rtc-auth-grid">
@@ -458,30 +459,30 @@ export function RobotControlCenterApp() {
             >
               <div className="rtc-form-grid">
                 <label className="rtc-label">
-                  Operator ID
+                  ID používateľa
                   <input className="rtc-input" value={operatorId} onChange={(event) => setOperatorId(event.target.value)} />
                 </label>
                 <label className="rtc-label">
-                  Display name
+                  Meno
                   <input className="rtc-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
                 </label>
               </div>
 
               <label className="rtc-label">
-                Role
+                Rola
                 <select className="rtc-select" value={role} onChange={(event) => setRole(event.target.value)}>
-                  <option value="operator">operator</option>
-                  <option value="admin">admin</option>
-                  <option value="observer">observer</option>
+                  <option value="operator">operátor</option>
+                  <option value="admin">správca</option>
+                  <option value="observer">pozorovateľ</option>
                 </select>
               </label>
 
               <div className="rtc-button-row">
                 <button className="rtc-button" type="submit">
-                  Persist operator session
+                  Prihlásiť používateľa
                 </button>
                 <button className="rtc-button rtc-button-quiet" type="button" onClick={() => actions.clearIdentity()}>
-                  Clear session
+                  Odhlásiť
                 </button>
               </div>
             </form>
@@ -501,21 +502,21 @@ export function RobotControlCenterApp() {
 
               <div className="rtc-kv">
                 <div className="rtc-kv-row">
-                  <span>Status</span>
+                  <span>Stav</span>
                   <strong>{dashboard.authSummary.status}</strong>
                 </div>
                 <div className="rtc-kv-row">
-                  <span>Session ID</span>
+                  <span>ID relácie</span>
                   <strong>{dashboard.authSummary.sessionId}</strong>
                 </div>
                 <div className="rtc-kv-row">
-                  <span>Control posture</span>
+                  <span>Možnosti ovládania</span>
                   <strong>{controls.statusLine}</strong>
                 </div>
               </div>
 
               <div className="rtc-banner">
-                Destructive controls are blocked unless session status is <strong>active</strong>. This protects audit provenance and avoids anonymous command paths.
+                Nebezpečné zásahy sú povolené až po prihlásení. Je to ochrana proti anonymným zásahom bez stopy v histórii.
               </div>
             </div>
           </div>
@@ -523,22 +524,22 @@ export function RobotControlCenterApp() {
 
         <GlassPanel tone="warn" interactive>
           <SectionHeader
-            eyebrow="Command"
-            title="Control confirmation"
-            subtitle="Routine and destructive actions stay separated. Runtime acknowledgement and currently applied control remain visible together."
+            eyebrow="Ovládanie"
+            title="Potvrdenie zásahu"
+            subtitle="Bežné a rizikové zásahy sú oddelené. Vždy vidíš aj to, čo si poslal, aj čo systém naozaj prijal."
             meta={(
               <div className="rtc-pill-row">
                 <StatusBadge
                   tone={runtimeControls.pendingAction ? "warn" : "good"}
-                  label="send state"
-                  value={runtimeControls.pendingAction ? "pending" : "idle"}
+                  label="odoslanie"
+                  value={runtimeControls.pendingAction ? "prebieha" : "nič nebeží"}
                 />
               </div>
             )}
           />
 
           <label className="rtc-label">
-            Reason text
+            Prečo to robíš
             <input className="rtc-input" value={actionReason} onChange={(event) => setActionReason(event.target.value)} />
           </label>
 
@@ -569,21 +570,21 @@ export function RobotControlCenterApp() {
               auditReference={controls.lastResponse.auditReference ?? "n/a"}
             </div>
           ) : (
-            <p className="rtc-inline-note">No control action sent yet.</p>
+            <p className="rtc-inline-note">Zatiaľ si neposlal žiadny zásah.</p>
           )}
 
           <div className="rtc-kv">
             <div className="rtc-kv-row">
-              <span>Applied runtime control</span>
-              <strong>{shield.appliedControl ? `${shield.appliedControl.action} via ${shield.appliedControl.controlSurface}` : "unavailable"}</strong>
+              <span>Čo momentálne platí</span>
+              <strong>{shield.appliedControl ? `${shield.appliedControl.action} cez ${shield.appliedControl.controlSurface}` : "nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Forced risk mode</span>
-              <strong>{shield.appliedControl?.forcedRiskMode ?? "unavailable"}</strong>
+              <span>Vynútený režim rizika</span>
+              <strong>{shield.appliedControl?.forcedRiskMode ?? "nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Queued operator command</span>
-              <strong>{shield.queuedCommand ? `${shield.queuedCommand.action} / ${shield.queuedCommand.effectiveState}` : "none queued"}</strong>
+              <span>Čakajúci príkaz</span>
+              <strong>{shield.queuedCommand ? `${shield.queuedCommand.action} / ${shield.queuedCommand.effectiveState}` : "nič nečaká"}</strong>
             </div>
           </div>
         </GlassPanel>
@@ -592,18 +593,18 @@ export function RobotControlCenterApp() {
       <section className="rtc-grid rtc-grid-three">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Health"
-            title="Runtime health"
-            subtitle="Bridge, backend, and artifact-fallback state stay explicit so runtime degradation is immediately visible."
+            eyebrow="Stav systému"
+            title="Zdravie systému"
+            subtitle="Tu vidíš, či systém beží, či má spojenie a či sa neopiera len o náhradné dáta."
           />
           <ul className="rtc-list rtc-tight-list">
-            {dashboard.warnings.length > 0 ? dashboard.warnings.map((warning) => <li key={warning}>{warning}</li>) : <li>no active warnings</li>}
+            {dashboard.warnings.length > 0 ? dashboard.warnings.map((warning) => <li key={warning}>{humanizeRuntimeText(warning)}</li>) : <li>žiadne aktívne varovania</li>}
           </ul>
           <div className="rtc-kv">
             {dashboard.healthDetails.map((detail) => (
               <div className="rtc-kv-row" key={detail.label}>
-                <span>{detail.label}</span>
-                <strong>{detail.value}</strong>
+                <span>{humanizeRuntimeText(detail.label)}</span>
+                <strong>{humanizeRuntimeText(detail.value)}</strong>
               </div>
             ))}
           </div>
@@ -611,22 +612,22 @@ export function RobotControlCenterApp() {
 
         <GlassPanel tone={dashboard.blockers.length > 0 ? "danger" : "good"} interactive>
           <SectionHeader
-            eyebrow="Integrity"
-            title="Operational integrity"
-            subtitle="Blockers are first-class. Anything ambiguous stays visible until the runtime can prove otherwise."
+            eyebrow="Spoľahlivosť"
+            title="Spoľahlivosť a blokácie"
+            subtitle="Ak niečo blokuje robot alebo je nejasné, ostane to viditeľné, kým systém nedokáže opak."
           />
           <div className="rtc-pill-row">
             {dashboard.blockers.length > 0
               ? dashboard.blockers.map((blocker) => (
                   <StatusBadge key={blocker} tone="danger" value={blocker} />
                 ))
-              : <StatusBadge tone="good" value="no blockers" />}
+              : <StatusBadge tone="good" value="bez blokácií" />}
           </div>
           <div className="rtc-kv">
             {dashboard.integrityDetails.map((detail) => (
               <div className="rtc-kv-row" key={detail.label}>
-                <span>{detail.label}</span>
-                <strong>{detail.value}</strong>
+                <span>{humanizeRuntimeText(detail.label)}</span>
+                <strong>{humanizeRuntimeText(detail.value)}</strong>
               </div>
             ))}
           </div>
@@ -634,9 +635,9 @@ export function RobotControlCenterApp() {
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Forensics"
-            title="Incident note"
-            subtitle="Note-writing follows the same operator provenance rules as controls and stays coupled to the replay run."
+            eyebrow="Poznámky"
+            title="Poznámka k situácii"
+            subtitle="Aj poznámky sa zapisujú pod menom používateľa a patria ku konkrétnemu behu."
           />
           <form
             className="rtc-form"
@@ -656,7 +657,7 @@ export function RobotControlCenterApp() {
           >
             <div className="rtc-form-grid">
               <label className="rtc-label">
-                Severity
+                Závažnosť
                 <select className="rtc-select" value={incidentSeverity} onChange={(event) => setIncidentSeverity(event.target.value)}>
                   <option value="SEV-1">SEV-1</option>
                   <option value="SEV-2">SEV-2</option>
@@ -664,21 +665,21 @@ export function RobotControlCenterApp() {
                 </select>
               </label>
               <label className="rtc-label">
-                Tags
+                Štítky
                 <input className="rtc-input" value={incidentTags} onChange={(event) => setIncidentTags(event.target.value)} />
               </label>
             </div>
 
             <label className="rtc-label">
-              Note
+              Poznámka
               <textarea className="rtc-textarea" value={incidentNote} onChange={(event) => setIncidentNote(event.target.value)} />
             </label>
 
-            <div className="rtc-inline-note">Deferred preview length: {deferredIncidentNote.length} characters.</div>
+            <div className="rtc-inline-note">Dĺžka textu: {deferredIncidentNote.length} znakov.</div>
 
             <div className="rtc-button-row">
               <button className="rtc-button" disabled={!controls.canWriteIncidentNotes || incidentWriter.pending} type="submit">
-                {incidentWriter.pending ? "Submitting…" : "Write incident note"}
+                {incidentWriter.pending ? "Odosielam…" : "Uložiť poznámku"}
               </button>
             </div>
 
@@ -698,22 +699,22 @@ export function RobotControlCenterApp() {
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Market"
-            title="Market monitor"
-            subtitle="Symbols and decisions are separated so stale or blocked surfaces cannot masquerade as healthy."
+            eyebrow="Trh"
+            title="Prehľad trhu"
+            subtitle="Trhové údaje a rozhodnutia sú oddelené, aby sa staré alebo blokované dáta netvárili zdravo."
           />
           <div className="rtc-table-wrap">
             <table className="rtc-table">
               <thead>
                 <tr>
-                  <th>Symbol</th>
-                  <th>Venue</th>
-                  <th>Bid</th>
-                  <th>Ask</th>
-                  <th>Spread bps</th>
-                  <th>Latency</th>
-                  <th>Quality</th>
-                  <th>Stale</th>
+                  <th>Pár</th>
+                  <th>Burza</th>
+                  <th>Nákupná cena</th>
+                  <th>Predajná cena</th>
+                  <th>Rozdiel ceny (bps)</th>
+                  <th>Odozva</th>
+                  <th>Kvalita</th>
+                  <th>Staré dáta</th>
                 </tr>
               </thead>
               <tbody>
@@ -721,19 +722,19 @@ export function RobotControlCenterApp() {
                   dashboard.symbols.map((symbol) => (
                     <tr key={symbol.symbol}>
                       <td>{symbol.symbol}</td>
-                      <td>{symbol.venue}</td>
+                      <td>{humanizeRuntimeText(symbol.venue)}</td>
                       <td>{symbol.bid.toFixed(2)}</td>
                       <td>{symbol.ask.toFixed(2)}</td>
                       <td>{symbol.spreadBps.toFixed(1)}</td>
                       <td>{symbol.latencyMs} ms</td>
                       <td>{symbol.qualityScore.toFixed(2)}</td>
                       <td>
-                        <StatusBadge tone={symbol.stale ? "warn" : "good"} value={symbol.stale ? "yes" : "no"} subtle />
+                        <StatusBadge tone={symbol.stale ? "warn" : "good"} value={symbol.stale ? "áno" : "nie"} subtle />
                       </td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyTableRow colSpan={8} message="No market snapshots are currently available." />
+                  <EmptyTableRow colSpan={8} message="Momentálne nie sú k dispozícii trhové údaje." />
                 )}
               </tbody>
             </table>
@@ -742,21 +743,21 @@ export function RobotControlCenterApp() {
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Decision"
-            title="Decision feed"
-            subtitle="Risk verdicts, blockers, and last actions remain explicit so control operators can challenge the runtime instead of trusting summaries."
+            eyebrow="Rozhodnutie"
+            title="Prehľad rozhodnutí"
+            subtitle="Tu vidíš, čo robot chcel urobiť, čo mu v tom bránilo a aký bol výsledok rozhodnutia."
           />
           <div className="rtc-table-wrap">
             <table className="rtc-table">
               <thead>
                 <tr>
-                  <th>Symbol</th>
-                  <th>Intent</th>
-                  <th>Confidence</th>
-                  <th>Edge</th>
-                  <th>Verdict</th>
-                  <th>Blockers</th>
-                  <th>Last action</th>
+                  <th>Pár</th>
+                  <th>Zámer</th>
+                  <th>Istota</th>
+                  <th>Výhoda</th>
+                  <th>Výsledok</th>
+                  <th>Prekážky</th>
+                  <th>Posledná akcia</th>
                 </tr>
               </thead>
               <tbody>
@@ -764,18 +765,18 @@ export function RobotControlCenterApp() {
                   dashboard.decisions.map((decision) => (
                     <tr key={decision.id}>
                       <td>{decision.symbol}</td>
-                      <td>{decision.intent}</td>
+                      <td>{humanizeRuntimeText(decision.intent)}</td>
                       <td>{decision.confidence.toFixed(2)}</td>
                       <td>{decision.expectedEdgeBps} bps</td>
                       <td>
                         <StatusBadge tone={toneFromVerdict(decision.riskVerdict)} value={decision.riskVerdict} subtle />
                       </td>
-                      <td>{decision.blockers.join(", ") || "none"}</td>
-                      <td>{decision.lastAction}</td>
+                      <td>{decision.blockers.length > 0 ? decision.blockers.map(humanizeRuntimeText).join(", ") : "žiadne"}</td>
+                      <td>{humanizeRuntimeText(decision.lastAction)}</td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyTableRow colSpan={7} message="No decision records are currently available." />
+                  <EmptyTableRow colSpan={7} message="Momentálne nie sú k dispozícii žiadne rozhodnutia." />
                 )}
               </tbody>
             </table>
@@ -786,18 +787,18 @@ export function RobotControlCenterApp() {
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Alerts"
-            title="Alert feed"
-            subtitle="Critical alerts should bias toward freeze or flatten, not silent continuation."
+            eyebrow="Upozornenia"
+            title="Prehľad upozornení"
+            subtitle="Kritické upozornenia majú smerovať k zastaveniu alebo zníženiu rizika, nie k tichému pokračovaniu."
           />
           <div className="rtc-table-wrap">
             <table className="rtc-table">
               <thead>
                 <tr>
-                  <th>Severity</th>
-                  <th>Module</th>
-                  <th>Message</th>
-                  <th>Timestamp</th>
+                  <th>Závažnosť</th>
+                  <th>Modul</th>
+                  <th>Správa</th>
+                  <th>Čas</th>
                 </tr>
               </thead>
               <tbody>
@@ -807,13 +808,13 @@ export function RobotControlCenterApp() {
                       <td>
                         <StatusBadge tone={toneFromSeverity(alert.severity)} value={alert.severity} subtle />
                       </td>
-                      <td>{alert.module}</td>
-                      <td>{alert.message}</td>
+                      <td>{humanizeRuntimeText(alert.module)}</td>
+                      <td>{humanizeRuntimeText(alert.message)}</td>
                       <td>{formatMoment(alert.ts)}</td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyTableRow colSpan={4} message="No alerts are currently available." />
+                  <EmptyTableRow colSpan={4} message="Momentálne nie sú k dispozícii žiadne upozornenia." />
                 )}
               </tbody>
             </table>
@@ -822,9 +823,9 @@ export function RobotControlCenterApp() {
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Replay"
-            title="Replay lab"
-            subtitle="Forensics surfaces remain attached to the active run so incident review starts from evidence, not memory."
+            eyebrow="História"
+            title="Čo sa stalo"
+            subtitle="Táto časť ukazuje priebeh a súvislosti pre vybraný beh, aby si sa opieral o dôkazy, nie o domnienky."
           />
           <div className="rtc-badges">
             {replay.summary.map((badge) => (
@@ -833,25 +834,25 @@ export function RobotControlCenterApp() {
           </div>
           <div className="rtc-mini-grid">
             <div>
-              <h3 className="rtc-section-title">Timeline</h3>
+              <h3 className="rtc-section-title">Časová os</h3>
               <div className="rtc-timeline">
                 {replay.timeline.map((item) => (
                   <div className="rtc-timeline-item" key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>
+                    <strong>{humanizeRuntimeText(item.label)}</strong>
                     <div className="rtc-inline-note">{item.ts}</div>
-                    <div>{item.detail}</div>
+                    <div>{humanizeRuntimeText(item.detail)}</div>
                   </div>
                 ))}
               </div>
             </div>
             <div>
-              <h3 className="rtc-section-title">Incidents</h3>
+              <h3 className="rtc-section-title">Udalosti</h3>
               <div className="rtc-timeline">
                 {replay.incidents.map((item) => (
                   <div className="rtc-timeline-item" key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>
+                    <strong>{humanizeRuntimeText(item.label)}</strong>
                     <div className="rtc-inline-note">{item.ts}</div>
-                    <div>{item.detail}</div>
+                    <div>{humanizeRuntimeText(item.detail)}</div>
                   </div>
                 ))}
               </div>
@@ -859,21 +860,21 @@ export function RobotControlCenterApp() {
           </div>
           <div className="rtc-mini-grid">
             <div>
-              <h3 className="rtc-section-title">Analog matches</h3>
+              <h3 className="rtc-section-title">Podobné situácie</h3>
               <ul className="rtc-list">
                 {replay.analogMatches.map((item) => (
                   <li key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>: {item.detail}
+                    <strong>{humanizeRuntimeText(item.label)}</strong>: {humanizeRuntimeText(item.detail)}
                   </li>
                 ))}
               </ul>
             </div>
             <div>
-              <h3 className="rtc-section-title">Counterfactuals</h3>
+              <h3 className="rtc-section-title">Čo by bolo keby</h3>
               <ul className="rtc-list">
                 {replay.counterfactuals.map((item) => (
                   <li key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>: {item.detail}
+                    <strong>{humanizeRuntimeText(item.label)}</strong>: {humanizeRuntimeText(item.detail)}
                   </li>
                 ))}
               </ul>
@@ -881,21 +882,21 @@ export function RobotControlCenterApp() {
           </div>
           <div className="rtc-mini-grid">
             <div>
-              <h3 className="rtc-section-title">PnL attribution</h3>
+              <h3 className="rtc-section-title">Rozpad výsledku</h3>
               <ul className="rtc-list">
                 {replay.pnlAttribution.map((item) => (
                   <li key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>: {item.detail}
+                    <strong>{humanizeRuntimeText(item.label)}</strong>: {humanizeRuntimeText(item.detail)}
                   </li>
                 ))}
               </ul>
             </div>
             <div>
-              <h3 className="rtc-section-title">Notes</h3>
+              <h3 className="rtc-section-title">Poznámky</h3>
               <ul className="rtc-list">
                 {replay.notes.map((item) => (
                   <li key={`${item.label}-${item.ts}`}>
-                    <strong>{item.label}</strong>: {item.detail}
+                    <strong>{humanizeRuntimeText(item.label)}</strong>: {humanizeRuntimeText(item.detail)}
                   </li>
                 ))}
               </ul>
@@ -907,9 +908,9 @@ export function RobotControlCenterApp() {
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Runbook"
-            title="Runbook alignment"
-            subtitle="Procedures are visible in-product so operator action, incident notes, and replay review stay coupled."
+            eyebrow="Postupy"
+            title="Odporúčaný postup"
+            subtitle="Odporúčané kroky sú priamo v aplikácii, aby si mal postup po ruke pri zásahu aj pri spätnej kontrole."
           />
           <div className="rtc-procedure-grid">
             {contract.runbook.procedures.map((procedure) => (
@@ -923,7 +924,7 @@ export function RobotControlCenterApp() {
               </GlassPanel>
             ))}
           </div>
-          <h3 className="rtc-section-title">Replay checklist</h3>
+          <h3 className="rtc-section-title">Kontrolný zoznam pri spätnej kontrole</h3>
           <ol className="rtc-list">
             {contract.runbook.replayChecklist.map((step) => (
               <li key={step}>{step}</li>
@@ -933,31 +934,31 @@ export function RobotControlCenterApp() {
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Release"
-            title="macOS release readiness"
-            subtitle="This path is scriptable and explicit, but still blocked on Apple-controlled external inputs."
+            eyebrow="Vydanie aplikácie"
+            title="Pripravenosť verzie pre macOS"
+            subtitle="Tento postup je pripravený, ale niektoré posledné kroky stále závisia od Apple."
           />
           <div className="rtc-release-grid">
             <div>
               <div className="rtc-pill-row">
-                <StatusBadge tone={release.status === "ready" ? "good" : "warn"} value={`release status: ${release.status}`} />
+                <StatusBadge tone={release.status === "ready" ? "good" : "warn"} value={`stav vydania: ${release.status}`} />
                 <StatusBadge tone="info" value={`bundleId: ${release.bundleId}`} />
               </div>
               <div className="rtc-kv">
                 {release.checklist.map((item) => (
                   <div className="rtc-kv-row" key={item.label}>
                     <span>{item.label}</span>
-                    <strong>{item.satisfied ? "configured" : item.detail}</strong>
+                    <strong>{item.satisfied ? "nastavené" : humanizeRuntimeText(item.detail)}</strong>
                   </div>
                 ))}
               </div>
             </div>
             <div>
-              <h3 className="rtc-section-title">Exact commands</h3>
+              <h3 className="rtc-section-title">Presné príkazy</h3>
               <div className="rtc-code">{release.exactCommands.join("\n")}</div>
               {release.missingInputs.length > 0 ? (
                 <>
-                  <h3 className="rtc-section-title">Missing external inputs</h3>
+                  <h3 className="rtc-section-title">Chýbajúce externé vstupy</h3>
                   <ul className="rtc-list">
                     {release.missingInputs.map((item) => (
                       <li key={item}>{item}</li>
@@ -983,9 +984,9 @@ export function RobotControlCenterApp() {
       ? (
           <GlassPanel>
             <SectionHeader
-              eyebrow="Loading"
-              title="Loading brain evidence"
-              subtitle="Waiting for decision and explainability artifacts."
+              eyebrow="Načítavam"
+              title="Načítavam vysvetlenie rozhodnutí"
+              subtitle="Čakám na údaje, ktoré vysvetľujú, prečo sa robot rozhodol takto."
             />
             <SkeletonState blocks={3} />
           </GlassPanel>
@@ -996,9 +997,9 @@ export function RobotControlCenterApp() {
       ? (
           <GlassPanel>
             <SectionHeader
-              eyebrow="Loading"
-              title="Loading shield posture"
-              subtitle="Waiting for safety, guard, and trust evidence."
+              eyebrow="Načítavam"
+              title="Načítavam bezpečnostný stav"
+              subtitle="Čakám na údaje o bezpečnosti, ochranných pravidlách a dôvere."
             />
             <SkeletonState blocks={3} />
           </GlassPanel>
@@ -1019,9 +1020,9 @@ export function RobotControlCenterApp() {
       ? (
           <GlassPanel>
             <SectionHeader
-              eyebrow="Loading"
-              title="Loading execution telemetry"
-              subtitle="Waiting for order, venue, and account artifacts."
+              eyebrow="Načítavam"
+              title="Načítavam priebeh obchodov"
+              subtitle="Čakám na údaje o pokynoch, burze a účte."
             />
             <SkeletonState blocks={3} />
           </GlassPanel>
@@ -1066,12 +1067,12 @@ export function RobotControlCenterApp() {
       <ConfirmationSheet
         open={confirmAction !== null}
         tone={confirmAction ? controlCopy[confirmAction].tone : "warn"}
-        title={confirmAction ? controlCopy[confirmAction].confirmTitle : "Confirm action"}
-        subtitle={confirmAction ? controlCopy[confirmAction].confirmSubtitle : "Review the operator reason before continuing."}
+        title={confirmAction ? controlCopy[confirmAction].confirmTitle : "Potvrď zásah"}
+        subtitle={confirmAction ? controlCopy[confirmAction].confirmSubtitle : "Pred pokračovaním si ešte raz skontroluj dôvod zásahu."}
         detail={confirmAction ? controlCopy[confirmAction].detail : undefined}
         reason={actionReason}
         auditNote={`${dashboard.authSummary.operatorLabel} / ${dashboard.authSummary.sessionId}`}
-        confirmLabel={confirmAction ? controlCopy[confirmAction].confirmLabel : "Confirm"}
+        confirmLabel={confirmAction ? controlCopy[confirmAction].confirmLabel : "Potvrdiť"}
         onCancel={() => setConfirmAction(null)}
         onConfirm={() => {
           if (confirmAction) {

@@ -24,40 +24,40 @@ export function buildControlsContract({
 
   return {
     statusLine: hasActiveOperator
-      ? `Operator ${auth.displayName || auth.operatorId} is bound to session ${auth.sessionId}.`
-      : "No active operator identity. All destructive commands are blocked.",
+      ? `Používateľ ${auth.displayName || auth.operatorId} je prihlásený v relácii ${auth.sessionId}.`
+      : "Nikto nie je prihlásený. Nebezpečné príkazy sú preto zablokované.",
     provenanceLine: `auth=${auth.authSource} status=${auth.status} provider=${auth.providerStatus}`,
     canWriteIncidentNotes: hasActiveOperator,
     actions: [
       {
         action: "pause",
-        label: "Pause",
+        label: "Pozastaviť",
         enabled: hasActiveOperator,
         tone: "warn",
-        disabledReason: hasActiveOperator ? undefined : "Authenticated operator required.",
+        disabledReason: hasActiveOperator ? undefined : "Treba sa najprv prihlásiť ako operátor.",
       },
       {
         action: "resume",
-        label: "Resume",
+        label: "Pokračovať",
         enabled: hasActiveOperator && !resumeBlockedByRuntime,
         tone: "good",
         disabledReason: !hasActiveOperator
-          ? "Authenticated operator required."
-          : "Health and integrity must be clear before resuming.",
+          ? "Treba sa najprv prihlásiť ako operátor."
+          : "Pred pokračovaním musí byť stav systému bez blokujúcich problémov.",
       },
       {
         action: "freeze",
-        label: "Freeze",
+        label: "Zmraziť",
         enabled: hasActiveOperator,
         tone: "warn",
-        disabledReason: hasActiveOperator ? undefined : "Authenticated operator required.",
+        disabledReason: hasActiveOperator ? undefined : "Treba sa najprv prihlásiť ako operátor.",
       },
       {
         action: "flatten",
-        label: "Emergency Flatten",
+        label: "Núdzovo zavrieť",
         enabled: hasActiveOperator,
         tone: "danger",
-        disabledReason: hasActiveOperator ? undefined : "Authenticated operator required.",
+        disabledReason: hasActiveOperator ? undefined : "Treba sa najprv prihlásiť ako operátor.",
       },
     ],
     lastResponse,

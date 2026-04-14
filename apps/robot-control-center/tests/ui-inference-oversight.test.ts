@@ -13,40 +13,40 @@ const oversight: UiInferenceContract = {
   surfaces: [
     {
       id: "command",
-      label: "Command Center",
+      label: "Hlavný panel",
       status: "contained",
       directEvidenceCount: 12,
       derivedFieldCount: 0,
       unavailableFieldCount: 0,
       linkedArtifactCount: 0,
-      notes: ["Command Center is bound to runtime summary and telemetry payloads."],
+      notes: ["Hlavný panel je naviazaný na runtime summary a telemetrické payloady."],
     },
     {
       id: "brain",
-      label: "Brain",
+      label: "Rozhodovanie",
       status: "watch",
       directEvidenceCount: 18,
       derivedFieldCount: 3,
       unavailableFieldCount: 4,
       linkedArtifactCount: 6,
-      notes: ["Derived next-eligible hints are tagged explicitly."],
+      notes: ["Odvodené rady pre ďalší krok sú výslovne označené."],
     },
   ],
   rules: [
     {
-      label: "Runtime source explicit",
+      label: "Zdroj dát je jasný",
       status: "pass",
-      detail: "UI is bound to runtime API data.",
+      detail: "UI je naviazané na údaje z runtime API.",
     },
     {
-      label: "Derived fields disclosed",
+      label: "Odvodené polia sú priznané",
       status: "pass",
-      detail: "6 derived fields are explicitly tagged across the cockpit.",
+      detail: "V paneli je výslovne označených 6 odvodených polí.",
     },
   ],
   notes: [
-    "Runtime API is the active truth path for the cockpit.",
-    "Unavailable values remain explicit so the UI never fabricates hidden confidence.",
+    "Runtime API je aktívna cesta pravdy pre celý panel.",
+    "Chýbajúce hodnoty ostávajú priznané, takže UI si nevymýšľa skrytú istotu.",
   ],
 };
 
@@ -56,12 +56,12 @@ describe("UiInferenceOversight", () => {
       React.createElement(UiInferenceOversight, { oversight }),
     );
 
-    expect(html).toContain("UI inference oversight");
-    expect(html).toContain("Derived fields");
-    expect(html).toContain("Unavailable values");
-    expect(html).toContain("Command Center");
-    expect(html).toContain("Brain");
-    expect(html).toContain("Oversight checks");
-    expect(html).toContain("6 derived fields are explicitly tagged across the cockpit.");
+    expect(html).toContain("Dohľad nad tým, čo si UI iba odvodilo");
+    expect(html).toContain("Odvodené polia");
+    expect(html).toContain("Chýbajúce hodnoty");
+    expect(html).toContain("Hlavný panel");
+    expect(html).toContain("Rozhodovanie");
+    expect(html).toContain("Kontroly pravdivosti");
+    expect(html).toContain("V paneli je výslovne označených 6 odvodených polí.");
   });
 });

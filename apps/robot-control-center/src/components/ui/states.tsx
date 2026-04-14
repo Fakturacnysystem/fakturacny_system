@@ -19,7 +19,7 @@ interface StateProps {
 export function EmptyState({ title, description, detail, className }: StateProps) {
   return (
     <motion.div {...fadeUp} transition={{ duration: motionDurations.fast, ease: motionEase }} className={cx("rtc-state-empty", className)}>
-      <SectionHeader eyebrow="Empty" title={title} subtitle={description} compact />
+      <SectionHeader eyebrow="Prázdny stav" title={title} subtitle={description} compact />
       {detail ? <p className="rtc-inline-note">{detail}</p> : null}
     </motion.div>
   );
@@ -28,7 +28,7 @@ export function EmptyState({ title, description, detail, className }: StateProps
 export function ErrorState({ title, description, detail, className }: StateProps) {
   return (
     <motion.div {...fadeUp} transition={{ duration: motionDurations.fast, ease: motionEase }} className={cx("rtc-state-error", className)}>
-      <SectionHeader eyebrow="Error" title={title} subtitle={description} compact />
+      <SectionHeader eyebrow="Chyba" title={title} subtitle={description} compact />
       {detail ? <div className="rtc-banner rtc-banner-compact" data-tone="danger">{detail}</div> : null}
     </motion.div>
   );

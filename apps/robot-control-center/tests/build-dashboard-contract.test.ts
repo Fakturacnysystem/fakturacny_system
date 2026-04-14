@@ -91,10 +91,10 @@ describe("buildDashboardContract", () => {
       source: "runtime-api",
     });
 
-    expect(contract.runId).toBe("awaiting-authoritative-summary");
+    expect(contract.runId).toBe("čaká-sa-na-spoľahlivé-údaje");
     expect(contract.lastUpdatedAt).toBe("");
-    expect(contract.metrics[0]?.value).toBe("Awaiting");
-    expect(contract.metrics[2]?.value).toBe("Pending");
+    expect(contract.metrics[0]?.value).toBe("Čaká sa");
+    expect(contract.metrics[2]?.value).toBe("Čaká sa");
     expect(contract.runtimeIdentity.pinIntegrityStatus).toBe("unresolved");
   });
 });

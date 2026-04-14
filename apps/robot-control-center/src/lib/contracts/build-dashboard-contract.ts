@@ -17,7 +17,7 @@ import type {
 import type { RuntimeAuthSnapshot } from "@/lib/auth/runtime-auth";
 
 function formatMoney(value: number): string {
-  return new Intl.NumberFormat("en-GB", {
+  return new Intl.NumberFormat("sk-SK", {
     style: "currency",
     currency: "EUR",
     maximumFractionDigits: 2,
@@ -25,7 +25,7 @@ function formatMoney(value: number): string {
 }
 
 function formatNumber(value: number, suffix = ""): string {
-  return `${new Intl.NumberFormat("en-GB", {
+  return `${new Intl.NumberFormat("sk-SK", {
     maximumFractionDigits: 2,
   }).format(value)}${suffix}`;
 }
@@ -63,15 +63,15 @@ function toneFromHealth(health: HealthState, integrity: IntegrityState): Runtime
 function authStatusLabel(snapshot: RuntimeAuthSnapshot): string {
   switch (snapshot.status) {
     case "active":
-      return "authenticated";
+      return "prihlásený";
     case "expired":
-      return "expired";
+      return "vypršané";
     case "invalid":
-      return "invalid";
+      return "neplatné";
     case "provider-unavailable":
-      return "provider unavailable";
+      return "služba nedostupná";
     default:
-      return "anonymous";
+      return "anonym";
   }
 }
 
@@ -109,40 +109,40 @@ export function buildDashboardContract({
         : "warn";
   const latencyHint = summary.bridge.restHealthy
     ? summary.bridge.wsConnected
-      ? "Runtime API live via REST + event feed"
-      : "Runtime API live via REST polling"
-    : "Runtime connectivity degraded";
+      ? "Údaje idú cez REST aj živý stream"
+      : "Údaje idú cez pravidelné načítavanie"
+    : "Spojenie so systémom je oslabené";
   const subtitle =
     awaitingAuthoritativeSummary
-      ? "Runtime API is configured and bootstrap is in progress. RCC keeps waiting explicit so no synthetic zero-state can masquerade as authoritative runtime truth."
+      ? "Aplikácia čaká na prvé spoľahlivé údaje. Kým neprídu, nič si nevymýšľa a radšej ukáže, že ešte čaká."
       : source === "runtime-api"
-      ? "Runtime API is the active truth path. Any unavailable payload stays explicit so operators never see synthetic fallback disguised as live state."
-      : "Runtime API is not configured. RCC is intentionally in explicit mock mode so operational truth boundaries remain visible.";
+      ? "Toto sú skutočné údaje z runtime API. Keď niečo chýba, panel to prizná nahlas a nevydáva to za živý stav."
+      : "Runtime API nie je nastavené. Panel preto beží v skúšobnom režime a jasne to priznáva.";
   const badges: ContractBadge[] = [
-    { label: "Source", value: source, tone: sourceTone },
-    { label: "Run lock", value: summary.runtimeIdentity.runSelectionMode, tone: selectionTone },
-    { label: "Bridge", value: summary.bridge.health_status, tone: primaryTone },
-    { label: "Auth", value: authStatusLabel(auth), tone: auth.status === "active" ? "good" : "warn" },
-    { label: "Mode", value: summary.mode, tone: "info" },
+    { label: "Zdroj", value: source, tone: sourceTone },
+    { label: "Výber behu", value: summary.runtimeIdentity.runSelectionMode, tone: selectionTone },
+    { label: "Stav spojenia", value: summary.bridge.health_status, tone: primaryTone },
+    { label: "Prihlásenie", value: authStatusLabel(auth), tone: auth.status === "active" ? "good" : "warn" },
+    { label: "Režim", value: summary.mode, tone: "info" },
   ];
 
   const metrics: MetricCard[] = [
     {
-      label: "Equity",
-      value: awaitingAuthoritativeSummary ? "Awaiting" : formatMoney(summary.portfolio.equityEur),
+      label: "Hodnota účtu",
+      value: awaitingAuthoritativeSummary ? "Čaká sa" : formatMoney(summary.portfolio.equityEur),
       hint: awaitingAuthoritativeSummary
-        ? "Authoritative portfolio summary pending"
-        : `Free cash ${formatMoney(summary.portfolio.freeCashEur)}`,
+        ? "Čaká sa na súhrn peňazí v účte"
+        : `Voľné peniaze ${formatMoney(summary.portfolio.freeCashEur)}`,
       tone: awaitingAuthoritativeSummary ? "info" : "good",
     },
     {
-      label: "Exposure",
+      label: "Otvorené obchody",
       value: awaitingAuthoritativeSummary
-        ? "Awaiting"
-        : `${summary.portfolio.openPositions} positions`,
+        ? "Čaká sa"
+        : `${summary.portfolio.openPositions} otvorených pozícií`,
       hint: awaitingAuthoritativeSummary
-        ? "Position and order truth pending"
-        : `${summary.portfolio.openOrders} open orders`,
+        ? "Čaká sa na stav pozícií a objednávok"
+        : `${summary.portfolio.openOrders} otvorených pokynov`,
       tone: awaitingAuthoritativeSummary
         ? "info"
         : summary.portfolio.openPositions > 0
@@ -150,32 +150,32 @@ export function buildDashboardContract({
           : "info",
     },
     {
-      label: "Latency",
+      label: "Odozva",
       value: awaitingAuthoritativeSummary
-        ? "Pending"
+        ? "Čaká sa"
         : formatNumber(summary.bridge.avgLatencyMs, " ms"),
       hint: awaitingAuthoritativeSummary
-        ? "Waiting for authoritative summary bootstrap"
+        ? "Čaká sa na prvé spoľahlivé údaje"
         : latencyHint,
       tone: awaitingAuthoritativeSummary ? "info" : latencyTone,
     },
     {
-      label: "Uptime",
-      value: awaitingAuthoritativeSummary ? "Awaiting" : formatDuration(summary.uptimeSec),
+      label: "Ako dlho beží",
+      value: awaitingAuthoritativeSummary ? "Čaká sa" : formatDuration(summary.uptimeSec),
       hint: awaitingAuthoritativeSummary
-        ? "Provider identity pending"
-        : `Provider ${summary.providerId}`,
+        ? "Čaká sa na identitu zdroja dát"
+        : `Zdroj ${summary.providerId}`,
       tone: "info",
     },
     {
-      label: "Capital utilization",
+      label: "Využitie kapitálu",
       value:
         awaitingAuthoritativeSummary || summary.performance?.capitalUtilizationPct == null
-          ? "Awaiting"
+          ? "Čaká sa"
           : formatNumber(summary.performance.capitalUtilizationPct, "%"),
       hint: awaitingAuthoritativeSummary
-        ? "Waiting for capital envelope diagnostics"
-        : "Deployable capital currently in use",
+        ? "Čaká sa na údaje o využití kapitálu"
+        : "Koľko kapitálu je práve zapojeného",
       tone:
         awaitingAuthoritativeSummary
           ? "info"
@@ -184,14 +184,14 @@ export function buildDashboardContract({
             : "warn",
     },
     {
-      label: "Expectancy",
+      label: "Očakávaný výsledok",
       value:
         awaitingAuthoritativeSummary || summary.performance?.netExpectancyBps == null
-          ? "Awaiting"
+          ? "Čaká sa"
           : formatNumber(summary.performance.netExpectancyBps, " bps"),
       hint: awaitingAuthoritativeSummary
-        ? "Expectancy engine not loaded yet"
-        : "Rolling net expectancy after modeled costs",
+        ? "Čaká sa na odhad výsledku"
+        : "Priebežný odhad po započítaní nákladov",
       tone:
         awaitingAuthoritativeSummary
           ? "info"
@@ -200,14 +200,14 @@ export function buildDashboardContract({
             : "warn",
     },
     {
-      label: "Fill rate",
+      label: "Úspešnosť pokynov",
       value:
         awaitingAuthoritativeSummary || summary.performance?.fillRate == null
-          ? "Awaiting"
+          ? "Čaká sa"
           : formatNumber((summary.performance.fillRate ?? 0) * 100, "%"),
       hint: awaitingAuthoritativeSummary
-        ? "Waiting for execution-quality telemetry"
-        : "Observed order-to-fill conversion",
+        ? "Čaká sa na kvalitu realizácie"
+        : "Koľko pokynov sa naozaj premenilo na obchod",
       tone:
         awaitingAuthoritativeSummary
           ? "info"
@@ -216,14 +216,14 @@ export function buildDashboardContract({
             : "warn",
     },
     {
-      label: "Maker ratio",
+      label: "Podiel výhodnejších pokynov",
       value:
         awaitingAuthoritativeSummary || summary.performance?.makerRatio == null
-          ? "Awaiting"
+          ? "Čaká sa"
           : formatNumber((summary.performance.makerRatio ?? 0) * 100, "%"),
       hint: awaitingAuthoritativeSummary
-        ? "Waiting for maker/taker mix report"
-        : "Maker-first execution share",
+        ? "Čaká sa na rozdelenie typov pokynov"
+        : "Podiel pokynov, ktoré mali nižší poplatok",
       tone:
         awaitingAuthoritativeSummary
           ? "info"
@@ -232,13 +232,13 @@ export function buildDashboardContract({
             : "warn",
     },
     {
-      label: "Target gap",
+      label: "Koľko cieľov mešká",
       value: awaitingAuthoritativeSummary
-        ? "Awaiting"
-        : formatNumber(Object.keys(summary.performance?.targetGap ?? {}).length, " gaps"),
+        ? "Čaká sa"
+        : formatNumber(Object.keys(summary.performance?.targetGap ?? {}).length, " cieľov"),
       hint: awaitingAuthoritativeSummary
-        ? "Waiting for performance target translation"
-        : "Number of active target shortfall dimensions",
+        ? "Čaká sa na porovnanie s cieľmi"
+        : "Počet oblastí, kde je robot pod cieľom",
       tone:
         awaitingAuthoritativeSummary
           ? "info"
@@ -255,10 +255,10 @@ export function buildDashboardContract({
   ];
 
   return {
-    title: "Robot Control Center",
+    title: "Riadiaci panel robota",
     subtitle,
     source,
-    runId: awaitingAuthoritativeSummary ? "awaiting-authoritative-summary" : summary.runId,
+    runId: awaitingAuthoritativeSummary ? "čaká-sa-na-spoľahlivé-údaje" : summary.runId,
     mode: summary.mode,
     lastUpdatedAt: awaitingAuthoritativeSummary ? "" : summary.bridge.lastUpdatedAt,
     runtimeIdentity: {
@@ -296,7 +296,7 @@ export function buildDashboardContract({
     blockers: integrity.blockers,
     authSummary: {
       status: authStatusLabel(auth),
-      operatorLabel: auth.displayName || auth.operatorId || "No operator bound",
+      operatorLabel: auth.displayName || auth.operatorId || "Nikto nie je prihlásený",
       role: auth.role,
       sessionId: auth.sessionId,
       authSource: auth.authSource,

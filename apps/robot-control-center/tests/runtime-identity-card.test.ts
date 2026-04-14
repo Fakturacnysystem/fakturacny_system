@@ -68,7 +68,7 @@ describe("RuntimeIdentityCard", () => {
       }),
     );
 
-    expect(html).toContain("Pinned run is unresolved or failed integrity checks");
+    expect(html).toContain("Pripnutý beh sa nepodarilo spoľahlivo nájsť alebo neprešiel kontrolou");
     expect(html).toContain("run_not_found");
     expect(html).toContain("unresolved");
   });
@@ -85,7 +85,7 @@ describe("RuntimeIdentityCard", () => {
       }),
     );
 
-    expect(html).toContain("Runtime identity mismatch detected across endpoints or replay evidence");
+    expect(html).toContain("Niektoré časti aplikácie ukazujú iný beh alebo inú históriu");
     expect(html).toContain("runtime_identity_mismatch:replay");
     expect(html).toContain("replay_run_mismatch:another-run");
   });
@@ -116,9 +116,9 @@ describe("RuntimeIdentityCard", () => {
       }),
     );
 
-    expect(html).toContain("Run selector");
-    expect(html).toContain("Pin selected run");
-    expect(html).toContain("Track latest");
+    expect(html).toContain("Vyber sledovaný beh");
+    expect(html).toContain("Pripnúť vybraný beh");
+    expect(html).toContain("Sledovať najnovší");
     expect(html).toContain("kraken_spot_live_profit09 · live · healthy");
   });
 });

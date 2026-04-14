@@ -16,22 +16,22 @@ export function buildReplayContract(
     lastUpdatedAt: replay.lastUpdatedAt,
     summary: [
       {
-        label: "Timeline items",
+        label: "Položky časovej osi",
         value: String(replay.timeline.length),
         tone: "info",
       },
       {
-        label: "Incidents",
+        label: "Incidenty",
         value: String(replay.incidents.length),
         tone: replay.incidents.length > 0 ? "warn" : "good",
       },
       {
-        label: "Critical alerts",
+        label: "Kritické upozornenia",
         value: String(criticalAlerts),
         tone: criticalAlerts > 0 ? "danger" : "good",
       },
       {
-        label: "Counterfactuals",
+        label: "Alternatívne scenáre",
         value: String(replay.counterfactuals.length),
         tone: "info",
       },

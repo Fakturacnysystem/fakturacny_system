@@ -78,6 +78,7 @@ from autonomous_investment_robot.services.runtime_metadata.service import Runtim
 from autonomous_investment_robot.services.performance_target_translation.service import PerformanceTargetTranslationService
 from autonomous_investment_robot.services.market_microstructure.service import MarketMicrostructureService
 from autonomous_investment_robot.services.universe.service import MarketUniverseService
+from autonomous_investment_robot.services.universe.clustering import cluster_pairs
 from autonomous_investment_robot.services.autonomous_decision.service import AutonomousDecisionService
 from autonomous_investment_robot.services.expectancy_engine.service import ExpectancyEngineService
 from autonomous_investment_robot.services.experiments.service import ExperimentsService
@@ -279,7 +280,11 @@ class RobotOrchestrator:
         )
         self._live_runtime_diagnostics = self._fresh_live_runtime_diagnostics()
         self._last_live_preflight_ok = False
+        self._last_live_preflight_reason = ""
         self._last_live_ordering_allowed = False
+        self._last_live_restart_confidence = "insufficient"
+        self._last_live_recovery_action = "degrade"
+        self._last_live_truth_confidence_action = "degrade"
         self._last_live_blocking_reasons: list[str] = []
 
     def _legacy_policy_why(self, why: dict) -> dict:
@@ -725,6 +730,303 @@ class RobotOrchestrator:
             **experiments_bundle,
             **dead_capital_bundle,
         }
+
+    def _module_value_artifacts(
+        self,
+        *,
+        symbol: str,
+        market: object,
+        decision_ctx: object,
+        performance_artifacts: dict[str, object],
+    ) -> dict[str, object]:
+        policy = getattr(decision_ctx, "policy_decision", None)
+        why = getattr(policy, "why", {}) if policy is not None and isinstance(getattr(policy, "why", None), dict) else {}
+        veto = why.get("veto_attribution", {}) if isinstance(why.get("veto_attribution", {}), dict) else {}
+        waterfall = why.get("decision_waterfall", []) if isinstance(why.get("decision_waterfall", []), list) else []
+        trade_admission = why.get("trade_admission", {}) if isinstance(why.get("trade_admission", {}), dict) else {}
+        false_negative = performance_artifacts.get("false_negative_report", {}) if isinstance(performance_artifacts.get("false_negative_report", {}), dict) else {}
+        backlog = performance_artifacts.get("opportunity_backlog_report", {}) if isinstance(performance_artifacts.get("opportunity_backlog_report", {}), dict) else {}
+        selected_candidate = performance_artifacts.get("selected_candidate", {}) if isinstance(performance_artifacts.get("selected_candidate", {}), dict) else {}
+
+        modules: dict[str, dict[str, object]] = {}
+        for name, key, role in [
+            ("market_watch", "market_watch", "authoritative_input"),
+            ("mastermind", "mastermind", "advisory"),
+            ("event_intelligence", "event_intelligence", "advisory"),
+            ("synthetic_affect", "synthetic_affect", "advisory"),
+            ("capital_sovereignty", "capital_sovereignty", "authoritative_input"),
+            ("execution_simulation", "execution_simulation", "advisory"),
+            ("decision_doctrine", "decision_doctrine", "authoritative_input"),
+            ("trade_admission", "trade_admission", "authoritative_input"),
+            ("spre", "spre", "advisory"),
+            ("shadow_rival", "shadow_rival", "advisory"),
+        ]:
+            payload = why.get(key, {})
+            invoked = 1 if isinstance(payload, dict) and payload else 0
+            reasons = list(payload.get("reasons", payload.get("rationale", [])) or []) if isinstance(payload, dict) else []
+            action = str(payload.get("recommended_action", payload.get("action", payload.get("decision", payload.get("dominant_action", "continue")))) or "continue") if isinstance(payload, dict) else "continue"
+            influence = 1 if action not in {"continue", "trade", "hold"} or reasons else 0
+            veto_count = 1 if str(veto.get("primary_veto", "") or "") and key in {row.get("layer") for row in waterfall if isinstance(row, dict)} and action in {"no_trade", "wait", "manual_review", "flatten_only"} else 0
+            modules[name] = {
+                "role": role,
+                "invocation_count": invoked,
+                "influence_count": influence,
+                "veto_count": veto_count,
+                "action": action,
+                "reasons": reasons[:8],
+                "authoritative": role == "authoritative_input",
+            }
+        modules["opportunity_scheduler"] = {
+            "role": "authoritative_input" if len(self.settings.market_universe.pair_universe or self.settings.universe) > 1 else "disabled",
+            "invocation_count": 1,
+            "influence_count": 1 if selected_candidate else 0,
+            "veto_count": 0,
+            "action": "selected_candidate" if selected_candidate else "no_candidate",
+            "reasons": [],
+            "authoritative": len(self.settings.market_universe.pair_universe or self.settings.universe) > 1,
+        }
+        module_latency_budget_report = {
+            "symbol": symbol,
+            "market_stage_ms": float(getattr(market, "market_stage_ms", 0.0) or 0.0),
+            "forecast_stage_ms": float(getattr(market, "forecast_stage_ms", 0.0) or 0.0),
+            "quantum_stage_ms": float(getattr(market, "quantum_stage_ms", 0.0) or 0.0),
+            "edge_immunity_stage_ms": float(getattr(market, "edge_immunity_stage_ms", 0.0) or 0.0),
+            "health_stage_ms": float(getattr(decision_ctx, "health_stage_ms", 0.0) or 0.0),
+            "risk_stage_ms": float(getattr(decision_ctx, "risk_stage_ms", 0.0) or 0.0),
+            "execution_stage_ms": float(getattr(decision_ctx, "execution_stage_ms", 0.0) or 0.0),
+            "warn_threshold_ms": float(self.settings.monitoring.decision_latency_warn_ms),
+        }
+        module_redundancy_report = {
+            "symbol": symbol,
+            "redundancy_flags": [
+                "shadow_rival_overlaps_spre" if modules["shadow_rival"]["influence_count"] and modules["spre"]["influence_count"] else "",
+                "event_and_mastermind_overlap" if modules["event_intelligence"]["influence_count"] and modules["mastermind"]["influence_count"] else "",
+            ],
+        }
+        module_redundancy_report["redundancy_flags"] = [flag for flag in module_redundancy_report["redundancy_flags"] if flag]
+        module_opportunity_cost_report = {
+            "symbol": symbol,
+            "false_negative_rate": float(false_negative.get("false_negative_rate", 0.0) or 0.0),
+            "backlog_pressure": float(backlog.get("backlog_pressure", 0.0) or 0.0),
+            "admission_expected_utility_score": float(trade_admission.get("expected_utility_score", 0.0) or 0.0),
+            "primary_veto": veto.get("primary_veto"),
+        }
+        return {
+            "module_value_summary": {
+                "symbol": symbol,
+                "modules": modules,
+                "selected_candidate": {
+                    "symbol": selected_candidate.get("symbol"),
+                    "playbook": selected_candidate.get("playbook"),
+                    "score": selected_candidate.get("score"),
+                },
+            },
+            "module_latency_budget_report": module_latency_budget_report,
+            "module_redundancy_report": module_redundancy_report,
+            "module_opportunity_cost_report": module_opportunity_cost_report,
+        }
+
+    def _profile_truth_artifacts(self) -> dict[str, object]:
+        configured_universe = list(self.settings.market_universe.pair_universe or self.settings.universe)
+        profile = self.settings.rollout_profile()
+        return {
+            "profile_optimization_report": {
+                "profile": profile,
+                "provider_id": self.settings.execution.provider_id,
+                "configured_universe": configured_universe,
+                "universe_candidate_count": len(configured_universe),
+                "max_active_pairs": int(self.settings.market_universe.max_active_pairs),
+                "dynamic_admission_active": True,
+                "dynamic_execution_active": True,
+                "expanded_universe_ready": len(configured_universe) > 1,
+            },
+            "config_truth_diff_summary": {
+                "execution_mode": self.settings.execution_mode_enum().value,
+                "rollout_stage": self.settings.rollout_stage().value,
+                "provider_whitelist": list(self.settings.provider_whitelist),
+                "doctrine_provider": self.settings.doctrine_target_provider(),
+                "doctrine_product": self.settings.doctrine_product_target(),
+                "sell_floor_bps": float(self.settings.doctrine.minimum_sell_net_profit_bps),
+                "legacy_config_surfaces_present": sorted(path.name for path in Path.cwd().glob("config.*") if "perps" in path.name or "derivatives" in path.name),
+            },
+            "live_profile_capability_delta": {
+                "profile": profile,
+                "capabilities": {
+                    "multi_symbol_flat_scheduler": len(configured_universe) > 1,
+                    "authoritative_trade_admission": True,
+                    "authoritative_execution_admission_adjustments": True,
+                    "doctrine_preserved": True,
+                },
+            },
+        }
+
+    def _phase2_evidence_artifacts(self) -> dict[str, object]:
+        latest_exec = self._latest_jsonl_artifact("realized_vs_forecast_execution_journal.jsonl")
+        latest_edge = self._latest_jsonl_artifact("edge_forecast_vs_realized_journal.jsonl")
+        latest_exit = self._latest_jsonl_artifact("realized_vs_forecast_exit_journal.jsonl")
+        latest_feedback = self._latest_jsonl_artifact("execution_calibration_feedback.jsonl")
+        latest_trade = self._latest_jsonl_artifact("trade_realization_review.jsonl")
+        return {
+            "phase2_operator_summary": {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "execution_truth": latest_exec,
+                "edge_truth": latest_edge,
+                "exit_truth": latest_exit,
+                "calibration_feedback": latest_feedback,
+                "trade_realization": latest_trade,
+            },
+            "phase2_edge_capture_review": {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "edge_capture_efficiency": latest_edge.get("edge_capture_efficiency"),
+                "forecast_net_edge_bps": latest_edge.get("forecast_net_edge_bps"),
+                "realized_net_edge_bps": latest_edge.get("realized_net_edge_bps"),
+                "partial": bool(latest_edge.get("partial", True)),
+            },
+            "phase2_exit_effectiveness_review": {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "exit_efficiency": latest_exit.get("exit_efficiency"),
+                "expected_hold_minutes": latest_exit.get("expected_hold_minutes"),
+                "realized_hold_minutes": latest_exit.get("realized_hold_minutes"),
+                "partial": bool(latest_exit.get("partial", True)),
+            },
+            "phase2_execution_truth_review": {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "realized_slippage_bps": latest_exec.get("realized_slippage_bps"),
+                "slippage_gap_bps": latest_exec.get("slippage_gap_bps"),
+                "delay_gap_ms": latest_exec.get("delay_gap_ms"),
+                "feedback_confidence": latest_feedback.get("confidence"),
+                "feedback_sample_count": latest_feedback.get("sample_count"),
+                "partial": bool(latest_exec.get("partial", True)),
+            },
+        }
+
+    def _candidate_scheduler_score(self, *, policy_decision: object, market: object) -> float:
+        why = getattr(policy_decision, "why", {}) if isinstance(getattr(policy_decision, "why", None), dict) else {}
+        admission = why.get("trade_admission", {}) if isinstance(why.get("trade_admission", {}), dict) else {}
+        floor_compatibility = float(admission.get("floor_compatibility_score", 0.0) or 0.0)
+        utility = float(admission.get("expected_utility_score", 0.0) or 0.0)
+        execution_survivability = float(admission.get("execution_survivability_score", 0.0) or 0.0)
+        portfolio = why.get("portfolio_allocation", {}) if isinstance(why.get("portfolio_allocation", {}), dict) else {}
+        capital_efficiency = max(0.0, min(1.0, 1.0 - float(portfolio.get("opportunity_cost_score", 0.0) or 0.0)))
+        market_integrity = why.get("market_integrity", {}) if isinstance(why.get("market_integrity", {}), dict) else {}
+        toxicity_penalty = max(
+            float(getattr(getattr(market, "execution_quality", None), "adverse_selection_risk", 0.0) or 0.0),
+            1.0 - max(0.0, min(1.0, float(market_integrity.get("score", 1.0) or 1.0))),
+        )
+        return max(
+            0.0,
+            0.40 * utility
+            + 0.25 * floor_compatibility
+            + 0.20 * execution_survivability
+            + 0.15 * capital_efficiency
+            - 0.20 * toxicity_penalty,
+        )
+
+    def _live_candidate_symbols(self, current_symbol: str) -> list[str]:
+        configured = list(self.settings.market_universe.pair_universe or self.settings.universe)
+        ordered = [current_symbol, *configured]
+        unique: list[str] = []
+        for symbol in ordered:
+            if symbol and symbol not in unique:
+                unique.append(symbol)
+        return unique
+
+    def _live_open_orders_present(self, live: object) -> bool:
+        connector = getattr(live, "connector", None)
+        if connector is None or not hasattr(connector, "open_orders"):
+            return False
+        try:
+            return bool(connector.open_orders())
+        except Exception:
+            return True
+
+    def _select_live_symbol_candidate(
+        self,
+        *,
+        live: object,
+        symbols: list[str],
+        now_dt: datetime,
+        price_history: dict[str, list[float]],
+        base_budget: float,
+        drawdown_pct: float,
+        daily_loss_pct: float,
+        weekly_loss_pct: float,
+        funding_paid_pct: float,
+    ) -> tuple[str, object, object, object | None, dict[str, object]]:
+        candidate_rows: list[dict[str, object]] = []
+        best: tuple[str, object, object, object | None, float] | None = None
+        for candidate_symbol in symbols:
+            market = self.live_market.collect(
+                live=live,
+                symbol=candidate_symbol,
+                now_dt=now_dt,
+                prices=list(price_history.get(candidate_symbol, [])),
+                base_budget=base_budget,
+                exposure_notional=0.0,
+            )
+            price_history[candidate_symbol] = list(getattr(market, "prices", []) or [])
+            recon_result = None
+            if hasattr(live, "connector"):
+                recon_result = self.live_reconciliation.apply(
+                    live=live,
+                    symbol=candidate_symbol,
+                    exposure_notional=0.0,
+                    market_health=market.market_health,
+                )
+            decision_ctx = self.live_decision.evaluate(
+                symbol=candidate_symbol,
+                market=market,
+                exposure_notional=0.0,
+                last_recon_ok=True if recon_result is None else bool(recon_result.ok),
+                live=live,
+                drawdown_pct=drawdown_pct,
+                daily_loss_pct=daily_loss_pct,
+                weekly_loss_pct=weekly_loss_pct,
+                funding_paid_pct=funding_paid_pct,
+                legacy_policy_why=self._legacy_policy_why,
+                legacy_risk_details=self._legacy_risk_details,
+                reconciliation_report=None if recon_result is None else recon_result.report,
+            )
+            policy = getattr(decision_ctx, "policy_decision", None)
+            score = self._candidate_scheduler_score(policy_decision=policy, market=market) if policy is not None else 0.0
+            why = getattr(policy, "why", {}) if policy is not None and isinstance(getattr(policy, "why", None), dict) else {}
+            admission = why.get("trade_admission", {}) if isinstance(why.get("trade_admission", {}), dict) else {}
+            no_trade = getattr(policy, "no_trade", None)
+            candidate_rows.append(
+                {
+                    "symbol": candidate_symbol,
+                    "scheduler_score": score,
+                    "trade_allowed": False if policy is None else bool(getattr(policy, "trade_allowed", False)),
+                    "target_notional": 0.0 if policy is None else float(getattr(policy, "target_notional", 0.0) or 0.0),
+                    "expected_utility_score": float(admission.get("expected_utility_score", 0.0) or 0.0),
+                    "floor_compatibility_score": float(admission.get("floor_compatibility_score", 0.0) or 0.0),
+                    "execution_survivability_score": float(admission.get("execution_survivability_score", 0.0) or 0.0),
+                    "no_trade_reason": None if no_trade is None else str(getattr(no_trade, "reason", "") or ""),
+                }
+            )
+            ranking_key = (
+                1 if policy is not None and bool(getattr(policy, "trade_allowed", False)) else 0,
+                score,
+                float(admission.get("floor_compatibility_score", 0.0) or 0.0),
+            )
+            if best is None or ranking_key > (
+                1 if best[2] is not None and bool(getattr(getattr(best[2], "policy_decision", None), "trade_allowed", False)) else 0,
+                best[4],
+                float((getattr(getattr(best[2], "policy_decision", None), "why", {}) or {}).get("trade_admission", {}).get("floor_compatibility_score", 0.0) or 0.0),
+            ):
+                best = (candidate_symbol, market, decision_ctx, recon_result, score)
+        assert best is not None
+        selected_symbol, market, decision_ctx, recon_result, _score = best
+        clusters = cluster_pairs(symbols) if len(symbols) > 1 else {}
+        selected_cluster = next((cluster for cluster, members in clusters.items() if selected_symbol in members), "single_symbol")
+        scheduler_payload = {
+            "selected_symbol": selected_symbol,
+            "candidate_count": len(candidate_rows),
+            "ranked_candidates": sorted(candidate_rows, key=lambda row: (bool(row.get("trade_allowed")), float(row.get("scheduler_score", 0.0) or 0.0)), reverse=True),
+            "selected_cluster": selected_cluster,
+            "clusters": clusters,
+        }
+        return selected_symbol, market, decision_ctx, recon_result, scheduler_payload
 
     def _jsonl_count(self, name: str) -> int:
         path = Path(self.settings.storage.run_dir) / f"{name}.jsonl"
@@ -1604,7 +1906,7 @@ class RobotOrchestrator:
             },
         }
 
-    def _blocked_preflight_trace(
+    def _preflight_trace(
         self,
         *,
         symbol: str,
@@ -1638,25 +1940,27 @@ class RobotOrchestrator:
                 )
             )
         blockers = self._dedupe_ranked_blockers(blockers)
+        preflight_ready = bool(preflight_ok and not blockers)
+        final_decision = "preflight_ready" if preflight_ready else "blocked_preflight"
         reason_chain = [
-            "preflight:blocked_preflight:"
-            + ("|".join(blocking_reasons) if blocking_reasons else (preflight_reason or "unknown"))
+            ("preflight:ready:" if preflight_ready else "preflight:blocked_preflight:")
+            + ("|".join(blocking_reasons) if blockers else (preflight_reason or "unknown"))
         ]
         return DecisionCollapseTrace(
             symbol=symbol,
             ts=datetime.now(timezone.utc),
             frame_id=sha256(
-                f"preflight|{symbol}|{preflight_reason}|{confidence}|{recovery_action}|{blocking_reasons}".encode("utf-8")
+                f"preflight|{final_decision}|{symbol}|{preflight_reason}|{confidence}|{recovery_action}|{blocking_reasons}".encode("utf-8")
             ).hexdigest()[:16],
             step=0,
-            final_decision="blocked_preflight",
+            final_decision=final_decision,
             trade_path_state="not_attempted",
             ranked_blockers=blockers,
             reason_chain=reason_chain,
             stages=[
                 DecisionStageTrace(
                     stage="final_execution_gate",
-                    action="blocked_preflight",
+                    action=final_decision,
                     raw_inputs={
                         "preflight_ok": preflight_ok,
                         "preflight_reason": preflight_reason,
@@ -1664,13 +1968,13 @@ class RobotOrchestrator:
                         "recovery_action": recovery_action,
                     },
                     normalized_inputs={"blocking_reason_count": float(len(blocking_reasons))},
-                    threshold_crossings={"blocked_preflight": True},
+                    threshold_crossings={final_decision: True},
                     blockers=blockers,
                     reasons=list(blocking_reasons),
                     metadata={"phase": "preflight"},
                 )
             ],
-            metadata={"preflight": True},
+            metadata={"preflight": True, "status": "ready" if preflight_ready else "blocked"},
         )
 
     def _emit_live_readiness_artifacts(
@@ -1812,7 +2116,7 @@ class RobotOrchestrator:
             execution_result=None,
             health_summary=health_summary,
         )
-        blocked_trace = self._blocked_preflight_trace(
+        preflight_trace = self._preflight_trace(
             symbol=symbol,
             preflight_ok=preflight_ok,
             preflight_reason=preflight_reason,
@@ -1820,36 +2124,37 @@ class RobotOrchestrator:
             recovery_action=recovery_decision.action,
             blocking_reasons=blocking_reasons,
         )
-        blocked_trace_payload = self._serialize_payload(blocked_trace)
+        preflight_trace_payload = self._serialize_payload(preflight_trace)
         top_blocker = None
-        if isinstance(blocked_trace_payload, dict):
-            ranked = list(blocked_trace_payload.get("ranked_blockers", []) or [])
+        if isinstance(preflight_trace_payload, dict):
+            ranked = list(preflight_trace_payload.get("ranked_blockers", []) or [])
             top_blocker = None if not ranked else ranked[0]
-        blocked_explainability = {
-            "action_state": "blocked_preflight",
+        preflight_action = str(preflight_trace.final_decision)
+        preflight_explainability = {
+            "action_state": preflight_action,
             "trade_path_state": "not_attempted",
             "collapse_stage": None if top_blocker is None else str(top_blocker.get("stage", "")),
             "top_blocker_type": self._blocker_type(top_blocker),
             "reason_codes": sorted(blocking_reasons),
-            "ranked_blockers": [] if not isinstance(blocked_trace_payload, dict) else list(blocked_trace_payload.get("ranked_blockers", []) or []),
-            "reason_chain": list(blocked_trace.reason_chain),
-            "stage_actions": {"final_execution_gate": "blocked_preflight"},
+            "ranked_blockers": [] if not isinstance(preflight_trace_payload, dict) else list(preflight_trace_payload.get("ranked_blockers", []) or []),
+            "reason_chain": list(preflight_trace.reason_chain),
+            "stage_actions": {"final_execution_gate": preflight_action},
             "operator_rationale": {
                 "forecast_regime": "",
                 "market_watch_action": None,
                 "market_integrity_action": None,
-                "doctrine_action": "blocked",
-                "size_multiplier": 0.0,
+                "doctrine_action": "continue" if preflight_action == "preflight_ready" else "blocked",
+                "size_multiplier": 1.0 if preflight_action == "preflight_ready" else 0.0,
             },
             "investor_rationale": {
-                "thesis": "capital_protection_blocks_until_truth_and_execution_preflight_are_verified",
-                "capital_protection": "no_live_ordering_without_preflight_reconciliation_and_recovery_clearance",
+                "thesis": "capital_protection_requires_truth_and_execution_preflight_verification",
+                "capital_protection": "live_ordering_stays_enabled_only_when_preflight_reconciliation_and_recovery_are_clear",
                 "why_chosen_over_alternatives": {
                     "no_trade_reason": preflight_reason,
-                    "meta_governor_action": "blocked_preflight",
+                    "meta_governor_action": preflight_action,
                     "risk_reason": confidence,
                     "shadow_rival_action": None,
-                    "recommended_action": "blocked_preflight",
+                    "recommended_action": preflight_action,
                 },
             },
         }
@@ -1934,12 +2239,144 @@ class RobotOrchestrator:
                 "failure_taxonomy.json",
                 dict(self._live_runtime_diagnostics.get("failure_taxonomy", {})),
             ),
-            "decision_collapse_trace_latest": self._write_json_artifact("decision_collapse_trace_latest.json", blocked_trace_payload),
-            "decision_explainability": self._write_json_artifact("decision_explainability.json", blocked_explainability),
+            "decision_collapse_trace_latest": self._write_json_artifact("decision_collapse_trace_latest.json", preflight_trace_payload),
+            "decision_explainability": self._write_json_artifact("decision_explainability.json", preflight_explainability),
         }
-        self._append_jsonl_artifact("decision_collapse_trace.jsonl", blocked_trace_payload)
+        self._append_jsonl_artifact("decision_collapse_trace.jsonl", preflight_trace_payload)
         artifact_index["files"] = sorted(path.name for path in Path(self.settings.storage.run_dir).glob("*.json*"))
         paths["live_artifact_index"] = self._write_json_artifact("live_artifact_index.json", artifact_index)
+        return paths
+
+    def _emit_live_boot_progress_artifacts(
+        self,
+        *,
+        symbol: str,
+        mode: ExecutionMode,
+        harmony_payload: dict[str, object],
+        phase: str,
+        preflight_ok: bool | None,
+        preflight_reason: str,
+        confidence: str,
+        confidence_details: dict[str, object],
+        recovery_action: str,
+        truth_confidence_action: str,
+    ) -> dict[str, str]:
+        blocking_reasons = self._dedupe_reasons(
+            [f"boot_phase:{phase}"]
+            + (
+                [preflight_reason]
+                if preflight_ok is False and str(preflight_reason).strip() and preflight_reason != "boot_pending"
+                else []
+            )
+        )
+        readiness_summary = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "runtime_mode": mode.value,
+            "rollout_stage": self.settings.rollout_stage().value,
+            "provider_id": self.settings.execution.provider_id,
+            "readiness_ready": False,
+            "preflight_ok": preflight_ok,
+            "ordering_allowed": False,
+            "restart_state_confidence": confidence,
+            "recovery_action": recovery_action,
+            "truth_confidence_action": truth_confidence_action,
+            "blocking_reasons": list(blocking_reasons),
+            "boot_phase": phase,
+            "status": "booting",
+        }
+        live_safety_summary = self.runtime_metadata.live_safety_summary(
+            preflight_ok=bool(preflight_ok),
+            preflight_reason=preflight_reason,
+            ordering_allowed=False,
+            confidence=confidence,
+            recovery_action=recovery_action,
+            blocking_reasons=blocking_reasons,
+        )
+        live_safety_summary["boot_phase"] = phase
+        live_safety_summary["status"] = "booting"
+        health_summary = self.runtime_metadata.health_summary(
+            preflight_ok=bool(preflight_ok),
+            ordering_allowed=False,
+            throughput=self._throughput_snapshot(),
+            failure_taxonomy=dict(self._live_runtime_diagnostics.get("failure_taxonomy", {})),
+            blocking_reasons=blocking_reasons,
+            infra_ok=bool(preflight_ok),
+            trade_path_state="boot_in_progress",
+            reason_chain=list(blocking_reasons),
+        )
+        health_summary["boot_phase"] = phase
+        health_summary["status"] = "booting"
+        explainability = {
+            "action_state": "booting",
+            "trade_path_state": "boot_in_progress",
+            "collapse_stage": "boot",
+            "top_blocker_type": "structural",
+            "reason_codes": list(blocking_reasons),
+            "ranked_blockers": list(health_summary.get("top_blockers", []) or []),
+            "reason_chain": list(blocking_reasons),
+            "stage_actions": {"boot": "booting"},
+            "operator_rationale": {
+                "forecast_regime": "",
+                "market_watch_action": None,
+                "market_integrity_action": None,
+                "doctrine_action": "booting",
+                "size_multiplier": 0.0,
+            },
+            "investor_rationale": {
+                "thesis": "current_run_boot_progress_pending_preflight_and_recovery_truth",
+                "capital_protection": "live_ordering_remains_disabled_until_preflight_recovery_and_truth_gates_complete",
+                "why_chosen_over_alternatives": {
+                    "no_trade_reason": preflight_reason,
+                    "meta_governor_action": "booting",
+                    "risk_reason": confidence,
+                    "shadow_rival_action": None,
+                    "recommended_action": "wait_for_boot_completion",
+                },
+            },
+            "boot_phase": phase,
+        }
+        operator_summary = {
+            "symbol": symbol,
+            "mode": mode.value,
+            "rollout_stage": self.settings.rollout_stage().value,
+            "provider_id": self.settings.execution.provider_id,
+            "doctrine": self.settings.config_manifest().get("doctrine", {}),
+            "harmony": harmony_payload,
+            "live_gate_status": self.settings.live_gate_status(),
+            "preflight": {
+                "ok": preflight_ok,
+                "reason": preflight_reason,
+                "phase": phase,
+            },
+            "restart_state": {
+                "confidence": confidence,
+                "details": confidence_details,
+                "recovery": {
+                    "action": recovery_action,
+                    "outcome": phase,
+                    "confidence": confidence,
+                },
+            },
+            "ordering_allowed": False,
+            "current_blocker_chain": list(health_summary.get("top_blockers", []) or []),
+            "capital_protection": {
+                "cost_basis_sell_block": bool(self.settings.doctrine.enforce_cost_basis_sell_block),
+                "net_profit_sell_block": bool(self.settings.doctrine.enforce_net_profit_sell_block),
+                "minimum_sell_net_profit_bps": float(self.settings.doctrine.minimum_sell_net_profit_bps),
+                "block_non_reduce_only_sells": bool(self.settings.doctrine.block_non_reduce_only_sells),
+            },
+            "provider_capability": asdict(self.execution.provider_capability_matrix()),
+            "rollout_profile": self.settings.rollout_profile(),
+            "boot_phase": phase,
+            "status": "booting",
+        }
+        paths = {
+            "readiness_summary": self._write_json_artifact("readiness_summary.json", readiness_summary),
+            "live_safety_summary": self._write_json_artifact("live_safety_summary.json", live_safety_summary),
+            "health_summary": self._write_json_artifact("health_summary.json", health_summary),
+            "decision_explainability": self._write_json_artifact("decision_explainability.json", explainability),
+        }
+        paths["operator_summary"] = self.operator_summary.emit(summary=operator_summary)
         return paths
 
     @staticmethod
@@ -2074,9 +2511,44 @@ class RobotOrchestrator:
             runtime_ordering_allowed=runtime_ordering_allowed,
             execution_result=execution_result,
         )
+        module_value_artifacts = self._module_value_artifacts(
+            symbol=symbol,
+            market=market,
+            decision_ctx=decision_ctx,
+            performance_artifacts=performance_artifacts,
+        )
+        profile_truth_artifacts = self._profile_truth_artifacts()
+        phase2_artifacts = self._phase2_evidence_artifacts()
+        artifact_bundle = {
+            **performance_artifacts,
+            **module_value_artifacts,
+            **profile_truth_artifacts,
+            **phase2_artifacts,
+        }
         health_summary["performance_gap"] = dict(
             (performance_artifacts.get("performance_gap_report") if isinstance(performance_artifacts.get("performance_gap_report"), dict) else {}) or {}
         ).get("gaps", {})
+        live_safety_summary = self.runtime_metadata.live_safety_summary(
+            preflight_ok=bool(self._last_live_preflight_ok),
+            preflight_reason=str(self._last_live_preflight_reason or ""),
+            ordering_allowed=runtime_ordering_allowed,
+            confidence=str(self._last_live_restart_confidence or "insufficient"),
+            recovery_action=str(self._last_live_recovery_action or "degrade"),
+            blocking_reasons=runtime_blocking_reasons,
+        )
+        readiness_summary = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "runtime_mode": mode.value,
+            "rollout_stage": self.settings.rollout_stage().value,
+            "provider_id": self.settings.execution.provider_id,
+            "readiness_ready": bool(runtime_ordering_allowed and live_safety_summary.get("safety_ready")),
+            "preflight_ok": bool(self._last_live_preflight_ok),
+            "ordering_allowed": runtime_ordering_allowed,
+            "restart_state_confidence": str(self._last_live_restart_confidence or "insufficient"),
+            "recovery_action": str(self._last_live_recovery_action or "degrade"),
+            "truth_confidence_action": str(self._last_live_truth_confidence_action or "degrade"),
+            "blocking_reasons": [] if runtime_ordering_allowed else list(runtime_blocking_reasons),
+        }
         artifact_index = {
             "run_dir": self.settings.storage.run_dir,
             "step": step,
@@ -2091,8 +2563,10 @@ class RobotOrchestrator:
         self._append_jsonl_artifact("decision_collapse_trace.jsonl", trace_payload)
         self._write_json_artifact("decision_collapse_trace_latest.json", trace_payload)
         self._write_json_artifact("decision_explainability.json", explainability)
+        self._write_json_artifact("readiness_summary.json", readiness_summary)
+        self._write_json_artifact("live_safety_summary.json", live_safety_summary)
         self._write_json_artifact("health_summary.json", health_summary)
-        for name, payload in performance_artifacts.items():
+        for name, payload in artifact_bundle.items():
             if name == "selected_candidate":
                 continue
             self._write_json_artifact(f"{name}.json", payload)
@@ -2163,13 +2637,26 @@ class RobotOrchestrator:
                 "target_translation": performance_artifacts.get("performance_target_translation", {}),
                 "target_gap": performance_artifacts.get("performance_gap_report", {}),
                 "market_universe": performance_artifacts.get("pair_ranking_report", {}),
+                "trade_admission": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("trade_admission", {})
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else {},
+                "decision_waterfall": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("decision_waterfall", [])
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else [],
+                "veto_attribution": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("veto_attribution", {})
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else {},
                 "regime": performance_artifacts.get("regime_snapshot", {}),
                 "playbooks": performance_artifacts.get("playbook_candidate_log", {}),
                 "opportunity_auction": performance_artifacts.get("opportunity_auction_report", {}),
+                "opportunity_scheduler": performance_artifacts.get("opportunity_scheduler_journal", {}),
                 "allocator": performance_artifacts.get("allocator_decisions", {}),
                 "expectancy": performance_artifacts.get("expectancy_engine_report", {}),
                 "experiments": performance_artifacts.get("experiment_registry", {}),
                 "dead_capital": performance_artifacts.get("dead_capital_pressure_report", {}),
+                "module_value": module_value_artifacts.get("module_value_summary", {}),
+                "profile_truth": profile_truth_artifacts.get("profile_optimization_report", {}),
+                "phase2": phase2_artifacts.get("phase2_operator_summary", {}),
                 "execution_alpha": {
                     "cost_model": performance_artifacts.get("cost_model_diagnostics", {}),
                     "private_stream_health": performance_artifacts.get("private_stream_health", {}),
@@ -2285,6 +2772,20 @@ class RobotOrchestrator:
             runtime_ordering_allowed=False,
             execution_result=None,
         )
+        module_value_artifacts = self._module_value_artifacts(
+            symbol=symbol,
+            market=market,
+            decision_ctx=decision_ctx,
+            performance_artifacts=performance_artifacts,
+        )
+        profile_truth_artifacts = self._profile_truth_artifacts()
+        phase2_artifacts = self._phase2_evidence_artifacts()
+        artifact_bundle = {
+            **performance_artifacts,
+            **module_value_artifacts,
+            **profile_truth_artifacts,
+            **phase2_artifacts,
+        }
         health_summary["performance_gap"] = dict(
             (performance_artifacts.get("performance_gap_report") if isinstance(performance_artifacts.get("performance_gap_report"), dict) else {}) or {}
         ).get("gaps", {})
@@ -2370,13 +2871,26 @@ class RobotOrchestrator:
                 "target_translation": performance_artifacts.get("performance_target_translation", {}),
                 "target_gap": performance_artifacts.get("performance_gap_report", {}),
                 "market_universe": performance_artifacts.get("pair_ranking_report", {}),
+                "trade_admission": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("trade_admission", {})
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else {},
+                "decision_waterfall": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("decision_waterfall", [])
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else [],
+                "veto_attribution": getattr(getattr(decision_ctx, "policy_decision", None), "why", {}).get("veto_attribution", {})
+                if isinstance(getattr(getattr(decision_ctx, "policy_decision", None), "why", None), dict)
+                else {},
                 "regime": performance_artifacts.get("regime_snapshot", {}),
                 "playbooks": performance_artifacts.get("playbook_candidate_log", {}),
                 "opportunity_auction": performance_artifacts.get("opportunity_auction_report", {}),
+                "opportunity_scheduler": performance_artifacts.get("opportunity_scheduler_journal", {}),
                 "allocator": performance_artifacts.get("allocator_decisions", {}),
                 "expectancy": performance_artifacts.get("expectancy_engine_report", {}),
                 "experiments": performance_artifacts.get("experiment_registry", {}),
                 "dead_capital": performance_artifacts.get("dead_capital_pressure_report", {}),
+                "module_value": module_value_artifacts.get("module_value_summary", {}),
+                "profile_truth": profile_truth_artifacts.get("profile_optimization_report", {}),
+                "phase2": phase2_artifacts.get("phase2_operator_summary", {}),
                 "execution_alpha": {
                     "cost_model": performance_artifacts.get("cost_model_diagnostics", {}),
                     "private_stream_health": performance_artifacts.get("private_stream_health", {}),
@@ -2396,7 +2910,7 @@ class RobotOrchestrator:
         self._write_json_artifact("live_doctrine_blocked_capabilities.json", self._doctrine_block_map())
         self._write_json_artifact("throughput_diagnostics.json", throughput)
         self._write_json_artifact("failure_taxonomy.json", throughput.get("failure_taxonomy", {}))
-        for name, payload in performance_artifacts.items():
+        for name, payload in artifact_bundle.items():
             if name == "selected_candidate":
                 continue
             self._write_json_artifact(f"{name}.json", payload)
@@ -2469,6 +2983,7 @@ class RobotOrchestrator:
         peak = 1.0
         funding_paid_pct = 0.0
         prices: list[float] = []
+        price_history: dict[str, list[float]] = {}
         last_mid = None
         steps = 0
         last_recon_ok = True
@@ -2546,31 +3061,183 @@ class RobotOrchestrator:
                 pause_active = False
                 pause_reason = ""
 
-            try:
-                market = self.live_market.collect(
-                    live=live,
-                    symbol=symbol,
-                    now_dt=now_dt,
-                    prices=prices,
-                    base_budget=base_budget,
-                    exposure_notional=exposure_notional,
-                )
-            except Exception as exc:
-                message = str(exc)
-                if message.startswith("book_invalid:"):
-                    _, bid_raw, ask_raw = message.split(":", 2)
-                    self.ops.audit_event("book_invalid", {"symbol": symbol, "bid": float(bid_raw), "ask": float(ask_raw)})
-                    self.ops.inc_metric("book_invalid_total")
-                    self._record_live_reason(reason="book_invalid", surface="market_data")
-                else:
-                    self.ops.audit_event("book_error", {"symbol": symbol, "error": message})
-                    self.ops.inc_metric("book_errors_total")
-                    self._record_live_reason(reason=message, surface="market_data")
-                self.ops.export_prometheus()
-                time.sleep(poll_s)
-                continue
+            # Mark-to-market on estimated internal exposure.
+            drawdown_pct = (equity / peak - 1.0) * 100.0
+            daily_loss_pct = min(0.0, (equity - 1.0) * 100.0)
+            weekly_loss_pct = daily_loss_pct
+            recon_result = None
+            scheduler_payload: dict[str, object] = {}
+            candidate_symbols = self._live_candidate_symbols(symbol)
+            use_scheduler = (
+                len(candidate_symbols) > 1
+                and abs(exposure_notional) <= 1e-9
+                and not self._live_open_orders_present(live)
+            )
 
-            prices = market.prices
+            if use_scheduler:
+                try:
+                    selected_symbol, market, decision_ctx, recon_result, scheduler_payload = self._select_live_symbol_candidate(
+                        live=live,
+                        symbols=candidate_symbols,
+                        now_dt=now_dt,
+                        price_history=price_history,
+                        base_budget=base_budget,
+                        drawdown_pct=drawdown_pct,
+                        daily_loss_pct=daily_loss_pct,
+                        weekly_loss_pct=weekly_loss_pct,
+                        funding_paid_pct=funding_paid_pct,
+                    )
+                    symbol = selected_symbol
+                    prices = list(price_history.get(symbol, []))
+                    self._append_jsonl_artifact(
+                        "opportunity_scheduler_journal.jsonl",
+                        {
+                            "ts": now_dt.isoformat(),
+                            "selected_symbol": symbol,
+                            "candidate_symbols": candidate_symbols,
+                            **scheduler_payload,
+                        },
+                    )
+                    self._append_jsonl_artifact(
+                        "capital_allocation_journal.jsonl",
+                        {
+                            "ts": now_dt.isoformat(),
+                            "selected_symbol": symbol,
+                            "target_notional": 0.0
+                            if getattr(decision_ctx, "policy_decision", None) is None
+                            else float(getattr(decision_ctx.policy_decision, "target_notional", 0.0) or 0.0),
+                            "base_budget": base_budget,
+                        },
+                    )
+                    self._write_json_artifact("opportunity_ranking_snapshot.json", scheduler_payload)
+                    self._append_jsonl_artifact(
+                        "correlation_budget_journal.jsonl",
+                        {
+                            "ts": now_dt.isoformat(),
+                            "selected_symbol": symbol,
+                            "selected_cluster": scheduler_payload.get("selected_cluster"),
+                            "clusters": scheduler_payload.get("clusters", {}),
+                            "max_cluster_exposure_notional": float(self.settings.risk.max_cluster_exposure_notional),
+                        },
+                    )
+                    deferred = [
+                        row
+                        for row in list(scheduler_payload.get("ranked_candidates", []) or [])
+                        if isinstance(row, dict) and str(row.get("symbol", "")) != symbol
+                    ]
+                    self._append_jsonl_artifact(
+                        "deferred_opportunity_review.jsonl",
+                        {
+                            "ts": now_dt.isoformat(),
+                            "selected_symbol": symbol,
+                            "deferred": deferred[:10],
+                        },
+                    )
+                except Exception as exc:
+                    message = str(exc)
+                    self.ops.audit_event("scheduler_error", {"symbols": candidate_symbols, "error": message})
+                    self._record_live_reason(reason=f"scheduler_error:{message}", surface="scheduler")
+                    try:
+                        market = self.live_market.collect(
+                            live=live,
+                            symbol=symbol,
+                            now_dt=now_dt,
+                            prices=prices,
+                            base_budget=base_budget,
+                            exposure_notional=exposure_notional,
+                        )
+                    except Exception as fallback_exc:
+                        message = str(fallback_exc)
+                        if message.startswith("book_invalid:"):
+                            _, bid_raw, ask_raw = message.split(":", 2)
+                            self.ops.audit_event("book_invalid", {"symbol": symbol, "bid": float(bid_raw), "ask": float(ask_raw)})
+                            self.ops.inc_metric("book_invalid_total")
+                            self._record_live_reason(reason="book_invalid", surface="market_data")
+                        else:
+                            self.ops.audit_event("book_error", {"symbol": symbol, "error": message})
+                            self.ops.inc_metric("book_errors_total")
+                            self._record_live_reason(reason=message, surface="market_data")
+                        self.ops.export_prometheus()
+                        time.sleep(poll_s)
+                        continue
+                    if hasattr(live, "connector"):
+                        recon_result = self.live_reconciliation.apply(
+                            live=live,
+                            symbol=symbol,
+                            exposure_notional=exposure_notional,
+                            market_health=market.market_health,
+                        )
+                        last_recon_ok = recon_result.ok
+                        exposure_notional = recon_result.exposure_notional
+                        self._maybe_warn_latency("stage_reconciliation_ms", recon_result.elapsed_ms, self.settings.monitoring.reconciliation_lag_warn_ms)
+                    decision_ctx = self.live_decision.evaluate(
+                        symbol=symbol,
+                        market=market,
+                        exposure_notional=exposure_notional,
+                        last_recon_ok=last_recon_ok,
+                        live=live,
+                        drawdown_pct=drawdown_pct,
+                        daily_loss_pct=daily_loss_pct,
+                        weekly_loss_pct=weekly_loss_pct,
+                        funding_paid_pct=funding_paid_pct,
+                        legacy_policy_why=self._legacy_policy_why,
+                        legacy_risk_details=self._legacy_risk_details,
+                        reconciliation_report=recon_result.report if recon_result is not None else None,
+                    )
+            else:
+                try:
+                    market = self.live_market.collect(
+                        live=live,
+                        symbol=symbol,
+                        now_dt=now_dt,
+                        prices=prices,
+                        base_budget=base_budget,
+                        exposure_notional=exposure_notional,
+                    )
+                except Exception as exc:
+                    message = str(exc)
+                    if message.startswith("book_invalid:"):
+                        _, bid_raw, ask_raw = message.split(":", 2)
+                        self.ops.audit_event("book_invalid", {"symbol": symbol, "bid": float(bid_raw), "ask": float(ask_raw)})
+                        self.ops.inc_metric("book_invalid_total")
+                        self._record_live_reason(reason="book_invalid", surface="market_data")
+                    else:
+                        self.ops.audit_event("book_error", {"symbol": symbol, "error": message})
+                        self.ops.inc_metric("book_errors_total")
+                        self._record_live_reason(reason=message, surface="market_data")
+                    self.ops.export_prometheus()
+                    time.sleep(poll_s)
+                    continue
+
+                prices = market.prices
+                if hasattr(live, "connector"):
+                    recon_result = self.live_reconciliation.apply(
+                        live=live,
+                        symbol=symbol,
+                        exposure_notional=exposure_notional,
+                        market_health=market.market_health,
+                    )
+                    last_recon_ok = recon_result.ok
+                    exposure_notional = recon_result.exposure_notional
+                    self._maybe_warn_latency("stage_reconciliation_ms", recon_result.elapsed_ms, self.settings.monitoring.reconciliation_lag_warn_ms)
+
+                decision_ctx = self.live_decision.evaluate(
+                    symbol=symbol,
+                    market=market,
+                    exposure_notional=exposure_notional,
+                    last_recon_ok=last_recon_ok,
+                    live=live,
+                    drawdown_pct=drawdown_pct,
+                    daily_loss_pct=daily_loss_pct,
+                    weekly_loss_pct=weekly_loss_pct,
+                    funding_paid_pct=funding_paid_pct,
+                    legacy_policy_why=self._legacy_policy_why,
+                    legacy_risk_details=self._legacy_risk_details,
+                    reconciliation_report=recon_result.report if recon_result is not None else None,
+                )
+
+            prices = list(getattr(market, "prices", []) or [])
+            price_history[symbol] = prices
             mid = market.snapshot.mid
             spread_bps = market.snapshot.spread_bps
             depth_notional = market.snapshot.depth_notional
@@ -2588,8 +3255,6 @@ class RobotOrchestrator:
                         "reason": market.advisory.reason,
                     },
                 )
-
-            # Mark-to-market on estimated internal exposure.
             if last_mid is not None and abs(exposure_notional) > 1e-9:
                 pnl = exposure_notional * ((mid / max(last_mid, 1e-9)) - 1.0)
                 equity += pnl / base_budget
@@ -2597,35 +3262,6 @@ class RobotOrchestrator:
                 self.portfolio.mark_to_market(symbol, pnl)
             last_mid = mid
             peak = max(peak, equity)
-            drawdown_pct = (equity / peak - 1.0) * 100.0
-            daily_loss_pct = min(0.0, (equity - 1.0) * 100.0)
-            weekly_loss_pct = daily_loss_pct
-
-            if hasattr(live, "connector"):
-                recon_result = self.live_reconciliation.apply(
-                    live=live,
-                    symbol=symbol,
-                    exposure_notional=exposure_notional,
-                    market_health=market.market_health,
-                )
-                last_recon_ok = recon_result.ok
-                exposure_notional = recon_result.exposure_notional
-                self._maybe_warn_latency("stage_reconciliation_ms", recon_result.elapsed_ms, self.settings.monitoring.reconciliation_lag_warn_ms)
-
-            decision_ctx = self.live_decision.evaluate(
-                symbol=symbol,
-                market=market,
-                exposure_notional=exposure_notional,
-                last_recon_ok=last_recon_ok,
-                live=live,
-                drawdown_pct=drawdown_pct,
-                daily_loss_pct=daily_loss_pct,
-                weekly_loss_pct=weekly_loss_pct,
-                funding_paid_pct=funding_paid_pct,
-                legacy_policy_why=self._legacy_policy_why,
-                legacy_risk_details=self._legacy_risk_details,
-                reconciliation_report=recon_result.report if hasattr(live, "connector") else None,
-            )
             latest_operator_summary_path = self._emit_live_runtime_summary(
                 symbol=symbol,
                 mode=mode,
@@ -2999,6 +3635,18 @@ class RobotOrchestrator:
             else:
                 return {"status": "blocked", "reason": f"unsupported_provider:{self.settings.execution.provider_id}"}
             self.execution.attach_live_service(live)
+            self._emit_live_boot_progress_artifacts(
+                symbol=symbol,
+                mode=mode,
+                harmony_payload=harmony_payload,
+                phase="preflight_pending",
+                preflight_ok=None,
+                preflight_reason="boot_pending",
+                confidence="booting",
+                confidence_details={"boot_phase": "preflight_pending"},
+                recovery_action="pending",
+                truth_confidence_action="pending",
+            )
             try:
                 ok_preflight, reason_preflight = live.preflight()
             except Exception as exc:
@@ -3024,6 +3672,18 @@ class RobotOrchestrator:
                 )
                 exchange_balance_total = None
             elif ok_preflight:
+                self._emit_live_boot_progress_artifacts(
+                    symbol=symbol,
+                    mode=mode,
+                    harmony_payload=harmony_payload,
+                    phase="recovery_pending",
+                    preflight_ok=True,
+                    preflight_reason=reason_preflight,
+                    confidence="booting",
+                    confidence_details={"boot_phase": "recovery_pending"},
+                    recovery_action="pending",
+                    truth_confidence_action="pending",
+                )
                 boot_state = self.live_recovery.boot_state(live=live, symbol=symbol)
                 confidence, confidence_details = boot_state.confidence, boot_state.details
                 recovery_decision = boot_state.recovery_decision
@@ -3079,7 +3739,11 @@ class RobotOrchestrator:
                 and mode != ExecutionMode.LIVE_READONLY
             )
             self._last_live_preflight_ok = bool(ok_preflight)
+            self._last_live_preflight_reason = str(reason_preflight or "")
             self._last_live_ordering_allowed = bool(ordering_allowed)
+            self._last_live_restart_confidence = str(confidence or "insufficient")
+            self._last_live_recovery_action = str(recovery_decision.action or "degrade")
+            self._last_live_truth_confidence_action = str(truth_confidence_action or "degrade")
             self._last_live_blocking_reasons = [] if ordering_allowed else self._live_blocking_reasons(
                 preflight_ok=ok_preflight,
                 preflight_reason=reason_preflight,

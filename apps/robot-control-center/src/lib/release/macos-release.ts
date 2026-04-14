@@ -26,29 +26,29 @@ export function evaluateMacosReleaseReadiness(env: MacosReleaseEnv): ReleaseCont
     checklistItem(
       "Bundle identifier",
       Boolean(env.bundleId),
-      env.bundleId ?? "Missing TAURI_BUNDLE_IDENTIFIER / NEXT_PUBLIC_RTC_BUNDLE_ID.",
+      env.bundleId ?? "Chýba TAURI_BUNDLE_IDENTIFIER / NEXT_PUBLIC_RTC_BUNDLE_ID.",
     ),
     checklistItem(
       "Apple Team ID",
       Boolean(env.appleTeamId),
-      env.appleTeamId ?? "Missing APPLE_TEAM_ID.",
+      env.appleTeamId ?? "Chýba APPLE_TEAM_ID.",
     ),
     checklistItem(
       "Signing identity",
       Boolean(env.signingIdentity),
-      env.signingIdentity ?? "Missing APPLE_SIGNING_IDENTITY.",
+      env.signingIdentity ?? "Chýba APPLE_SIGNING_IDENTITY.",
     ),
     checklistItem(
       "Notarization account",
       Boolean(env.notarizationAppleId && env.notarizationAppPassword),
       env.notarizationAppleId && env.notarizationAppPassword
-        ? "Apple ID + app password configured."
-        : "Missing APPLE_ID and/or APPLE_APP_PASSWORD.",
+        ? "Apple ID a heslo pre aplikáciu sú nastavené."
+        : "Chýba APPLE_ID a/alebo APPLE_APP_PASSWORD.",
     ),
     checklistItem(
       "Notarization provider short name",
       Boolean(env.notarizationProviderShortName),
-      env.notarizationProviderShortName ?? "Missing APPLE_PROVIDER_SHORT_NAME.",
+      env.notarizationProviderShortName ?? "Chýba APPLE_PROVIDER_SHORT_NAME.",
     ),
   ];
 

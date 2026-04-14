@@ -93,3 +93,54 @@ def test_order_lifecycle_mirror_fails_closed_on_unsupported_replace():
 
     assert (ok, reason) == (False, "unsupported_replace")
     assert mirror.snapshot()[0]["state"] == "accepted"
+
+
+def test_order_lifecycle_mirror_rehydrates_historical_transition_without_pending_side_effects():
+    mirror = OrderLifecycleMirror(venue="kraken_spot")
+
+    ok, reason = mirror.rehydrate_transition(
+        {
+            "symbol": "BTC/USD",
+            "order_key": "cid-1",
+            "to_state": "timed_out",
+            "source": "local_timeout",
+            "ts": "2026-04-04T22:00:00+00:00",
+            "metadata": {"raw": {"orderId": "ord-1", "clientOrderId": "cid-1"}},
+        }
+    )
+
+    assert (ok, reason) == (True, "ok")
+    assert mirror.drain_transitions() == []
+    snapshot = mirror.snapshot()
+    assert snapshot[0]["state"] == "timed_out"
+    assert snapshot[0]["order_id"] == "ord-1"
+
+
+def test_order_lifecycle_mirror_promotes_timed_out_order_to_filled_when_fill_truth_arrives():
+    mirror = OrderLifecycleMirror(venue="kraken_spot")
+
+    ok, reason = mirror.rehydrate_transition(
+        {
+            "symbol": "BTC/USD",
+            "order_key": "cid-1",
+            "to_state": "timed_out",
+            "source": "local_timeout",
+            "ts": "2026-04-04T22:00:00+00:00",
+            "metadata": {"raw": {"orderId": "ord-1", "clientOrderId": "cid-1"}},
+        }
+    )
+    assert (ok, reason) == (True, "ok")
+
+    ok, reason = mirror.fill_confirmed(
+        symbol="BTC/USD",
+        order_key="ord-1",
+        order_id="ord-1",
+        client_order_id="cid-1",
+        metadata={"raw": {"fillId": "fill-1"}},
+    )
+
+    assert (ok, reason) == (True, "ok")
+    snapshot = mirror.snapshot()
+    assert snapshot[0]["state"] == "filled"
+    assert snapshot[0]["order_id"] == "ord-1"
+    assert snapshot[0]["fill_count"] == 1

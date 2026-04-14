@@ -8,6 +8,7 @@ import type {
 import type { ControlsContract } from "@/types/contracts";
 import {
   formatMoment,
+  humanizeRuntimeText,
   toneFromGuardStatus,
   toneFromSeverity,
   toneFromVerdict,
@@ -36,13 +37,13 @@ export function ShieldScreen({
     <div className="rtc-screen-panel">
       <GlassPanel className="rtc-screen-hero-card" elevated>
         <SectionHeader
-          eyebrow="Shield"
-          title="Runtime trust and safety surface"
-          subtitle="Shield answers one question first: can the operator trust this robot right now. Every verdict is grounded in current runtime evidence, not UI inference."
+          eyebrow="Bezpečnosť"
+          title="Dá sa tomuto robotovi práve teraz veriť?"
+          subtitle="Táto obrazovka ukazuje, či je systém bezpečný na sledovanie alebo zásah. Každý záver stojí na reálnych dátach z behu, nie na dojme z UI."
           meta={(
             <div className="rtc-pill-row">
-              <StatusBadge tone={toneFromVerdict(shield.trustVerdict)} label="trust verdict" value={shield.trustVerdict} />
-              <StatusBadge tone={toneFromSeverity(shield.stateKind)} label="runtime state" value={shield.stateKind} />
+              <StatusBadge tone={toneFromVerdict(shield.trustVerdict)} label="dôvera" value={shield.trustVerdict} />
+              <StatusBadge tone={toneFromSeverity(shield.stateKind)} label="stav" value={shield.stateKind} />
               <StatusBadge
                 tone={
                   shield.runtimeIdentity?.pinIntegrityStatus === "ok"
@@ -51,37 +52,37 @@ export function ShieldScreen({
                       ? "warn"
                       : "danger"
                 }
-                label="pin integrity"
+                label="pevné pripnutie"
                 value={shield.runtimeIdentity?.pinIntegrityStatus ?? "unavailable"}
               />
               <StatusBadge
                 tone={shield.runtimeIdentity?.driftStatus === "locked" ? "good" : "warn"}
-                label="drift"
+                label="odklon"
                 value={shield.runtimeIdentity?.driftStatus ?? "unavailable"}
               />
             </div>
           )}
         />
-        <div className="rtc-inline-note">updated {formatMoment(shield.lastUpdatedAt)}</div>
+        <div className="rtc-inline-note">aktualizované {formatMoment(shield.lastUpdatedAt)}</div>
       </GlassPanel>
 
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Trust"
-            title="Trust Verdict"
-            subtitle="Critical reasons stay visible at the top. Unsafe or cautionary posture is never hidden behind green summary cards."
+            eyebrow="Dôvera"
+            title="Celkové hodnotenie dôvery"
+            subtitle="Najdôležitejšie dôvody ostávajú hore. Keď je systém rizikový alebo neistý, panel to neschová za pekné zelené kartičky."
           />
           <div className="rtc-summary-grid">
             <article className="rtc-summary-card" data-tone={toneFromVerdict(shield.trustVerdict)}>
-              <div className="rtc-summary-label">Verdict</div>
+              <div className="rtc-summary-label">Výsledok</div>
               <div className="rtc-summary-value">{shield.trustVerdict}</div>
-              <div className="rtc-summary-hint">Active operator trust posture for the selected run.</div>
+              <div className="rtc-summary-hint">Aktuálne hodnotenie dôvery pre vybraný beh.</div>
             </article>
             <article className="rtc-summary-card" data-tone={shield.runtimeIdentity?.artifactFreshness?.status === "stale" ? "danger" : "info"}>
-              <div className="rtc-summary-label">Freshness</div>
+              <div className="rtc-summary-label">Čerstvosť dát</div>
               <div className="rtc-summary-value">{shield.runtimeIdentity?.artifactFreshness?.status ?? shield.stateKind}</div>
-              <div className="rtc-summary-hint">Artifact freshness is consumed from runtime identity, not recomputed in the UI.</div>
+              <div className="rtc-summary-hint">Čerstvosť sa berie priamo z identity behu, panel ju sám nevypočítava.</div>
             </article>
           </div>
           <div className="rtc-pill-row">
@@ -90,28 +91,28 @@ export function ShieldScreen({
                 <StatusBadge key={reason} tone={toneFromSeverity(reason)} value={reason} />
               ))
             ) : (
-              <StatusBadge tone="good" value="no active trust degraders" />
+              <StatusBadge tone="good" value="žiadne aktívne zhoršenie dôvery" />
             )}
           </div>
         </GlassPanel>
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Safety"
-            title="Runtime Safety State"
-            subtitle="These rows answer whether the robot is safe to operate: identity lock, freshness, execution gate, market integrity, exchange connectivity, and permission path."
+            eyebrow="Stav"
+            title="Bezpečnostný stav systému"
+            subtitle="Tieto riadky hovoria, či je robot bezpečné sledovať alebo ovládať: či je správne pripnutý, či sú dáta čerstvé, či je povolené obchodovanie a či funguje spojenie s burzou."
           />
           <div className="rtc-state-grid">
             {shield.runtimeSafety.map((item) => (
               <article className="rtc-state-card" key={item.label}>
                 <div className="rtc-live-card-header">
-                  <strong>{item.label}</strong>
+                <strong>{humanizeRuntimeText(item.label)}</strong>
                   <StatusBadge tone={toneFromVerdict(item.status)} value={item.status} subtle />
                 </div>
                 <div className="rtc-inline-note">{formatMoment(item.ts)}</div>
-                <div>{item.detail}</div>
+                <div>{humanizeRuntimeText(item.detail)}</div>
                 <ul className="rtc-list rtc-tight-list">
-                  {item.evidence.length > 0 ? item.evidence.map((evidence) => <li key={`${item.label}-${evidence}`}>{evidence}</li>) : <li>No linked evidence</li>}
+                  {item.evidence.length > 0 ? item.evidence.map((evidence) => <li key={`${item.label}-${evidence}`}>{humanizeRuntimeText(evidence)}</li>) : <li>Nie sú pripojené dôkazy</li>}
                 </ul>
               </article>
             ))}
@@ -121,94 +122,94 @@ export function ShieldScreen({
 
       <GlassPanel interactive>
         <SectionHeader
-          eyebrow="Promotion"
-          title="Promotion / rollback posture"
-          subtitle="Shield surfaces promotion score, rollback trigger state, recovery mode, and stream health so rollout decisions stay evidence-bound and reversible."
+          eyebrow="Nasadenie"
+          title="Stav nasadenia a návratu späť"
+          subtitle="Tu vidíš, či systém pôsobí pripraveno na ďalší krok, či nehrozí návrat späť a či bežia obnovovacie režimy alebo dôležité streamy."
         />
         {shield.performanceControl ? (
           <div className="rtc-kv">
             <div className="rtc-kv-row">
-              <span>Promotion score</span>
-              <strong>{shield.performanceControl.promotionScore == null ? "Unavailable" : shield.performanceControl.promotionScore.toFixed(3)}</strong>
+              <span>Skóre pripravenosti</span>
+              <strong>{shield.performanceControl.promotionScore == null ? "Nedostupné" : shield.performanceControl.promotionScore.toFixed(3)}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Promotion status</span>
-              <strong>{shield.performanceControl.promotionStatus ?? "Unavailable"}</strong>
+              <span>Stav pripravenosti</span>
+              <strong>{shield.performanceControl.promotionStatus ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Rollback triggered</span>
-              <strong>{shield.performanceControl.rollbackTriggered == null ? "Unavailable" : shield.performanceControl.rollbackTriggered ? "yes" : "no"}</strong>
+              <span>Spustený návrat späť</span>
+              <strong>{shield.performanceControl.rollbackTriggered == null ? "Nedostupné" : shield.performanceControl.rollbackTriggered ? "áno" : "nie"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Recovery mode</span>
-              <strong>{shield.performanceControl.recoveryMode ?? "Unavailable"}</strong>
+              <span>Obnovovací režim</span>
+              <strong>{shield.performanceControl.recoveryMode ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Live degradation</span>
-              <strong>{shield.performanceControl.liveDegradationStatus ?? "Unavailable"}</strong>
+              <span>Zhoršenie live stavu</span>
+              <strong>{shield.performanceControl.liveDegradationStatus ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Self throttling</span>
+              <span>Samospomaľovanie</span>
               <strong>
                 {shield.performanceControl.selfThrottlingActive == null
-                  ? "Unavailable"
+                  ? "Nedostupné"
                   : shield.performanceControl.selfThrottlingActive
-                    ? "active"
-                    : "inactive"}
+                    ? "aktívne"
+                    : "neaktívne"}
               </strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Private stream health</span>
-              <strong>{shield.performanceControl.privateStreamHealth ?? "Unavailable"}</strong>
+              <span>Zdravie súkromného streamu</span>
+              <strong>{shield.performanceControl.privateStreamHealth ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Authority boundary</span>
-              <strong>{shield.performanceControl.authorityBoundary ?? "Unavailable"}</strong>
+              <span>Hranica oprávnení</span>
+              <strong>{shield.performanceControl.authorityBoundary ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Rollback risk</span>
-              <strong>{shield.performanceControl.rollbackRisk ?? "Unavailable"}</strong>
+              <span>Riziko návratu späť</span>
+              <strong>{shield.performanceControl.rollbackRisk ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Target plausibility</span>
-              <strong>{shield.performanceControl.targetPlausibility ?? "Unavailable"}</strong>
+              <span>Dôveryhodnosť cieľa</span>
+              <strong>{shield.performanceControl.targetPlausibility ?? "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Target gap (net bps)</span>
+              <span>Rozdiel od cieľa (net bps)</span>
               <strong>
                 {shield.performanceControl.targetGapNetBps == null
-                  ? "Unavailable"
+                  ? "Nedostupné"
                   : shield.performanceControl.targetGapNetBps.toFixed(1)}
               </strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Readiness status</span>
-              <strong>{shield.performanceControl.readinessStatus ?? "Unavailable"}</strong>
+              <span>Stav pripravenosti</span>
+              <strong>{shield.performanceControl.readinessStatus ?? "Nedostupné"}</strong>
             </div>
           </div>
         ) : (
-          <div className="rtc-inline-note">Promotion and rollback telemetry is not available for the active run.</div>
+          <div className="rtc-inline-note">Údaje o pripravenosti a návrate späť zatiaľ pre tento beh nie sú dostupné.</div>
         )}
       </GlassPanel>
 
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Guards"
-            title="Guard Matrix"
-            subtitle="Configured thresholds and observed values remain side by side. If either side is missing, the row stays unavailable instead of pretending the guard passed."
+            eyebrow="Ochrany"
+            title="Prehľad ochranných pravidiel"
+            subtitle="Limit a skutočne nameraná hodnota sú vedľa seba. Ak niečo chýba, riadok zostane otvorene nedostupný a netvári sa, že ochrana prešla."
           />
           <div className="rtc-table-wrap">
             <table className="rtc-table">
               <thead>
                 <tr>
-                  <th>Guard</th>
-                  <th>Threshold</th>
-                  <th>Observed</th>
-                  <th>Status</th>
-                  <th>Impact</th>
-                  <th>Evidence</th>
-                  <th>Last triggered</th>
+                  <th>Ochrana</th>
+                  <th>Limit</th>
+                  <th>Skutočná hodnota</th>
+                  <th>Stav</th>
+                  <th>Dopad</th>
+                  <th>Dôkazy</th>
+                  <th>Naposledy aktivované</th>
                 </tr>
               </thead>
               <tbody>
@@ -216,26 +217,26 @@ export function ShieldScreen({
                   shield.guardMatrix.map((guard) => (
                     <tr key={guard.name}>
                       <td>
-                        <strong>{guard.name}</strong>
-                        {guard.derived ? <div className="rtc-inline-note">derived comparison</div> : null}
+                        <strong>{humanizeRuntimeText(guard.name)}</strong>
+                        {guard.derived ? <div className="rtc-inline-note">odvodené porovnanie</div> : null}
                       </td>
-                      <td>{guard.configuredThreshold}</td>
-                      <td>{guard.observedValue}</td>
+                      <td>{humanizeRuntimeText(guard.configuredThreshold)}</td>
+                      <td>{humanizeRuntimeText(guard.observedValue)}</td>
                       <td>
                         <StatusBadge tone={toneFromGuardStatus(guard.status)} value={guard.status} subtle />
                       </td>
-                      <td>{guard.impact}</td>
+                      <td>{humanizeRuntimeText(guard.impact)}</td>
                       <td>
                         <ul className="rtc-list rtc-tight-list">
-                          {guard.evidence.length > 0 ? guard.evidence.map((item) => <li key={`${guard.name}-${item}`}>{item}</li>) : <li>No evidence</li>}
+                          {guard.evidence.length > 0 ? guard.evidence.map((item) => <li key={`${guard.name}-${item}`}>{humanizeRuntimeText(item)}</li>) : <li>Bez dôkazu</li>}
                         </ul>
                       </td>
-                      <td>{guard.lastTriggeredAt ? formatMoment(guard.lastTriggeredAt) : "Unavailable"}</td>
+                      <td>{guard.lastTriggeredAt ? formatMoment(guard.lastTriggeredAt) : "Nedostupné"}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={7}>No guard matrix payload is available.</td>
+                    <td colSpan={7}>Zatiaľ nie je k dispozícii prehľad ochranných pravidiel.</td>
                   </tr>
                 )}
               </tbody>
@@ -245,22 +246,22 @@ export function ShieldScreen({
 
         <GlassPanel tone="warn" interactive>
           <SectionHeader
-            eyebrow="Control"
-            title="Control Safety Panel"
-            subtitle="Typed actions remain provenance-aware. If the runtime cannot prove operator identity or auditability, the buttons stay blocked and the reason remains visible."
+            eyebrow="Zásahy"
+            title="Bezpečné ovládanie"
+            subtitle="Každý zásah ostáva dohľadateľný. Keď systém nevie dokázať, kto zásah robí alebo či sa dá auditovať, tlačidlá ostanú zablokované."
           />
           <div className="rtc-kv">
             <div className="rtc-kv-row">
-              <span>Control status</span>
+              <span>Stav ovládania</span>
               <strong>{controls.statusLine}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Provenance</span>
+              <span>Kto a odkiaľ</span>
               <strong>{controls.provenanceLine}</strong>
             </div>
           </div>
           <label className="rtc-label">
-            Action reason
+            Dôvod zásahu
             <input
               className="rtc-input"
               value={actionReason}
@@ -278,7 +279,7 @@ export function ShieldScreen({
                 type="button"
                 onClick={() => onInvokeControl(control.action)}
               >
-                {pendingAction === control.action ? "Sending..." : control.label}
+                {pendingAction === control.action ? "Odosiela sa..." : control.label}
               </button>
             ))}
           </div>
@@ -293,30 +294,30 @@ export function ShieldScreen({
               auditReference={lastResponse.auditReference ?? "n/a"}
             </div>
           ) : (
-            <p className="rtc-inline-note">No safety action has been sent from this session yet.</p>
+            <p className="rtc-inline-note">Z tejto relácie zatiaľ nebol odoslaný žiadny bezpečnostný zásah.</p>
           )}
           <div className="rtc-kv">
             <div className="rtc-kv-row">
-              <span>Applied control</span>
-              <strong>{shield.appliedControl ? `${shield.appliedControl.action} via ${shield.appliedControl.controlSurface}` : "Unavailable"}</strong>
+              <span>Čo momentálne platí</span>
+              <strong>{shield.appliedControl ? `${humanizeRuntimeText(shield.appliedControl.action)} cez ${humanizeRuntimeText(shield.appliedControl.controlSurface)}` : "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Forced risk mode</span>
-              <strong>{shield.appliedControl?.forcedRiskMode ?? "Unavailable"}</strong>
+              <span>Vynútený režim rizika</span>
+              <strong>{shield.appliedControl?.forcedRiskMode ? humanizeRuntimeText(shield.appliedControl.forcedRiskMode) : "Nedostupné"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Queued command</span>
-              <strong>{shield.queuedCommand ? `${shield.queuedCommand.action} / ${shield.queuedCommand.effectiveState}` : "None queued"}</strong>
+              <span>Čakajúci príkaz</span>
+              <strong>{shield.queuedCommand ? `${humanizeRuntimeText(shield.queuedCommand.action)} / ${humanizeRuntimeText(shield.queuedCommand.effectiveState)}` : "nič nečaká"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>User stream</span>
-              <strong>{shield.userStream.status}</strong>
+              <span>Používateľský stream</span>
+              <strong>{humanizeRuntimeText(shield.userStream.status)}</strong>
             </div>
           </div>
           {shield.appliedControl?.reasons.length ? (
             <div className="rtc-pill-row">
               {shield.appliedControl.reasons.map((reason) => (
-                <StatusBadge key={reason} tone="warn" value={reason} />
+                <StatusBadge key={reason} tone="warn" value={humanizeRuntimeText(reason)} />
               ))}
             </div>
           ) : null}
@@ -326,30 +327,30 @@ export function ShieldScreen({
       <section className="rtc-grid rtc-grid-main">
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Truth"
-            title="Integrity / Truth"
-            subtitle="Shield keeps the core truth questions explicit: which run is selected, whether drift exists, how fresh the evidence is, and whether endpoint/replay integrity remains aligned."
+            eyebrow="Pravda"
+            title="Zhoda a spoľahlivosť"
+            subtitle="Tu vidíš základné pravdy: ktorý beh je vybraný, či nehrozí odklon na iný beh, aké čerstvé sú dôkazy a či sa jednotlivé časti navzájom nebijú."
           />
           <ul className="rtc-list rtc-tight-list">
             {shield.truthNotes.map((note) => (
-              <li key={note}>{note}</li>
+              <li key={note}>{humanizeRuntimeText(note)}</li>
             ))}
           </ul>
           <div className="rtc-kv">
             <div className="rtc-kv-row">
-              <span>Selection mode</span>
+              <span>Spôsob výberu</span>
               <strong>{shield.runtimeIdentity?.runSelectionMode ?? "unavailable"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Run path</span>
+              <span>Cesta k behu</span>
               <strong>{shield.runtimeIdentity?.runPath ?? "unavailable"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Pin integrity</span>
+              <span>Zhoda pevného pripnutia</span>
               <strong>{shield.runtimeIdentity?.pinIntegrityStatus ?? "unavailable"}</strong>
             </div>
             <div className="rtc-kv-row">
-              <span>Drift status</span>
+              <span>Stav odklonu</span>
               <strong>{shield.runtimeIdentity?.driftStatus ?? "unavailable"}</strong>
             </div>
           </div>
@@ -357,9 +358,9 @@ export function ShieldScreen({
 
         <GlassPanel interactive>
           <SectionHeader
-            eyebrow="Artifacts"
-            title="Linked Evidence"
-            subtitle="These files back the shield verdict directly. Operators can move from UI posture to concrete runtime artifacts without guesswork."
+            eyebrow="Dôkazy"
+            title="Napojené dôkazy"
+            subtitle="Tieto súbory priamo podkladajú bezpečnostné hodnotenie. Z panelu sa tak vieš dostať ku konkrétnym dôkazom bez hádania."
           />
           <div className="rtc-pill-row">
             {shield.linkedArtifacts.length > 0 ? (
@@ -367,7 +368,7 @@ export function ShieldScreen({
                 <StatusBadge key={artifact} tone="info" value={artifact} />
               ))
             ) : (
-              <StatusBadge tone="warn" value="no linked artifacts" />
+              <StatusBadge tone="warn" value="bez napojených dôkazov" />
             )}
           </div>
         </GlassPanel>

@@ -1,5 +1,6 @@
 import React from "react";
 import { GlassPanel, SectionHeader, StatusBadge } from "@/components/ui/surface";
+import { humanizeRuntimeText } from "@/components/screen-formatters";
 import type { UiInferenceContract } from "@/types/contracts";
 
 function toneForStatus(value: string): "good" | "warn" | "danger" | "info" {
@@ -19,46 +20,46 @@ export function UiInferenceOversight({ oversight }: { oversight: UiInferenceCont
   return (
     <GlassPanel>
       <SectionHeader
-        eyebrow="Truth discipline"
-        title="UI inference oversight"
-        subtitle="This ledger monitors where the cockpit is showing direct runtime evidence, where values are derived, and where the UI is intentionally incomplete."
+        eyebrow="Kontrola pravdivosti"
+        title="Dohľad nad tým, čo si UI iba odvodilo"
+        subtitle="Tu vidíš, kde aplikácia ukazuje priamo reálne údaje, kde niečo dopočítala, a kde úmyselne priznáva, že údaj chýba."
         meta={(
           <div className="rtc-pill-row">
-            <StatusBadge tone={toneForStatus(oversight.status)} label="oversight" value={oversight.status} />
-            <StatusBadge tone={oversight.source === "runtime-api" ? "good" : "danger"} label="source" value={oversight.source} />
+            <StatusBadge tone={toneForStatus(oversight.status)} label="dohľad" value={oversight.status} />
+            <StatusBadge tone={oversight.source === "runtime-api" ? "good" : "danger"} label="zdroj" value={oversight.source} />
           </div>
         )}
       />
 
       <div className="rtc-summary-grid rtc-summary-grid-wide">
         <article className="rtc-summary-card" data-tone={toneForStatus(oversight.status)}>
-          <div className="rtc-summary-label">Oversight status</div>
+          <div className="rtc-summary-label">Stav dohľadu</div>
           <div className="rtc-summary-value">{oversight.status}</div>
-          <div className="rtc-summary-hint">Contained means no hidden guesswork path is currently detected.</div>
+          <div className="rtc-summary-hint">Stav „contained“ znamená, že aplikácia momentálne nič neschováva ani si tajne nedomýšľa.</div>
         </article>
         <article className="rtc-summary-card" data-tone={oversight.derivedFieldCount > 0 ? "warn" : "good"}>
-          <div className="rtc-summary-label">Derived fields</div>
+          <div className="rtc-summary-label">Odvodené polia</div>
           <div className="rtc-summary-value">{oversight.derivedFieldCount}</div>
-          <div className="rtc-summary-hint">Every derived value must stay individually labeled on-screen.</div>
+          <div className="rtc-summary-hint">Každá dopočítaná hodnota musí byť na obrazovke jasne označená.</div>
         </article>
         <article className="rtc-summary-card" data-tone={oversight.unavailableFieldCount > 0 ? "warn" : "good"}>
-          <div className="rtc-summary-label">Unavailable values</div>
+          <div className="rtc-summary-label">Chýbajúce hodnoty</div>
           <div className="rtc-summary-value">{oversight.unavailableFieldCount}</div>
-          <div className="rtc-summary-hint">Unavailable means the UI refused to back-fill missing runtime truth.</div>
+          <div className="rtc-summary-hint">Keď údaj chýba, UI ho nedopĺňa nasilu a radšej to otvorene prizná.</div>
         </article>
         <article className="rtc-summary-card" data-tone={oversight.linkedArtifactCount > 0 ? "good" : "warn"}>
-          <div className="rtc-summary-label">Linked artifacts</div>
+          <div className="rtc-summary-label">Napojené dôkazy</div>
           <div className="rtc-summary-value">{oversight.linkedArtifactCount}</div>
-          <div className="rtc-summary-hint">Artifact count backing the current cockpit surface.</div>
+          <div className="rtc-summary-hint">Počet súborov a dôkazov, o ktoré sa aktuálna obrazovka opiera.</div>
         </article>
       </div>
 
       <div className="rtc-grid rtc-grid-main rtc-grid-main-balanced">
         <GlassPanel compact className="rtc-nested-panel" interactive>
           <SectionHeader
-            eyebrow="Ledger"
-            title="Surface ledger"
-            subtitle="Each screen gets its own evidence posture so Command Center, Brain, Shield, and Execution cannot hide behind one aggregate status."
+            eyebrow="Prehľad"
+            title="Stav jednotlivých obrazoviek"
+            subtitle="Každá obrazovka má vlastný stav dôkazov, aby sa Hlavný panel, Rozhodovanie, Bezpečnosť a Obchody neschovali za jedno spoločné číslo."
             compact
           />
           <div className="rtc-state-grid rtc-state-grid-tight">
@@ -70,25 +71,25 @@ export function UiInferenceOversight({ oversight }: { oversight: UiInferenceCont
                 </div>
                 <div className="rtc-kv rtc-kv-tight">
                   <div className="rtc-kv-row">
-                    <span>Direct evidence</span>
+                    <span>Priame dôkazy</span>
                     <strong>{surface.directEvidenceCount}</strong>
                   </div>
                   <div className="rtc-kv-row">
-                    <span>Derived fields</span>
+                    <span>Odvodené polia</span>
                     <strong>{surface.derivedFieldCount}</strong>
                   </div>
                   <div className="rtc-kv-row">
-                    <span>Unavailable values</span>
+                    <span>Chýbajúce hodnoty</span>
                     <strong>{surface.unavailableFieldCount}</strong>
                   </div>
                   <div className="rtc-kv-row">
-                    <span>Linked artifacts</span>
+                    <span>Napojené dôkazy</span>
                     <strong>{surface.linkedArtifactCount}</strong>
                   </div>
                 </div>
                 <ul className="rtc-list rtc-tight-list">
                   {surface.notes.map((note) => (
-                    <li key={`${surface.id}-${note}`}>{note}</li>
+                    <li key={`${surface.id}-${note}`}>{humanizeRuntimeText(note)}</li>
                   ))}
                 </ul>
               </article>
@@ -98,9 +99,9 @@ export function UiInferenceOversight({ oversight }: { oversight: UiInferenceCont
 
         <GlassPanel compact className="rtc-nested-panel" interactive>
           <SectionHeader
-            eyebrow="Checks"
-            title="Oversight checks"
-            subtitle="These checks answer whether the UI truth path itself is behaving correctly: source explicitness, run lock integrity, endpoint consistency, replay alignment, and derivation discipline."
+            eyebrow="Kontroly"
+            title="Kontroly pravdivosti"
+            subtitle="Tieto kontroly hovoria, či samotná aplikácia pracuje poctivo: či je jasný zdroj dát, či je beh zamknutý správne, či si časti neprotirečia a či sú odvodené údaje priznané."
             compact
           />
           <div className="rtc-state-grid rtc-state-grid-tight">
@@ -110,13 +111,13 @@ export function UiInferenceOversight({ oversight }: { oversight: UiInferenceCont
                   <strong>{rule.label}</strong>
                   <StatusBadge tone={toneForStatus(rule.status)} value={rule.status} subtle />
                 </div>
-                <div className="rtc-inline-note">{rule.detail}</div>
+                <div className="rtc-inline-note">{humanizeRuntimeText(rule.detail)}</div>
               </article>
             ))}
           </div>
           <ul className="rtc-list rtc-tight-list">
             {oversight.notes.map((note) => (
-              <li key={note}>{note}</li>
+              <li key={note}>{humanizeRuntimeText(note)}</li>
             ))}
           </ul>
         </GlassPanel>
