@@ -8,6 +8,7 @@ from autonomous_investment_robot.config.settings import (
     ExecutionSettings,
     HarmonySettings,
     LiveUnlockSettings,
+    MarketUniverseSettings,
     MarketWatchSettings,
     RiskLimits,
     RobotSettings,
@@ -18,6 +19,188 @@ from autonomous_investment_robot.config.settings import (
 from autonomous_investment_robot.core.orchestrator import RobotOrchestrator
 from autonomous_investment_robot.main import run_with_config
 from autonomous_investment_robot.services.paper_runtime import MetricsCoordinator, PaperDecisionCoordinator
+from autonomous_investment_robot.services.policy.service import OrderIntent as PolicyOrderIntent
+
+
+def _make_live_loop_test_orchestrator(tmp_path: Path, monkeypatch) -> RobotOrchestrator:
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    monkeypatch.setenv("TESTNET_VALIDATED", "true")
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        universe=["BTC/USD"],
+        market_universe=MarketUniverseSettings(pair_universe=["BTC/USD"], max_active_pairs=1),
+        execution=ExecutionSettings(mode="live", provider_id="kraken_spot"),
+        safety=SafetySettings(live_unlock=LiveUnlockSettings(enable_live_trading=True, ack_i_understand_risks=True)),
+        harmony=HarmonySettings(enabled=True, default_order_cadence_s=0.0),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        market_watch=MarketWatchSettings(enabled=True),
+        risk=RiskLimits(
+            max_daily_loss_pct=1.0,
+            max_weekly_loss_pct=2.0,
+            max_drawdown_pct=2.0,
+            max_position_notional=10.0,
+            max_exposure_notional=10.0,
+            max_symbol_exposure_notional=10.0,
+            max_cluster_exposure_notional=10.0,
+            max_orders_per_min=5,
+            leverage=0,
+            max_spread_bps=10.0,
+            min_depth_notional=10.0,
+            stale_data_seconds=10.0,
+            min_margin_buffer=2.0,
+            max_funding_cost_per_day=1.0,
+            max_oi_spike_pct=1.0,
+            max_liquidation_spike=1.0,
+            divergence_threshold_bps=10.0,
+            crowding_score_kill=10.0,
+        ),
+        tco=TCOSettings(max_total_cost_bps=10.0, max_impact_bps=10.0),
+        rollout_stage_override="tiny_live",
+    )
+    orchestrator = RobotOrchestrator(settings)
+    orchestrator._emit_live_runtime_summary = lambda **kwargs: ""  # type: ignore[method-assign]
+    orchestrator._record_live_reason = lambda **kwargs: None  # type: ignore[method-assign]
+    orchestrator._maybe_warn_latency = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    orchestrator.live_metrics.record_loop_state = lambda **kwargs: None
+    orchestrator.live_control.check_kill_file = lambda **kwargs: None
+    orchestrator.live_control.apply_meta_governor = lambda **kwargs: SimpleNamespace(
+        exposure_notional=float(kwargs.get("exposure_notional", 0.0)),
+        stop_result=None,
+        continue_loop=False,
+    )
+    orchestrator.live_control.apply_incidents = lambda **kwargs: SimpleNamespace(
+        exposure_notional=float(kwargs.get("exposure_notional", 0.0)),
+        stop_result=None,
+    )
+    orchestrator.live_market.collect = lambda **kwargs: SimpleNamespace(
+        prices=[],
+        snapshot=SimpleNamespace(mid=100.0, spread_bps=1.0, depth_notional=100000.0),
+        market_stage_ms=1.0,
+        forecast_stage_ms=1.0,
+        quantum_stage_ms=1.0,
+        edge_immunity_stage_ms=1.0,
+        advisory=None,
+        forecast=SimpleNamespace(symbol="BTC/USD", regime="RANGE", liquidity_regime="GOOD"),
+    )
+    return orchestrator
+
+
+def _run_single_live_loop_step(
+    orchestrator: RobotOrchestrator,
+    monkeypatch,
+    *,
+    decision_ctx: SimpleNamespace,
+    execution_result: SimpleNamespace | None = None,
+) -> dict:
+    monkeypatch.setenv("AUTONOMOUS_LIVE_LOOP_MAX_STEPS", "1")
+    monkeypatch.setattr("autonomous_investment_robot.core.orchestrator.time.sleep", lambda _: None)
+    orchestrator.live_decision.evaluate = lambda **kwargs: decision_ctx
+    if execution_result is not None:
+        orchestrator.execution.execute_live = lambda adjusted: execution_result
+        orchestrator.live_ledger.apply_execution_result = lambda **kwargs: SimpleNamespace(
+            exposure_notional=float(kwargs.get("current_exposure", 0.0)),
+            fill_truth_ok=True,
+        )
+    live = SimpleNamespace(killed=False)
+    return orchestrator._live_loop(live=live, symbol="BTC/USD", mode=orchestrator.settings.execution_mode_enum())
+
+
+def test_live_loop_no_trade_does_not_increment_reject_storm_metric(tmp_path, monkeypatch):
+    orchestrator = _make_live_loop_test_orchestrator(tmp_path, monkeypatch)
+    decision_ctx = SimpleNamespace(
+        health_snapshot=SimpleNamespace(action="continue", reasons=[]),
+        meta_governor_decision=SimpleNamespace(action="continue", reasons=[], size_multiplier=1.0),
+        policy_decision=SimpleNamespace(
+            trade_allowed=False,
+            side=None,
+            no_trade=SimpleNamespace(reason="no_edge_after_costs", reasons=["no_edge_after_costs"]),
+        ),
+        risk_decision=None,
+        adjusted_intent=None,
+        execution_plan=None,
+        health_stage_ms=1.0,
+        risk_stage_ms=1.0,
+        execution_stage_ms=1.0,
+    )
+
+    for _ in range(25):
+        result = _run_single_live_loop_step(orchestrator, monkeypatch, decision_ctx=decision_ctx)
+        assert result["reason"] == "max_steps_reached"
+
+    assert orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 0.0
+    assert orchestrator._live_runtime_diagnostics["no_intent"] == 25
+
+
+def test_live_loop_risk_veto_does_not_increment_reject_storm_metric(tmp_path, monkeypatch):
+    orchestrator = _make_live_loop_test_orchestrator(tmp_path, monkeypatch)
+    decision_ctx = SimpleNamespace(
+        health_snapshot=SimpleNamespace(action="continue", reasons=[]),
+        meta_governor_decision=SimpleNamespace(action="continue", reasons=[], size_multiplier=1.0),
+        policy_decision=SimpleNamespace(trade_allowed=True, side="buy", no_trade=None),
+        risk_decision=SimpleNamespace(allowed=False, reason="orders_per_min_exceeded", details={}, flatten=False),
+        adjusted_intent=None,
+        execution_plan=None,
+        health_stage_ms=1.0,
+        risk_stage_ms=1.0,
+        execution_stage_ms=1.0,
+    )
+
+    result = _run_single_live_loop_step(orchestrator, monkeypatch, decision_ctx=decision_ctx)
+
+    assert result["reason"] == "max_steps_reached"
+    assert orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 0.0
+    assert orchestrator._live_runtime_diagnostics["risk_rejected"] == 1
+
+
+def test_live_loop_blocked_execution_does_not_increment_reject_metric_but_rejected_execution_does(tmp_path, monkeypatch):
+    orchestrator = _make_live_loop_test_orchestrator(tmp_path, monkeypatch)
+    decision_ctx = SimpleNamespace(
+        health_snapshot=SimpleNamespace(action="continue", reasons=[]),
+        meta_governor_decision=SimpleNamespace(action="continue", reasons=[], size_multiplier=1.0),
+        policy_decision=SimpleNamespace(trade_allowed=True, side="buy", no_trade=None),
+        risk_decision=SimpleNamespace(allowed=True, reason="", details={}, flatten=False),
+        adjusted_intent=PolicyOrderIntent(symbol="BTC/USD", side="buy", target_notional=10.0, why={"test": "blocked"}),
+        execution_plan=object(),
+        health_stage_ms=1.0,
+        risk_stage_ms=1.0,
+        execution_stage_ms=1.0,
+    )
+
+    blocked_result = _run_single_live_loop_step(
+        orchestrator,
+        monkeypatch,
+        decision_ctx=decision_ctx,
+        execution_result=SimpleNamespace(status="blocked", reason="flatten_only", metadata={}),
+    )
+
+    assert blocked_result["reason"] == "max_steps_reached"
+    assert orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 0.0
+    assert orchestrator._live_runtime_diagnostics["orders_blocked"] == 1
+
+    rejected_orchestrator = _make_live_loop_test_orchestrator(tmp_path / "rejected", monkeypatch)
+    rejected_decision_ctx = SimpleNamespace(**decision_ctx.__dict__)
+    rejected_decision_ctx.adjusted_intent = PolicyOrderIntent(symbol="BTC/USD", side="buy", target_notional=10.0, why={"test": "rejected"})
+    rejected_result = _run_single_live_loop_step(
+        rejected_orchestrator,
+        monkeypatch,
+        decision_ctx=rejected_decision_ctx,
+        execution_result=SimpleNamespace(status="rejected", reason="exchange_reject", metadata={}),
+    )
+
+    assert rejected_result["reason"] == "max_steps_reached"
+    assert rejected_orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 1.0
+    assert rejected_orchestrator._live_runtime_diagnostics["orders_rejected"] == 1
 
 
 def test_paper_run_emits_observability_journals():

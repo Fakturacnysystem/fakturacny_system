@@ -3366,7 +3366,6 @@ class RobotOrchestrator:
                 continue
             if (not policy_decision.trade_allowed or policy_decision.side is None) and decision_ctx.adjusted_intent is None:
                 self._live_runtime_diagnostics["no_intent"] = int(self._live_runtime_diagnostics["no_intent"]) + 1
-                self.ops.inc_metric("orders_rejected_total")
                 no_trade_reason = policy_decision.no_trade.reason if policy_decision.no_trade is not None else "no_trade"
                 self._record_live_reason(reason=no_trade_reason, surface="policy")
                 self.ops.audit_event(
@@ -3397,7 +3396,6 @@ class RobotOrchestrator:
             if decision is None:
                 self._live_runtime_diagnostics["risk_rejected"] = int(self._live_runtime_diagnostics["risk_rejected"]) + 1
                 self._record_live_reason(reason="risk_decision_missing", surface="risk")
-                self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": "risk_decision_missing", "details": {}})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
@@ -3421,7 +3419,6 @@ class RobotOrchestrator:
             if not decision.allowed:
                 self._live_runtime_diagnostics["risk_rejected"] = int(self._live_runtime_diagnostics["risk_rejected"]) + 1
                 self._record_live_reason(reason=str(decision.reason), surface="risk")
-                self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": decision.reason, "details": decision.details})
                 if decision.flatten and hasattr(live, "flatten_all_positions"):
                     try:
@@ -3449,7 +3446,6 @@ class RobotOrchestrator:
             if adjusted is None or plan is None:
                 self._live_runtime_diagnostics["orders_blocked"] = int(self._live_runtime_diagnostics["orders_blocked"]) + 1
                 self._record_live_reason(reason="execution_plan_missing", surface="execution")
-                self.ops.inc_metric("orders_rejected_total")
                 self.ops.audit_event("risk_reject", {"reason": "execution_plan_missing", "details": decision.details})
                 self.ops.export_prometheus()
                 self.ops.export_dashboard_snapshot()
@@ -3502,12 +3498,11 @@ class RobotOrchestrator:
                 if not ledger_result.fill_truth_ok:
                     self.ops.inc_metric("live_fill_truth_gap_total")
                     self._record_live_reason(reason="live_fill_truth_gap", surface="truth_confidence")
-            elif result.status in {"rejected", "blocked", "killed"}:
+            elif result.status == "rejected":
                 self.ops.inc_metric("orders_rejected_total")
-                if result.status == "blocked":
-                    self._live_runtime_diagnostics["orders_blocked"] = int(self._live_runtime_diagnostics["orders_blocked"]) + 1
-                else:
-                    self._live_runtime_diagnostics["orders_rejected"] = int(self._live_runtime_diagnostics["orders_rejected"]) + 1
+                self._live_runtime_diagnostics["orders_rejected"] = int(self._live_runtime_diagnostics["orders_rejected"]) + 1
+            elif result.status == "blocked":
+                self._live_runtime_diagnostics["orders_blocked"] = int(self._live_runtime_diagnostics["orders_blocked"]) + 1
             elif result.status == "deduped":
                 self._live_runtime_diagnostics["deduped"] = int(self._live_runtime_diagnostics["deduped"]) + 1
 
