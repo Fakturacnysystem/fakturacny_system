@@ -187,6 +187,7 @@ def test_live_loop_blocked_execution_does_not_increment_reject_metric_but_reject
     assert blocked_result["reason"] == "max_steps_reached"
     assert orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 0.0
     assert orchestrator._live_runtime_diagnostics["orders_blocked"] == 1
+    assert orchestrator.risk.state.orders_in_current_min == 0
 
     rejected_orchestrator = _make_live_loop_test_orchestrator(tmp_path / "rejected", monkeypatch)
     rejected_decision_ctx = SimpleNamespace(**decision_ctx.__dict__)
@@ -201,6 +202,7 @@ def test_live_loop_blocked_execution_does_not_increment_reject_metric_but_reject
     assert rejected_result["reason"] == "max_steps_reached"
     assert rejected_orchestrator.ops.metrics.get("orders_rejected_total", 0.0) == 1.0
     assert rejected_orchestrator._live_runtime_diagnostics["orders_rejected"] == 1
+    assert rejected_orchestrator.risk.state.orders_in_current_min == 1
 
 
 def test_paper_run_emits_observability_journals():

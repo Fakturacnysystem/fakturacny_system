@@ -3473,6 +3473,15 @@ class RobotOrchestrator:
             )
             if getattr(result, "reason", ""):
                 self._record_live_reason(reason=str(result.reason), surface="execution")
+            if result.status in {
+                "submitted",
+                "rejected",
+                "timeout",
+                "filled_maker",
+                "filled_marketable_limit",
+                "filled_taker_fallback",
+            }:
+                self.risk.record_order_attempt()
             ledger_result = self.live_ledger.apply_execution_result(
                 symbol=symbol,
                 provider_id=provider_id,
