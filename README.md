@@ -24,6 +24,22 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
 - Reconciliation reason/severity/action model is documented in `docs/reconciliation_truth.md`.
 - Architecture/runtime upgrade details are documented in `docs/architecture_upgrade.md`.
 - Operator-facing runtime artifact and risk-mode guidance is documented in `docs/operator_runtime.md`.
+- Live authority, release baseline, promotion discipline, and operator runtime review are defined in:
+  - `LIVE_AUTHORITY_BOUNDARY.md`
+  - `RELEASE_BASELINE.md`
+  - `PROMOTION_GATES.md`
+  - `RUN_REVIEW_TEMPLATE.md`
+  - `OPERATOR_RUNTIME_CHECKLIST.md`
+  - `docs/module_value_map.md`
+  - `docs/trade_admission_model.md`
+  - `docs/opportunity_scheduler.md`
+  - `docs/universe_policy.md`
+  - `docs/dynamic_cost_model.md`
+  - `docs/event_feed_runtime.md`
+  - `docs/execution_toxicity.md`
+  - `docs/decision_deadline_governor.md`
+  - `docs/false_negative_review.md`
+  - `docs/capability_truth_matrix.md`
 
 ## Architecture highlights
 - `RobotOrchestrator` now coordinates explicit bounded contexts for market data, regime, alpha, portfolio, health, learning, and observability while preserving existing entrypoints.
@@ -52,6 +68,9 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
 - Live runs additionally emit `truth_confidence_journal.jsonl`, `fills_journal.jsonl`, `accounting_truth_journal.jsonl`, `recovery_journal.jsonl`, `reconciliation_journal.jsonl`, `meta_governor_journal.jsonl`, `control_journal.jsonl`, `market_integrity_journal.jsonl`, `market_integrity_evidence_journal.jsonl`, `venue_limit_journal.jsonl`, and `provider_capability_journal.jsonl`.
 - Live and paper runs now emit `quantum_state_journal.jsonl`, `edge_immunity_journal.jsonl`, `mastermind_journal.jsonl`, `spre_journal.jsonl`, `shadow_rival_journal.jsonl`, `decision_doctrine_journal.jsonl`, `execution_simulation_journal.jsonl`, `human_escalation_journal.jsonl`, `analog_trade_lookup.jsonl`, and `counterfactual_review.jsonl`; SPRE/shadow/doctrine/mastermind journals now include action rankings, survival ratio, dominance gap, failure clusters, kill-path evidence, truth strength, partial-truth penalty, regret pressure, or bounded-safe advisory rationale depending on the channel. Paper and live runs can emit `pnl_attribution.jsonl`, `loss_autopsy.jsonl`, `post_trade_summary.jsonl`, `loss_review_summary.jsonl`, `decision_doctrine_summary.jsonl`, and `mastermind_summary.jsonl`.
 - Live runs now also refresh `kraken_spot_operator_summary.json`, `live_capability_matrix.json`, `live_activated_capabilities.json`, `live_still_gated_capabilities.json`, `live_doctrine_blocked_capabilities.json`, and `live_artifact_index.json` during the actual live loop.
+- Kraken SPOT readonly, tiny_live, and limited_live profiles now expose a bounded liquid board through `market_universe.pair_universe` while keeping `max_active_pairs=1`.
+- `PolicyService` now emits an authoritative `trade_admission` layer with expected utility, floor compatibility, capital-lock cost, and signal-decay reasoning before the final live decision.
+- The live loop now uses a bounded flat-state opportunity scheduler to choose among configured spot symbols only when there is no open inventory and no open order.
 
 ## Kraken SPOT doctrine profiles
 - Paper baseline: `config.kraken_spot.paper.yaml`
@@ -101,27 +120,36 @@ Legacy derivative live services remain in source only as readonly/diagnostic com
   - negative-direction fresh entries from directional strategies
   - any non-reduce SELL that is not inventory-backed
 
-## Binance setup (step-by-step)
-1. Create Binance Futures API key:
-- Futures enabled.
+## Kraken SPOT live setup
+1. Create Kraken SPOT API credentials:
+- Spot trading enabled.
 - Withdrawals disabled.
 - IP allowlist strongly recommended.
 
-2. Configure `.env`:
+2. Configure runtime env:
 ```bash
-EXCHANGE_API_KEY=...
-EXCHANGE_API_SECRET=...
+KRAKEN_SPOT_API_KEY=...
+KRAKEN_SPOT_API_SECRET=...
 ENABLE_LIVE_TRADING=false
 ACK_I_UNDERSTAND_RISKS=false
 ENABLE_FULL_LIVE_STAGE=false
-TESTNET_VALIDATED=false
+ROBOT_ROLLOUT_STAGE_OVERRIDE=
+KRAKEN_SPOT_EVENT_FEED_PATH=
 ```
 
-3. Rollout path (must be sequential):
-1. `live-readonly` for 24-72h with recordings.
-2. `live_testnet` for 3-7 days with tiny notionals.
-3. `live_canary` for 1-2 weeks at 1-5% risk.
-4. `live` full strict after stability.
+Supported runtime env sources:
+- `TRADING_ENV_FILE=/absolute/path/to/runtime.env`
+- `${SECRETS_DIR}/trading-engine.env`
+- `~/.config/trading-bot/runtime.env`
+- `~/.config/trading-bot/trading-engine.env`
+- `./secrets/trading-engine.env`
+
+3. Controlled rollout ladder:
+1. `readonly` via `config.kraken_spot.readonly_analysis.yaml` with `execution.mode=live_readonly` and resolved `rollout_stage=shadow`
+2. `shadow` via readonly analysis plus additive decision-comparison artifacts
+3. `tiny_live` via `config.kraken_spot.tiny_live.yaml` with `execution.mode=live` and explicit `rollout_stage=tiny_live`
+4. `limited_live` via `config.kraken_spot.live.yaml`
+5. `normal_live` via `config.kraken_spot.live_profit.yaml` with `ENABLE_FULL_LIVE_STAGE=true`
 
 ## Create a new local environment
 ```bash
@@ -138,10 +166,25 @@ PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken
 PYTHONPATH=src python3 -m autonomous_investment_robot replay-report --config config.kraken_spot.replay_full_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot ack-review --run-dir runs/<run_id> --reviewer ops --notes "manual review approved"
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
+python3 scripts/deployment_preflight.py
+python3 scripts/runtime_status.py --run-dir runs/<run_id>
+python3 scripts/runtime_healthcheck.py --run-dir runs/<run_id>
+python3 scripts/collect_diagnostics_bundle.py --run-dir runs/<run_id>
+python3 scripts/verify_server_parity.py --runtime-path /opt/trading-bot/core
 ```
+
+## Deployment truth
+- `infra/docker-compose.yml` is the only supported compose manifest in this repo, and only for infra dependencies.
+- Root `docker-compose.yml` is an explicit `legacy_blocked` manifest. It is not a supported live runtime source.
+- `src/autonomous-investment-robot/` is an archival duplicate snapshot and is excluded from the supported build/deploy surface.
+- `apps/`, `tools/`, `bootstrap_mac.sh`, and `codex_ultra_master_prompt.md` are excluded from the supported deploy context.
+- Use `python3 scripts/deployment_preflight.py` before any deploy or restart decision.
+- Use `python3 scripts/verify_server_parity.py --runtime-path <path>` after sync/deploy to prove local/runtime parity.
+- Use `python3 scripts/tiny_live_promotion_readiness.py --run-dir <run_dir> --secrets-dir <secrets_dir>` before any readonly/shadow -> tiny_live promotion.
 
 ## Requested doctrine status
 - Launch-gated live target: `kraken_spot` only.
@@ -159,6 +202,7 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
   - `./scripts/run_kraken_spot_paper_full_analysis.sh`
   - `./scripts/run_kraken_spot_replay_full_analysis.sh`
   - `./scripts/run_kraken_spot_readonly_analysis.sh`
+  - `./scripts/run_kraken_spot_tiny_live.sh`
   - `./scripts/run_kraken_spot_profit_full_throttle.sh`
   - `./scripts/run_kraken_ultra_profit_full_throttle.sh`
   - `./scripts/instant_validate_kraken.sh`
@@ -166,7 +210,28 @@ PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kr
 ## Emergency stop
 - Soft stop: run with `--kill`.
 - Hard stop file: create `runs/<run_id>/KILL`.
-- Emergency flatten path uses reduce-only market close (if enabled in config).
+- Emergency flatten supports:
+  - full portfolio flatten
+  - symbol-only flatten via `flatten --symbol <SYMBOL> --scope symbol`
+  - freeze-only mode via `flatten --freeze-only --reason "<reason>"`
+- Emergency flatten remains reduce-only and inventory-backed.
+
+## Tiny live first-money checklist
+1. Run readonly analysis with real credentials:
+   - `bash ./scripts/run_kraken_spot_readonly_analysis.sh`
+2. Validate readiness artifacts in `runs/<run_id>/`:
+   - `tiny_live_readiness_report.json`
+   - `safety_preflight_live_target.json`
+   - `rollback_preflight_liveprofit_paper.json`
+   - `tiny_live_envelope_summary.json`
+   - `live_operator_start_procedure.json`
+3. Confirm:
+   - `tiny_live_readiness_report.json["ready"] == true`
+   - `safety_preflight_live_target.json["ready"] == true`
+   - `rollback_preflight_liveprofit_paper.json["ready"] == true`
+4. Start tiny live:
+   - `ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true bash ./scripts/run_kraken_spot_tiny_live.sh`
+5. Promote to `limited_live` only after reconciliation, throughput diagnostics, and execution truth remain clean.
 
 ## Monitoring (Grafana)
 - drawdown (`drawdown`)
@@ -207,7 +272,7 @@ python3 -m pip install pytest
 python3 -m pytest -q
 
 # paper (offline deterministic)
-PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.perps_intraday.paper.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot run --config config.kraken_spot.paper.yaml
 
 # live readonly preflight / preview (no order placement)
 PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config config.kraken_spot.readonly_analysis.yaml
@@ -227,9 +292,14 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live-readonly --config con
 # 2) doctrine-safe Kraken SPOT launch gates
 ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
 KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
+PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.tiny_live.yaml
+
+# 3) limited live
+ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true \
+KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml
 
-# 3) higher-notional profile
+# 4) higher-notional profile
 ENABLE_LIVE_TRADING=true ACK_I_UNDERSTAND_RISKS=true ENABLE_FULL_LIVE_STAGE=true \
 KRAKEN_SPOT_API_KEY=... KRAKEN_SPOT_API_SECRET=... \
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live_profit.yaml
@@ -237,12 +307,14 @@ PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.krake
 # emergency kill / flatten
 PYTHONPATH=src python3 -m autonomous_investment_robot live --config config.kraken_spot.live.yaml --kill
 PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml --freeze-only --reason "operator_freeze"
+PYTHONPATH=src python3 -m autonomous_investment_robot flatten --config config.kraken_spot.live.yaml --scope symbol --symbol BTC/USD --reason "symbol_flatten"
 ```
 
 Rollout stage mapping used by the runtime:
 - `paper` -> offline deterministic
-- `shadow` -> `live_readonly`
-- `tiny_live` -> canary-sized launch-gated `kraken_spot` profile
+- `shadow` -> readonly analytics only; no live order authority
+- `tiny_live` -> bounded first-money `kraken_spot` profile on the existing authoritative live path
 - `limited_live` -> conservative `kraken_spot` live profile
 - `normal_live` -> higher-notional `kraken_spot` live profile
 

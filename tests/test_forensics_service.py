@@ -116,3 +116,43 @@ def test_record_runtime_anomaly_persists_forensic_artifact(tmp_path):
     assert report.runtime_degradation_context["truth_warning_count"] == 0
     assert Path(tmp_path / "loss_autopsy.jsonl").exists()
     assert Path(tmp_path / "loss_review_summary.jsonl").exists()
+
+
+def test_forensics_service_emits_phase2_realization_artifacts(tmp_path):
+    svc = ForensicsService(str(tmp_path))
+    fill = Fill(
+        venue="paper",
+        order_id="ord-3",
+        fill_id="fill-3",
+        symbol="BTCUSDT",
+        side="sell",
+        notional=100.0,
+        fee=0.5,
+        slippage_cost=0.4,
+        latency_ms=250,
+        status="filled",
+    )
+
+    svc.analyze_trade(
+        context=TradeForensicsContext(
+            symbol="BTCUSDT",
+            ts=datetime.now(timezone.utc),
+            venue="paper",
+            order_id="ord-3",
+            side="sell",
+            regime_label="trend",
+            expected_edge_bps=25.0,
+            profitability_context={"round_trip": {"net_edge_bps": 18.0}},
+            metadata={"hold_seconds": 600.0, "expected_time_to_floor_minutes": 8.0, "exit_timing_pnl": 1.0},
+        ),
+        fills=[fill],
+        filled_notional=100.0,
+        realized_pnl=12.0,
+        execution_quality=type("EQ", (), {"expected_fill_speed_ms": 150.0, "expected_price_quality_bps": 2.0, "fill_probability": 0.8, "adverse_selection_risk": 0.1})(),
+    )
+
+    assert (tmp_path / "realized_vs_forecast_execution_journal.jsonl").exists()
+    assert (tmp_path / "edge_forecast_vs_realized_journal.jsonl").exists()
+    assert (tmp_path / "forecast_error_decomposition.jsonl").exists()
+    assert (tmp_path / "realized_vs_forecast_exit_journal.jsonl").exists()
+    assert (tmp_path / "execution_calibration_feedback.jsonl").exists()

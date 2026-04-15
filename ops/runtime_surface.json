@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "supported_runtime": {
+    "repo_root": ".",
+    "python_package": "src/autonomous_investment_robot",
+    "dockerfiles": [
+      "Dockerfile"
+    ],
+    "infra_manifests": [
+      "infra/docker-compose.yml"
+    ],
+    "server_manifests": [
+      "ops/docker-compose.server.yml"
+    ],
+    "operator_entrypoints": [
+      "scripts/run_kraken_spot_readonly_analysis.sh",
+      "scripts/run_kraken_spot_tiny_live.sh",
+      "scripts/run_kraken_spot_profit_full_throttle.sh",
+      "scripts/run_kraken_ultra_profit_full_throttle.sh",
+      "scripts/container_start_tiny_live.sh",
+      "scripts/runtime_status.py",
+      "scripts/runtime_healthcheck.py",
+      "scripts/deployment_preflight.py",
+      "scripts/verify_server_parity.py",
+      "scripts/collect_diagnostics_bundle.py",
+      "scripts/tiny_live_promotion_readiness.py"
+    ],
+    "configs": [
+      "config.kraken_spot.readonly_analysis.yaml",
+      "config.kraken_spot.tiny_live.yaml",
+      "config.kraken_spot.live.yaml",
+      "config.kraken_spot.live_profit.yaml"
+    ]
+  },
+  "legacy_blocked": {
+    "manifests": [
+      "docker-compose.yml"
+    ],
+    "entrypoints": [
+      "god_mode_launcher.py",
+      "live_production_master.py",
+      "scripts/run_live.sh",
+      "scripts/run_live_canary.sh",
+      "scripts/run_testnet.sh",
+      "scripts/run_kraken_live.sh",
+      "scripts/run_kraken_live_canary.sh"
+    ],
+    "artifacts": [
+      "production_live.log"
+    ]
+  },
+  "archival_duplicate": {
+    "paths": [
+      "src/autonomous-investment-robot"
+    ],
+    "reason": "duplicate_snapshot_not_source_of_truth"
+  },
+  "operator_artifacts": {
+    "directories": [
+      "runs",
+      "offline"
+    ]
+  },
+  "local_only_artifacts": {
+    "paths": [
+      "apps",
+      "tools",
+      "bootstrap_mac.sh",
+      "codex_ultra_master_prompt.md"
+    ],
+    "reason": "excluded_from_supported_runtime_and_deploy_context"
+  }
+}

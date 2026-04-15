@@ -45,6 +45,25 @@ def test_human_escalation_layer_requests_manual_review_on_strong_disagreement():
     assert decision.manual_review_required is True
 
 
+def test_human_escalation_layer_does_not_require_manual_review_for_reasonless_action_disagreement():
+    decision = HumanEscalationLayer().evaluate(
+        symbol="SOL/EUR",
+        ts=datetime.now(timezone.utc),
+        market_integrity=SimpleNamespace(action="continue"),
+        quantum_state=SimpleNamespace(collapse_decision=SimpleNamespace(recommended_action="probe", uncertainty=0.45)),
+        edge_immunity_decision=SimpleNamespace(action="trade_now"),
+        event_intelligence=SimpleNamespace(recommended_action="continue"),
+        synthetic_affect=SimpleNamespace(recommended_action="controlled_expand", stress=0.08, fear=0.08),
+        capital_sovereignty=SimpleNamespace(action="no_trade"),
+        execution_simulation=SimpleNamespace(recommended_action="no_trade", stressed_fill_probability=0.441),
+    )
+
+    assert decision.action == "continue"
+    assert decision.manual_review_required is False
+    assert decision.reasons == []
+    assert decision.metadata["disagreement_without_risk"] is True
+
+
 def test_human_escalation_layer_persists_manual_review_marker(tmp_path):
     decision = HumanEscalationLayer(str(tmp_path)).evaluate(
         symbol="BTCUSDT",

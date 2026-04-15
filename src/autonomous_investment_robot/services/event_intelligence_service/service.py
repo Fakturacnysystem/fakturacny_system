@@ -222,10 +222,11 @@ class EventIntelligenceService:
             priced_in=priced_in,
             adversarial=adversarial,
         )
+        trust_gap_risk = 0.0 if source_trust.source_count <= 0 else max(0.0, 1.0 - source_trust.average_trust) * 0.6
         overall_risk = max(
             priced_in.priced_in_probability,
             adversarial.adversarial_risk,
-            max(0.0, 1.0 - source_trust.average_trust) * 0.6,
+            trust_gap_risk,
         )
         recommended_action = "continue"
         recommended_size_multiplier = 1.0
@@ -268,5 +269,9 @@ class EventIntelligenceService:
             provenance=provenance,
             reasons=reasons,
             partial=partial,
-            metadata={"heuristic": True, "event_count": 0 if events is None else len(events)},
+            metadata={
+                "heuristic": True,
+                "event_count": 0 if events is None else len(events),
+                "trust_gap_risk": trust_gap_risk,
+            },
         )

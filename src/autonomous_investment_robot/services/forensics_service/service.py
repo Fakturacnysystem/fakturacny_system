@@ -57,6 +57,39 @@ class ForensicsService:
         else:
             self.observability.journal(channel, self._serialize(payload))
 
+    def _read_jsonl(self, name: str) -> list[dict[str, Any]]:
+        path = self.run_dir / f"{name}.jsonl"
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        return rows
+
+    def _avg(self, rows: list[dict[str, Any]], key: str, *, symbol: str | None = None) -> float | None:
+        values: list[float] = []
+        for row in rows:
+            if symbol and str(row.get("symbol", "")) != symbol:
+                continue
+            raw = row.get(key)
+            if raw is None:
+                continue
+            try:
+                values.append(float(raw))
+            except Exception:
+                continue
+        if not values:
+            return None
+        return sum(values) / len(values)
+
     def _truth_state_label(self, truth_confidence: Any | None) -> str:
         warnings = self._truth_warnings(truth_confidence)
         if not warnings:
@@ -191,6 +224,21 @@ class ForensicsService:
         expected_edge_pnl = filled_notional * (context.expected_edge_bps / 10000.0)
         execution_vs_signal_gap = realized_pnl - expected_edge_pnl
         hold_seconds = float(context.metadata.get("hold_seconds", 0.0) or 0.0)
+        forecast_net_edge_bps = None
+        if profitability_context:
+            round_trip = profitability_context.get("round_trip", {})
+            raw_forecast_net = round_trip.get("net_edge_bps")
+            if raw_forecast_net is not None:
+                forecast_net_edge_bps = float(raw_forecast_net)
+        expected_fill_speed_ms = None
+        if execution_quality is not None:
+            expected_fill_speed_ms = float(getattr(execution_quality, "expected_fill_speed_ms", 0.0) or 0.0)
+        elif execution_plan is not None:
+            reasons = getattr(execution_plan, "reasons", {})
+            if isinstance(reasons, dict):
+                raw_speed = reasons.get("expected_fill_speed_ms")
+                if raw_speed is not None:
+                    expected_fill_speed_ms = float(raw_speed)
         inventory_carry_cost = None if hold_seconds <= 0.0 else -abs(filled_notional) * min(0.0005, hold_seconds / 86400.0 * 0.0001)
         truth_penalty_bps = float(
             profitability_context.get("profit_floor", {}).get("metadata", {}).get("truth_penalty_bps", 0.0) or 0.0
@@ -415,6 +463,285 @@ class ForensicsService:
         self.memory.record(episode)
         calibration_profile = self.calibration.update_from_episodes(self.memory.recent(100))
         self._route_optional("route_calibration", "calibration_profile", calibration_profile)
+        realized_slippage_bps = 0.0 if filled_notional <= 0.0 else (total_slippage / filled_notional) * 10000.0
+        realized_fee_bps = 0.0 if filled_notional <= 0.0 else (total_fee / filled_notional) * 10000.0
+        realized_net_edge_bps = 0.0 if filled_notional <= 0.0 else (realized_pnl / filled_notional) * 10000.0
+        realized_gross_edge_bps = 0.0 if filled_notional <= 0.0 else ((realized_pnl + total_fee + total_slippage) / filled_notional) * 10000.0
+        forecast_gross_edge_bps = float(context.expected_edge_bps)
+        forecast_cost_bps = None
+        if forecast_net_edge_bps is not None:
+            forecast_cost_bps = max(0.0, forecast_gross_edge_bps - forecast_net_edge_bps)
+        elif expected_price_quality_bps is not None:
+            forecast_cost_bps = float(expected_price_quality_bps)
+        realized_delay_ms = 0.0 if not fills else sum(float(getattr(fill, "latency_ms", 0.0) or 0.0) for fill in fills) / len(fills)
+        slippage_gap_bps = None if expected_price_quality_bps is None else realized_slippage_bps - float(expected_price_quality_bps)
+        delay_gap_ms = None if expected_fill_speed_ms is None else realized_delay_ms - float(expected_fill_speed_ms)
+        edge_capture_efficiency = None
+        if forecast_net_edge_bps is not None and abs(forecast_net_edge_bps) > 1e-9:
+            edge_capture_efficiency = max(-2.0, min(2.0, realized_net_edge_bps / forecast_net_edge_bps))
+        expected_hold_minutes = context.metadata.get("expected_time_to_floor_minutes")
+        try:
+            expected_hold_minutes = None if expected_hold_minutes is None else float(expected_hold_minutes)
+        except Exception:
+            expected_hold_minutes = None
+        realized_hold_minutes = hold_seconds / 60.0 if hold_seconds > 0.0 else None
+        exit_efficiency = None
+        if exit_timing_pnl is not None and filled_notional > 0.0:
+            exit_efficiency = max(-2.0, min(2.0, 1.0 + (float(exit_timing_pnl) / filled_notional) * 10000.0 / max(abs(context.expected_edge_bps), 1.0)))
+        hour_bucket = context.ts.hour if hasattr(context.ts, "hour") else None
+        regime_symbol_key = {
+            "symbol": context.symbol,
+            "regime_label": context.regime_label,
+            "execution_style": "" if execution_plan is None else str(getattr(execution_plan, "order_style", "")),
+            "hour_bucket": hour_bucket,
+        }
+
+        self._append(
+            "realized_vs_forecast_execution_journal",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "expected_fill_speed_ms": expected_fill_speed_ms,
+                "realized_fill_delay_ms": realized_delay_ms,
+                "delay_gap_ms": delay_gap_ms,
+                "expected_price_quality_bps": expected_price_quality_bps,
+                "realized_slippage_bps": realized_slippage_bps,
+                "slippage_gap_bps": slippage_gap_bps,
+                "realized_fee_bps": realized_fee_bps,
+                "edge_capture_efficiency": edge_capture_efficiency,
+                "partial": expected_fill_speed_ms is None or expected_price_quality_bps is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "cost_forecast_vs_realized",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "forecast_cost_bps": forecast_cost_bps,
+                "realized_cost_bps": observed_cost_bps,
+                "cost_gap_bps": None if forecast_cost_bps is None else observed_cost_bps - forecast_cost_bps,
+                "partial": forecast_cost_bps is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "fill_delay_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "expected_fill_speed_ms": expected_fill_speed_ms,
+                "realized_fill_delay_ms": realized_delay_ms,
+                "delay_gap_ms": delay_gap_ms,
+                "partial": expected_fill_speed_ms is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "slippage_truth_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "expected_slippage_bps": expected_price_quality_bps,
+                "realized_slippage_bps": realized_slippage_bps,
+                "slippage_gap_bps": slippage_gap_bps,
+                "partial": expected_price_quality_bps is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "edge_forecast_vs_realized_journal",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "forecast_gross_edge_bps": forecast_gross_edge_bps,
+                "forecast_net_edge_bps": forecast_net_edge_bps,
+                "realized_gross_edge_bps": realized_gross_edge_bps,
+                "realized_net_edge_bps": realized_net_edge_bps,
+                "edge_capture_efficiency": edge_capture_efficiency,
+                "partial": forecast_net_edge_bps is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "forecast_error_decomposition",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "gross_edge_error_bps": realized_gross_edge_bps - forecast_gross_edge_bps,
+                "net_edge_error_bps": None if forecast_net_edge_bps is None else realized_net_edge_bps - forecast_net_edge_bps,
+                "cost_error_bps": None if forecast_cost_bps is None else observed_cost_bps - forecast_cost_bps,
+                "delay_error_ms": delay_gap_ms,
+                "hold_error_minutes": None if expected_hold_minutes is None or realized_hold_minutes is None else realized_hold_minutes - expected_hold_minutes,
+                "partial": forecast_net_edge_bps is None or expected_hold_minutes is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "trade_realization_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "outcome": self._summary_outcome(realized_pnl),
+                "expected_edge_bps": context.expected_edge_bps,
+                "forecast_net_edge_bps": forecast_net_edge_bps,
+                "realized_net_edge_bps": realized_net_edge_bps,
+                "expected_hold_minutes": expected_hold_minutes,
+                "realized_hold_minutes": realized_hold_minutes,
+                "exit_efficiency": exit_efficiency,
+                "partial": forecast_net_edge_bps is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "post_trade_realization_summary",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "realized_net_edge_bps": realized_net_edge_bps,
+                "realized_fee_burden_bps": realized_fee_bps,
+                "realized_cost_bps": observed_cost_bps,
+                "realized_hold_minutes": realized_hold_minutes,
+                "partial": False,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "exit_effectiveness_truth",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "exit_hierarchy_reason": exit_hierarchy_reason,
+                "exit_efficiency": exit_efficiency,
+                "partial": exit_efficiency is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "realized_fee_burden_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "realized_fee_bps": realized_fee_bps,
+                "realized_fee": total_fee,
+                "partial": False,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "realized_opportunity_cost_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "inventory_carry_cost": inventory_carry_cost,
+                "expected_hold_minutes": expected_hold_minutes,
+                "realized_hold_minutes": realized_hold_minutes,
+                "partial": inventory_carry_cost is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "realized_vs_forecast_exit_journal",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "expected_hold_minutes": expected_hold_minutes,
+                "realized_hold_minutes": realized_hold_minutes,
+                "exit_efficiency": exit_efficiency,
+                "partial": expected_hold_minutes is None or exit_efficiency is None,
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "winner_hold_vs_take_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "order_id": context.order_id,
+                "exit_hierarchy_reason": exit_hierarchy_reason,
+                "realized_net_edge_bps": realized_net_edge_bps,
+                "hold_minutes": realized_hold_minutes,
+                "partial": False,
+                **regime_symbol_key,
+            },
+        )
+        execution_rows = [row for row in self._read_jsonl("realized_vs_forecast_execution_journal") if str(row.get("symbol")) == context.symbol][-12:]
+        edge_rows = [row for row in self._read_jsonl("edge_forecast_vs_realized_journal") if str(row.get("symbol")) == context.symbol][-12:]
+        sample_count = max(len(execution_rows), len(edge_rows))
+        avg_slippage_gap = self._avg(execution_rows, "slippage_gap_bps", symbol=context.symbol)
+        avg_delay_gap = self._avg(execution_rows, "delay_gap_ms", symbol=context.symbol)
+        avg_edge_capture = self._avg(edge_rows, "edge_capture_efficiency", symbol=context.symbol)
+        self._append(
+            "execution_forecast_error_summary",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "avg_slippage_gap_bps": avg_slippage_gap,
+                "avg_delay_gap_ms": avg_delay_gap,
+                "sample_count": len(execution_rows),
+            },
+        )
+        self._append(
+            "symbol_edge_truth_summary",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "avg_realized_net_edge_bps": self._avg(self._read_jsonl("edge_forecast_vs_realized_journal"), "realized_net_edge_bps", symbol=context.symbol),
+                "avg_forecast_net_edge_bps": self._avg(self._read_jsonl("edge_forecast_vs_realized_journal"), "forecast_net_edge_bps", symbol=context.symbol),
+                "avg_edge_capture_efficiency": avg_edge_capture,
+                "sample_count": len(edge_rows),
+            },
+        )
+        self._append(
+            "edge_capture_efficiency_summary",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "edge_capture_efficiency": edge_capture_efficiency,
+                "avg_edge_capture_efficiency": avg_edge_capture,
+                "sample_count": len(edge_rows),
+                **regime_symbol_key,
+            },
+        )
+        self._append(
+            "symbol_execution_regime_review",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "regime_label": context.regime_label,
+                "execution_style": regime_symbol_key["execution_style"],
+                "hour_bucket": hour_bucket,
+                "slippage_gap_bps": slippage_gap_bps,
+                "delay_gap_ms": delay_gap_ms,
+                "edge_capture_efficiency": edge_capture_efficiency,
+                "partial": expected_fill_speed_ms is None or expected_price_quality_bps is None,
+            },
+        )
+        self._append(
+            "execution_calibration_feedback",
+            {
+                "symbol": context.symbol,
+                "ts": context.ts,
+                "confidence": 0.0 if sample_count < 3 else min(1.0, sample_count / 8.0),
+                "sample_count": sample_count,
+                "realized_slippage_overshoot_bps": max(0.0, float(avg_slippage_gap or 0.0)),
+                "fill_delay_destruction_bps": max(0.0, float(avg_delay_gap or 0.0) / 100.0),
+                "edge_capture_efficiency": 1.0 if avg_edge_capture is None else float(avg_edge_capture),
+                "partial": sample_count < 3,
+            },
+        )
         return record, autopsy
 
     def record_runtime_anomaly(

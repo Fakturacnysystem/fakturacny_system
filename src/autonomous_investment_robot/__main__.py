@@ -3,7 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 
-from autonomous_investment_robot.main import acknowledge_manual_review, emergency_flatten, request_kill, run_record, run_replay, run_replay_report, run_with_config
+from autonomous_investment_robot.main import (
+    acknowledge_manual_review,
+    emergency_flatten,
+    request_kill,
+    request_pause,
+    resume_runtime,
+    run_record,
+    run_replay,
+    run_replay_report,
+    run_with_config,
+)
+
+
+def _print_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, default=str))
 
 
 def main() -> None:
@@ -22,20 +36,32 @@ def main() -> None:
     p_rep_report.add_argument("--config", required=True)
 
     p_ro = sub.add_parser("live-readonly")
-    p_ro.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
+    p_ro.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")
 
     p_live = sub.add_parser("live")
     p_live.add_argument("--config", required=True)
     p_live.add_argument("--kill", action="store_true")
 
     p_record = sub.add_parser("record")
-    p_record.add_argument("--config", default="config.perps_intraday.live_readonly.yaml")
+    p_record.add_argument("--config", default="config.kraken_spot.readonly_analysis.yaml")
     p_record.add_argument("--run-id", default="latest")
     p_record.add_argument("--duration-seconds", type=int, default=0)
     p_record.add_argument("--poll-interval-seconds", type=float, default=1.0)
 
     p_flatten = sub.add_parser("flatten")
     p_flatten.add_argument("--config", required=True)
+    p_flatten.add_argument("--symbol", default=None)
+    p_flatten.add_argument("--scope", default="all", choices=["all", "portfolio", "symbol"])
+    p_flatten.add_argument("--freeze-only", action="store_true")
+    p_flatten.add_argument("--reason", default="operator_cli_flatten")
+
+    p_pause = sub.add_parser("pause")
+    p_pause.add_argument("--config", required=True)
+    p_pause.add_argument("--reason", default="operator_cli_pause")
+
+    p_resume = sub.add_parser("resume")
+    p_resume.add_argument("--config", required=True)
+    p_resume.add_argument("--reason", default="operator_cli_resume")
 
     p_ack = sub.add_parser("ack-review")
     p_ack.add_argument("--run-dir", required=True)
@@ -46,7 +72,7 @@ def main() -> None:
     args = parser.parse_args()
     if getattr(args, "kill", False):
         cfg = getattr(args, "config", "config.paper.yaml")
-        print(json.dumps(request_kill(cfg), indent=2))
+        _print_json(request_kill(cfg))
         return
 
     if args.cmd == "replay":
@@ -65,7 +91,17 @@ def main() -> None:
             poll_interval_seconds=args.poll_interval_seconds,
         )
     elif args.cmd == "flatten":
-        out = emergency_flatten(args.config)
+        out = emergency_flatten(
+            args.config,
+            symbol=args.symbol,
+            scope=args.scope,
+            freeze_only=args.freeze_only,
+            reason=args.reason,
+        )
+    elif args.cmd == "pause":
+        out = request_pause(args.config, reason=args.reason)
+    elif args.cmd == "resume":
+        out = resume_runtime(args.config, reason=args.reason)
     elif args.cmd == "ack-review":
         out = acknowledge_manual_review(
             args.run_dir,
@@ -75,7 +111,7 @@ def main() -> None:
         )
     else:
         out = run_with_config(args.config)
-    print(json.dumps(out, indent=2))
+    _print_json(out)
 
 
 if __name__ == "__main__":

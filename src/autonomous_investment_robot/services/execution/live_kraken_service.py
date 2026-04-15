@@ -266,10 +266,17 @@ class LiveKrakenService:
         self._fill_ids_seen = set()
         self._lifecycle.reset()
         order_count = 0
+        lifecycle_count = 0
         fill_count = 0
         for event in order_events:
             payload = event.get("payload", event) if isinstance(event, dict) else {}
             if isinstance(payload, dict):
+                event_type = str(event.get("event_type", event.get("type", ""))) if isinstance(event, dict) else ""
+                if event_type == "ORDER_LIFECYCLE_TRANSITION" and payload.get("to_state"):
+                    ok, _ = self._lifecycle.rehydrate_transition(payload)
+                    if ok:
+                        lifecycle_count += 1
+                    continue
                 ok, _ = self.apply_order_update(payload)
                 if ok:
                     order_count += 1
@@ -279,7 +286,7 @@ class LiveKrakenService:
                 ok, _ = self.apply_fill_update(payload)
                 if ok:
                     fill_count += 1
-        return {"orders": order_count, "fills": fill_count}
+        return {"orders": order_count, "fills": fill_count, "lifecycle_transitions": lifecycle_count}
 
     def drain_lifecycle_transitions(self) -> list[dict[str, Any]]:
         return self._lifecycle.drain_transitions()

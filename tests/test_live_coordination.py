@@ -1,10 +1,11 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from autonomous_investment_robot.config.settings import AllocatorSettings, ExecutionSettings, PolicySettings, RiskLimits, RobotSettings, StorageSettings, TCOSettings
-from autonomous_investment_robot.core.contracts import RecoveryDecision
+from autonomous_investment_robot.config.settings import AllocatorSettings, DoctrineSettings, ExecutionSettings, HarmonySettings, KrakenSpotExecutionSettings, LiveUnlockSettings, MarketWatchSettings, PolicySettings, RiskLimits, RobotSettings, SafetySettings, StorageSettings, TCOSettings
+from autonomous_investment_robot.core.contracts import ExecutionPlan, MarketHealthSnapshot, MarketIntegrityStatus, MarketWatchReport, PolicyDecision, ProviderCapabilityMatrix, RecoveryDecision, VenueConstraints, VenueLimitDecision
 from autonomous_investment_robot.services.alpha_service.service import AlphaService
 from autonomous_investment_robot.services.adaptive_exit_allocator.service import AdaptiveExitAllocator
 from autonomous_investment_robot.services.capital_sovereignty_service.service import CapitalSovereigntyService
@@ -138,6 +139,55 @@ def test_live_market_coordinator_collects_context_and_journals(tmp_path):
     assert context.advisory is not None
     assert (Path(settings.storage.run_dir) / "signal_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "mastermind_journal.jsonl").exists()
+
+
+def test_live_market_coordinator_uses_connector_depth_notional_when_available(tmp_path):
+    settings, coordinator = _market_coordinator(tmp_path)
+    settings.risk.min_depth_notional = 1000.0
+    live = SimpleNamespace(
+        connector=SimpleNamespace(
+            book_ticker=lambda symbol: {
+                "bidPrice": "130.0",
+                "askPrice": "130.2",
+                "bidQty": "1",
+                "askQty": "1",
+                "depthNotional": 1500.0,
+                "symbol": symbol,
+            }
+        ),
+        market_integrity_evidence=lambda now_dt=None: {"ts": now_dt or datetime.now(timezone.utc), "sequence_ok": True, "checksum_ok": True, "gap_count": 0, "checksum_mismatch_count": 0},
+        capability_evidence=lambda now_dt=None: {
+            "ts": now_dt or datetime.now(timezone.utc),
+            "user_stream_connected": True,
+            "lifecycle_snapshot_count": 1,
+            "sequence_ok": True,
+            "checksum_ok": True,
+            "replace_support_evidence": "dynamic",
+            "expire_support_evidence": "dynamic",
+            "auth_validated": True,
+            "private_api_healthy": True,
+            "public_market_data_connected": True,
+            "book_repeat_count": 0,
+            "seconds_since_distinct_book_change": 1.0,
+            "has_credentials": True,
+        },
+        lifecycle_snapshot=lambda: [{"state": "working"}],
+        user_stream_connected=True,
+        supports_replace=False,
+        supports_expire=True,
+    )
+
+    context = coordinator.collect(
+        live=live,
+        symbol="BTCUSDT",
+        now_dt=datetime.now(timezone.utc),
+        prices=[100.0, 110.0, 120.0],
+        base_budget=settings.policy.base_risk_budget,
+        exposure_notional=0.0,
+    )
+
+    assert context.snapshot.depth_notional == 1500.0
+    assert "liquidity_too_thin" not in context.market_health.reasons
     assert (Path(settings.storage.run_dir) / "quantum_state_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "signal_interference_journal.jsonl").exists()
     assert (Path(settings.storage.run_dir) / "edge_immunity_journal.jsonl").exists()
@@ -430,6 +480,267 @@ def test_live_decision_coordinator_halts_before_policy_when_health_is_bad(tmp_pa
     assert decision.execution_plan is None
 
 
+def test_live_decision_coordinator_uses_lifecycle_proof_uplift_for_kraken_spot_min_notional(tmp_path):
+    previous = {
+        "KRAKEN_SPOT_API_KEY": os.environ.get("KRAKEN_SPOT_API_KEY"),
+        "KRAKEN_SPOT_API_SECRET": os.environ.get("KRAKEN_SPOT_API_SECRET"),
+    }
+    os.environ["KRAKEN_SPOT_API_KEY"] = "k"
+    os.environ["KRAKEN_SPOT_API_SECRET"] = "s"
+    try:
+        settings = RobotSettings(
+            storage=StorageSettings(run_dir=str(tmp_path)),
+            provider_whitelist=["kraken_spot"],
+            rollout_stage_override="tiny_live",
+            canary_mode=True,
+            risk=_limits(),
+            policy=PolicySettings(confidence_threshold=0.0, base_risk_budget=100.0),
+            allocator=AllocatorSettings(),
+            execution=ExecutionSettings(
+                mode="live",
+                provider_id="kraken_spot",
+                fee_bps=30.0,
+                slippage_bps=8.0,
+                kraken_spot=KrakenSpotExecutionSettings(
+                    lifecycle_proof_enabled=True,
+                    lifecycle_proof_max_notional=12.0,
+                    lifecycle_proof_timeout_s=3,
+                ),
+            ),
+            safety=SafetySettings(
+                live_unlock=LiveUnlockSettings(
+                    enable_live_trading=True,
+                    ack_i_understand_risks=True,
+                    require_testnet_passed=False,
+                )
+            ),
+            doctrine=DoctrineSettings(
+                target_provider="kraken_spot",
+                product_target="spot",
+                long_only=True,
+                never_open_new_short_exposure=True,
+                minimum_sell_net_profit_bps=120.0,
+                enforce_cost_basis_sell_block=True,
+                enforce_net_profit_sell_block=True,
+                block_non_reduce_only_sells=True,
+            ),
+            harmony=HarmonySettings(enabled=True),
+            market_watch=MarketWatchSettings(enabled=True),
+            tco=TCOSettings(max_total_cost_bps=50.0, max_impact_bps=50.0),
+        )
+        observability = ObservabilityService(str(tmp_path), OpsService(str(tmp_path)))
+        market = SimpleNamespace(
+            now_dt=datetime.now(timezone.utc),
+            snapshot=SimpleNamespace(symbol="BTC/USD", spread_bps=3.0, depth_notional=250000.0),
+            features={},
+            market_health=MarketHealthSnapshot(
+                symbol="BTC/USD",
+                ts=datetime.now(timezone.utc),
+                feed_stale=False,
+                sequence_ok=True,
+                checksum_ok=True,
+                symbol_health_score=0.95,
+                exchange_health_score=0.95,
+                market_quality_score=0.95,
+                reasons=[],
+            ),
+            forecast=SimpleNamespace(regime="RANGE", liquidity_regime="GOOD"),
+            regime_assessment=SimpleNamespace(degradation_warning="low_energy_but_book_alive"),
+            execution_quality=SimpleNamespace(expected_fill_speed_ms=120.0),
+            market_integrity=MarketIntegrityStatus(
+                symbol="BTC/USD",
+                provider_id="kraken_spot",
+                ts=datetime.now(timezone.utc),
+                score=0.95,
+                action="continue",
+                confidence="strong",
+                reasons=[],
+            ),
+            venue_limit_decision=VenueLimitDecision(
+                symbol="BTC/USD",
+                provider_id="kraken_spot",
+                ts=datetime.now(timezone.utc),
+                action="continue",
+                size_multiplier=0.50,
+                reasons=["user_stream_confidence_partial"],
+                metadata={"promotion_blocked": True},
+            ),
+            market_watch=MarketWatchReport(
+                symbol="BTC/USD",
+                ts=datetime.now(timezone.utc),
+                action="continue",
+                score=0.9,
+                reasons=[],
+            ),
+            provider_capability=ProviderCapabilityMatrix(
+                provider_id="kraken_spot",
+                unrealized_pnl_truth_support="spot_fifo_cost_basis_plus_live_bid",
+                realized_pnl_truth_support="spot_trade_history_fifo_authoritative_when_balances_match",
+                lifecycle_completeness="partial_without_snapshot",
+                replace_supported=False,
+                expire_supported=True,
+                fee_truth_confidence="spot_trade_history_authoritative",
+                user_stream_confidence="rest_history_only",
+            ),
+            edge_immunity_decision=SimpleNamespace(report=SimpleNamespace(fragility_index=0.1)),
+            advisory=SimpleNamespace(decision="CONTINUE"),
+            portfolio_allocation=SimpleNamespace(opportunity_cost_score=0.0),
+            quantum_state=None,
+            event_intelligence_report=None,
+        )
+        policy = SimpleNamespace(
+            evaluate_decision=lambda *args, **kwargs: PolicyDecision(
+                symbol="BTC/USD",
+                ts=datetime.now(timezone.utc),
+                trade_allowed=True,
+                side="buy",
+                target_notional=20.0,
+                why={
+                    "decision_doctrine": {
+                        "recommended_action": "continue",
+                        "size_multiplier": 1.0,
+                        "truth_strength": 1.0,
+                        "survival_score": 1.0,
+                        "robustness_score": 1.0,
+                        "execution_survivability_score": 1.0,
+                        "partial_truth_penalty": 0.0,
+                    }
+                },
+            )
+        )
+        risk = SimpleNamespace(
+            state=SimpleNamespace(risk_mode="normal"),
+            evaluate=lambda **kwargs: SimpleNamespace(allowed=True, adjusted_notional=20.0, reason="ok", details={}),
+        )
+
+        class StubExecution:
+            def __init__(self):
+                self.settings = settings.execution
+
+            def venue_constraints(self, symbol):  # noqa: ARG002
+                return VenueConstraints(
+                    provider_id="kraken_spot",
+                    symbol="BTC/USD",
+                    min_order_size=0.0001,
+                    min_notional=10.0,
+                    quantity_step=0.00000001,
+                    price_tick=0.1,
+                    maker_assumption="post_only_supported",
+                    taker_assumption="marketable_limit_or_market",
+                    reduce_only_supported=False,
+                    post_only_supported=True,
+                    replace_supported=False,
+                    expire_supported=True,
+                )
+
+            def build_execution_plan(self, intent, **kwargs):  # noqa: ARG002
+                target = float(intent.target_notional)
+                return ExecutionPlan(
+                    symbol=intent.symbol,
+                    ts=datetime.now(timezone.utc),
+                    side=intent.side,
+                    target_notional=0.0 if target < 10.0 else target,
+                    order_style="marketable_limit",
+                    passive=False,
+                    child_orders=2,
+                    slippage_budget_bps=10.0,
+                    max_participation_rate=0.05,
+                )
+
+        decision = LiveDecisionCoordinator(
+            health=HealthService(),
+            policy=policy,
+            risk=risk,
+            execution=StubExecution(),
+            observability=observability,
+            settings=settings,
+        ).evaluate(
+            symbol="BTC/USD",
+            market=market,
+            exposure_notional=0.0,
+            last_recon_ok=True,
+            live=SimpleNamespace(rate_limits=SimpleNamespace(timestamps=[]), rejects=SimpleNamespace(timestamps=[])),
+            drawdown_pct=0.0,
+            daily_loss_pct=0.0,
+            weekly_loss_pct=0.0,
+            funding_paid_pct=0.0,
+            legacy_policy_why=lambda why: why,
+            legacy_risk_details=lambda details: details,
+        )
+
+        assert decision.health_snapshot.anomaly_pressure < 0.5
+        assert decision.execution_plan is not None
+        assert decision.execution_plan.target_notional == 12.0
+        assert decision.execution_plan.order_style == "passive_limit"
+        assert decision.adjusted_intent is not None
+        assert decision.adjusted_intent.target_notional == 12.0
+        assert decision.adjusted_intent.why["lifecycle_proof"]["enabled"] is True
+        assert decision.adjusted_intent.why["lifecycle_proof"]["submitted_target_notional"] == 12.0
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_live_decision_coordinator_uses_proof_specific_reserve_policy_for_tiny_live_buys(tmp_path, monkeypatch):
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    settings = RobotSettings(
+        storage=StorageSettings(run_dir=str(tmp_path)),
+        provider_whitelist=["kraken_spot"],
+        rollout_stage_override="tiny_live",
+        policy=PolicySettings(confidence_threshold=0.0, base_risk_budget=100.0, min_free_quote_reserve_pct=0.55),
+        allocator=AllocatorSettings(),
+        execution=ExecutionSettings(
+            mode="live",
+            provider_id="kraken_spot",
+            kraken_spot=KrakenSpotExecutionSettings(
+                lifecycle_proof_enabled=True,
+                lifecycle_proof_max_notional=12.0,
+                lifecycle_proof_timeout_s=3,
+                lifecycle_proof_min_free_quote_reserve_pct=0.0,
+            ),
+        ),
+        safety=SafetySettings(
+            live_unlock=LiveUnlockSettings(
+                enable_live_trading=True,
+                ack_i_understand_risks=True,
+                require_testnet_passed=False,
+            )
+        ),
+        doctrine=DoctrineSettings(
+            target_provider="kraken_spot",
+            product_target="spot",
+            long_only=True,
+            never_open_new_short_exposure=True,
+            minimum_sell_net_profit_bps=120.0,
+            enforce_cost_basis_sell_block=True,
+            enforce_net_profit_sell_block=True,
+            block_non_reduce_only_sells=True,
+        ),
+        harmony=HarmonySettings(enabled=True),
+        market_watch=MarketWatchSettings(enabled=True),
+        tco=TCOSettings(max_total_cost_bps=50.0, max_impact_bps=50.0),
+        risk=_limits(),
+    )
+    coordinator = LiveDecisionCoordinator(
+        health=HealthService(),
+        policy=SimpleNamespace(),
+        risk=SimpleNamespace(),
+        execution=ExecutionService(settings.execution),
+        observability=ObservabilityService(str(tmp_path), OpsService(str(tmp_path))),
+        settings=settings,
+    )
+
+    applied_pct, source, configured_pct = coordinator._lifecycle_proof_reserve_policy(intent_side="buy")
+
+    assert applied_pct == 0.0
+    assert source == "tiny_live_lifecycle_proof_override"
+    assert configured_pct == 0.55
+
+
 def test_live_reconciliation_coordinator_enters_flatten_only_on_reconciliation_gap(tmp_path):
     ops = OpsService(str(tmp_path))
     observability = ObservabilityService(str(tmp_path), ops)
@@ -564,6 +875,7 @@ def test_live_decision_coordinator_can_prioritize_capital_release_exit(tmp_path)
                 "local_cash_delta": 0.0,
                 "local_unrealized_pnl": -10.0,
                 "truth_confidence": {
+                    "ts": datetime.now(timezone.utc),
                     "fill_truth_confidence": {"level": "authoritative"},
                     "fee_truth_confidence": {"level": "authoritative"},
                     "realized_pnl_confidence": {"level": "authoritative"},
@@ -579,3 +891,82 @@ def test_live_decision_coordinator_can_prioritize_capital_release_exit(tmp_path)
     assert decision.execution_plan is not None
     assert decision.adjusted_intent.side == "sell"
     assert decision.execution_plan.reduce_only is True
+
+
+def test_inventory_reserve_state_marks_quote_below_exchange_min() -> None:
+    inventory = InventoryService()
+
+    reserve = inventory.reserve_state(
+        ts=datetime.now(timezone.utc),
+        exchange_balance=1.9455,
+        local_cash_delta=0.0,
+        gross_exposure_notional=0.0,
+        minimum_reserve_pct=0.0,
+        quote_asset="EUR",
+        quote_total_balance=0.0086,
+        quote_free_balance=0.0086,
+        quote_used_balance=0.0,
+        required_quote_with_fee_buffer=5.0,
+    )
+
+    assert reserve.entry_buying_power_quote == 0.0086
+    assert "insufficient_quote_below_min_order_quote" in reserve.reasons
+
+
+def test_live_decision_coordinator_recomputes_mastermind_with_truth_context(tmp_path):
+    settings, market_coordinator = _market_coordinator(tmp_path)
+    ops = OpsService(str(tmp_path))
+    observability = ObservabilityService(str(tmp_path), ops)
+    market = market_coordinator.collect(
+        live=SimpleNamespace(connector=SimpleNamespace(book_ticker=lambda symbol: {"bidPrice": "130.0", "askPrice": "130.2", "bidQty": "5", "askQty": "5", "symbol": symbol})),
+        symbol="BTCUSDT",
+        now_dt=datetime.now(timezone.utc),
+        prices=[100.0, 110.0, 120.0],
+        base_budget=settings.policy.base_risk_budget,
+        exposure_notional=0.0,
+    )
+    calls: list[dict] = []
+
+    class SpyMastermind:
+        def advise(self, *args, **kwargs):
+            calls.append(kwargs)
+            return market.advisory
+
+    LiveDecisionCoordinator(
+        health=HealthService(),
+        policy=PolicyService(settings.policy, settings.allocator, settings.tco),
+        risk=RiskEngineService(settings.risk, safe_mode=False),
+        execution=ExecutionService(settings.execution),
+        mastermind=SpyMastermind(),
+        observability=observability,
+        settings=settings,
+    ).evaluate(
+        symbol="BTCUSDT",
+        market=market,
+        exposure_notional=0.0,
+        last_recon_ok=True,
+        live=SimpleNamespace(rate_limits=SimpleNamespace(timestamps=[]), rejects=SimpleNamespace(timestamps=[])),
+        drawdown_pct=0.0,
+        daily_loss_pct=0.0,
+        weekly_loss_pct=0.0,
+        funding_paid_pct=0.0,
+        legacy_policy_why=lambda why: why,
+        legacy_risk_details=lambda details: details,
+        reconciliation_report=SimpleNamespace(
+            details={
+                "truth_confidence": {
+                    "ts": datetime.now(timezone.utc),
+                    "fill_truth_confidence": {"level": "authoritative"},
+                    "fee_truth_confidence": {"level": "authoritative"},
+                    "realized_pnl_confidence": {"level": "authoritative"},
+                    "balance_truth_confidence": {"level": "authoritative"},
+                    "exposure_truth_confidence": {"level": "authoritative"},
+                    "market_data_truth_confidence": {"level": "authoritative"},
+                }
+            }
+        ),
+    )
+
+    assert calls
+    assert calls[-1]["truth_context"]["reconciliation_ok"] is True
+    assert calls[-1]["truth_context"]["snapshot"]["fill_truth_confidence"]["level"] == "authoritative"

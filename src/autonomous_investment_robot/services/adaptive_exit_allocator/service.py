@@ -68,6 +68,30 @@ class AdaptiveExitAllocator:
         if partial:
             reasons.append("partial_exit_context")
 
+        exit_path = {}
+        if capital_release_decision is not None:
+            metadata = getattr(capital_release_decision, "metadata", {})
+            if isinstance(metadata, dict):
+                exit_path = dict(metadata.get("exit_path_comparison", {}) or {})
+        selected_family = str(exit_path.get("selected_family", "") or "")
+        if selected_family == "staged_partial_exit" and exposure > 0.0:
+            core_exit = min(exposure, max(core_exit, total_exit * 0.50))
+            satellite_exit = min(max(0.0, exposure - core_exit), max(satellite_exit, total_exit * 0.35))
+            runner_notional = max(0.0, exposure - core_exit - satellite_exit)
+            total_exit = min(exposure, core_exit + satellite_exit)
+            reasons.append("staged_partial_exit")
+        elif selected_family in {"reacceleration_hold", "volatility_trailing"} and exposure > 0.0:
+            total_exit = min(total_exit, exposure * 0.35)
+            runner_notional = max(runner_notional, exposure * max(0.10, runner_fraction))
+            action = "hold" if total_exit <= 0.0 else "partial_exit"
+            execution_style = "passive_limit"
+            reasons.append(f"{selected_family}_runner_bias")
+        elif selected_family in {"regime_failure_exit", "liquidity_shock_exit"} and exposure > 0.0:
+            total_exit = max(total_exit, exposure * 0.50)
+            action = "risk_exit"
+            execution_style = "marketable_limit"
+            reasons.append(selected_family)
+
         return AdaptiveExitAllocation(
             symbol=symbol,
             ts=ts,
@@ -85,5 +109,6 @@ class AdaptiveExitAllocator:
                 "event_action": event_action,
                 "event_risk": event_risk,
                 "release_allowed": release_allowed,
+                "selected_exit_family": selected_family,
             },
         )

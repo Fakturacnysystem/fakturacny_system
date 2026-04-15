@@ -158,6 +158,41 @@ def test_profitability_service_marks_profit_lock_partial_exit_when_above_cost_ba
     assert exit_intent.metadata["profit_locking"] is True
 
 
+def test_profitability_service_emits_exit_path_comparison_and_reacceleration_hold_bias():
+    inventory = InventoryService()
+    ts = datetime.now(timezone.utc) - timedelta(hours=24)
+    inventory.update_from_fill(
+        Fill("paper", "o1", "f1", "BTCUSDT", "buy", 120.0, 0.5, 0.5, 10, "filled"),
+        ts=ts,
+    )
+    inventory_state = inventory.inventory_pressure(symbol="BTCUSDT", ts=datetime.now(timezone.utc), opportunity_cost_score=0.8)
+    svc = ProfitabilityService()
+    release, exit_intent = svc.evaluate_exit(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        inventory_state=inventory_state,
+        reserve_state=None,
+        current_exposure=135.0,
+        regime_label="RANGE",
+        liquidity_regime="GOOD",
+        execution_quality=ExecutionQualityForecast("BTCUSDT", datetime.now(timezone.utc), 0.8, 150, 1.0, 0.1, True, {}),
+        synthetic_affect=type("Affect", (), {"stress": 0.1, "conviction": 0.85, "fear": 0.1})(),
+        position_morph_plan=type("Morph", (), {"allow_runner": True, "runner_fraction": 0.2})(),
+    )
+
+    assert release.allowed is True
+    assert exit_intent is not None
+    assert exit_intent.metadata["requires_doctrine_sell_eligibility"] is True
+    assert exit_intent.metadata["selected_exit_family"] in {
+        "staged_partial_exit",
+        "volatility_trailing",
+        "reacceleration_hold",
+        "time_decay_exit",
+    }
+    assert exit_intent.metadata["exit_path_comparison"]["families"]
+    assert release.metadata["winner_monetization"]["state"] == exit_intent.metadata["selected_exit_family"]
+
+
 def test_reporting_coordinator_surfaces_deadlock_and_stagnation_flags(tmp_path):
     coordinator = ReportingCoordinator(observability=ObservabilityService(str(tmp_path), OpsService(str(tmp_path))))
 
@@ -172,3 +207,50 @@ def test_reporting_coordinator_surfaces_deadlock_and_stagnation_flags(tmp_path):
     assert payload["quote_balance_deadlock"] is False
     assert payload["inventory_stagnation"] is True
     assert payload["profit_lock_candidate"] is True
+
+
+def test_inventory_reserve_state_prefers_quote_asset_affordability_truth():
+    reserve_state = InventoryService().reserve_state(
+        ts=datetime.now(timezone.utc),
+        exchange_balance=5000.0,
+        local_cash_delta=0.0,
+        gross_exposure_notional=0.0,
+        minimum_reserve_pct=0.2,
+        capital_floor=100.0,
+        quote_asset="USD",
+        quote_total_balance=20.0,
+        quote_free_balance=15.9,
+        quote_used_balance=4.1,
+        required_quote_with_fee_buffer=12.05,
+    )
+
+    assert reserve_state.total_capital == 20.0
+    assert reserve_state.free_quote == 15.9
+    assert reserve_state.reserve_floor_quote == 4.0
+    assert reserve_state.entry_buying_power_quote == 11.9
+    assert reserve_state.required_quote_with_fee_buffer == 12.05
+    assert reserve_state.metadata["affordability_source"] == "quote_asset_balance"
+    assert reserve_state.metadata["reserve_policy_source"] == "policy_default"
+    assert reserve_state.metadata["configured_minimum_reserve_pct"] == 0.2
+
+
+def test_inventory_reserve_state_surfaces_override_policy_metadata():
+    reserve_state = InventoryService().reserve_state(
+        ts=datetime.now(timezone.utc),
+        exchange_balance=5000.0,
+        local_cash_delta=0.0,
+        gross_exposure_notional=0.0,
+        minimum_reserve_pct=0.0,
+        capital_floor=100.0,
+        quote_asset="EUR",
+        quote_total_balance=20.0,
+        quote_free_balance=19.0,
+        quote_used_balance=1.0,
+        reserve_policy_source="tiny_live_lifecycle_proof_override",
+        configured_minimum_reserve_pct=0.55,
+    )
+
+    assert reserve_state.reserve_floor_quote == 0.0
+    assert reserve_state.entry_buying_power_quote == 19.0
+    assert reserve_state.metadata["reserve_policy_source"] == "tiny_live_lifecycle_proof_override"
+    assert reserve_state.metadata["configured_minimum_reserve_pct"] == 0.55

@@ -1,0 +1,423 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - article [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e6]:
+            - heading "Runtime identity" [level=2] [ref=e7]
+            - paragraph [ref=e8]: Effective robot selection is persistent and explicit. No operator should have to infer which run the cockpit is watching.
+          - generic [ref=e9]:
+            - generic [ref=e10]: latest
+            - generic [ref=e11]: unavailable
+            - generic [ref=e12]: drift unresolved
+            - generic [ref=e13]: unavailable
+        - generic [ref=e14]:
+          - generic [ref=e15]:
+            - generic [ref=e16]:
+              - generic [ref=e17]: Effective run ID
+              - strong [ref=e18]: runtime-unavailable
+            - generic [ref=e19]:
+              - generic [ref=e20]: Provider / mode
+              - strong [ref=e21]: unavailable / runtime-api
+            - generic [ref=e22]:
+              - generic [ref=e23]: Resolution source
+              - strong [ref=e24]: default_latest
+            - generic [ref=e25]:
+              - generic [ref=e26]: Run path
+              - strong [ref=e27]: unresolved
+          - generic [ref=e28]:
+            - generic [ref=e29]:
+              - generic [ref=e30]: Pin integrity
+              - strong [ref=e31]: unresolved
+            - generic [ref=e32]:
+              - generic [ref=e33]: Endpoint consistency
+              - strong [ref=e34]: consistent
+            - generic [ref=e35]:
+              - generic [ref=e36]: Replay alignment
+              - strong [ref=e37]: aligned
+            - generic [ref=e38]:
+              - generic [ref=e39]: Freshness
+              - strong [ref=e40]: unavailable / 0s
+        - generic [ref=e41]:
+          - generic [ref=e42]:
+            - generic [ref=e43]: Last artifact update
+            - strong [ref=e44]: 1970-01-01T00:00:00.000Z
+          - generic [ref=e45]:
+            - generic [ref=e46]: Schema version
+            - strong [ref=e47]: unknown
+          - generic [ref=e48]:
+            - generic [ref=e49]: Reason code
+            - strong [ref=e50]: runtime_api_unavailable
+        - generic [ref=e52]: runtime_tracking_latest
+        - generic [ref=e53]: cd /Users/martinholik/Projects/fakturacny_system/apps/robot-control-center && RUNTIME_API_RUN_ID=runtime-unavailable npm run runtime:api
+        - generic [ref=e54]:
+          - generic [ref=e55]:
+            - heading "Run selector" [level=3] [ref=e56]
+            - paragraph [ref=e57]: Observation target stays explicit. Pinned selection never drifts silently, and latest tracking stays visibly non-pinned.
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - text: Available runs
+              - combobox "Available runs" [ref=e60]:
+                - option "runtime-unavailable" [selected]
+            - generic [ref=e61]:
+              - generic [ref=e62]:
+                - button "Track latest" [ref=e63] [cursor=pointer]
+                - button "Pin selected run" [ref=e64] [cursor=pointer]
+              - generic [ref=e65]: "Selection target:"
+    - generic [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e68]:
+          - heading "Operator surfaces" [level=2] [ref=e69]
+          - paragraph [ref=e70]: Runtime identity stays pinned above. These tabs separate command, explainability, safety, and execution without hiding the active run truth.
+        - button "Refresh all" [ref=e72] [cursor=pointer]
+      - generic [ref=e73]:
+        - button "1 Command Center runtime-api / danger" [ref=e74] [cursor=pointer]:
+          - generic [ref=e75]: "1"
+          - generic [ref=e76]: Command Center
+          - generic [ref=e77]: runtime-api / danger
+        - button "2 Brain unavailable / unavailable" [ref=e78] [cursor=pointer]:
+          - generic [ref=e79]: "2"
+          - generic [ref=e80]: Brain
+          - generic [ref=e81]: unavailable / unavailable
+        - button "3 Shield trust unsafe" [ref=e82] [cursor=pointer]:
+          - generic [ref=e83]: "3"
+          - generic [ref=e84]: Shield
+          - generic [ref=e85]: trust unsafe
+        - button "4 Execution 0 orders / 0 positions" [ref=e86] [cursor=pointer]:
+          - generic [ref=e87]: "4"
+          - generic [ref=e88]: Execution
+          - generic [ref=e89]: 0 orders / 0 positions
+    - generic [ref=e90]:
+      - generic [ref=e91]:
+        - generic [ref=e92]:
+          - generic [ref=e93]: Operator cockpit
+          - generic [ref=e95]: run awaiting-authoritative-summary
+          - generic [ref=e97]: updated awaiting runtime payload
+        - button "Refresh telemetry" [ref=e99] [cursor=pointer]
+      - generic [ref=e100]:
+        - generic [ref=e101]:
+          - strong [ref=e102]: Source
+          - generic [ref=e103]: runtime-api
+        - generic [ref=e104]:
+          - strong [ref=e105]: Run lock
+          - generic [ref=e106]: latest
+        - generic [ref=e107]:
+          - strong [ref=e108]: Bridge
+          - generic [ref=e109]: unavailable
+        - generic [ref=e110]:
+          - strong [ref=e111]: Auth
+          - generic [ref=e112]: anonymous
+        - generic [ref=e113]:
+          - strong [ref=e114]: Mode
+          - generic [ref=e115]: runtime-api
+      - heading "Robot Control Center" [level=1] [ref=e116]
+      - paragraph [ref=e117]: Runtime API is configured and bootstrap is in progress. RCC keeps waiting explicit so no synthetic zero-state can masquerade as authoritative runtime truth.
+      - generic [ref=e118]:
+        - article [ref=e119]:
+          - generic [ref=e120]: Equity
+          - generic [ref=e121]: Awaiting
+          - generic [ref=e122]: Authoritative portfolio summary pending
+        - article [ref=e123]:
+          - generic [ref=e124]: Exposure
+          - generic [ref=e125]: Awaiting
+          - generic [ref=e126]: Position and order truth pending
+        - article [ref=e127]:
+          - generic [ref=e128]: Latency
+          - generic [ref=e129]: Pending
+          - generic [ref=e130]: Waiting for authoritative summary bootstrap
+        - article [ref=e131]:
+          - generic [ref=e132]: Uptime
+          - generic [ref=e133]: Awaiting
+          - generic [ref=e134]: Provider identity pending
+      - generic [ref=e135]:
+        - generic [ref=e136]:
+          - generic [ref=e137]:
+            - heading "Live tape" [level=3] [ref=e138]
+            - generic [ref=e139]: public quote path + runtime truth overlay
+          - generic [ref=e141]: No live symbol snapshots available.
+        - generic [ref=e142]:
+          - generic [ref=e143]:
+            - heading "Command posture" [level=3] [ref=e144]
+            - generic [ref=e145]: latest decision pressure and control readiness
+          - generic [ref=e147]: No current decision records available.
+    - generic [ref=e148]:
+      - article [ref=e149]:
+        - generic [ref=e150]:
+          - heading "Operator Session" [level=2] [ref=e151]
+          - paragraph [ref=e152]: Local persisted identity is explicit, not hidden. POST controls and incident notes stay blocked until a named operator session is bound.
+          - generic [ref=e153]:
+            - generic [ref=e154]:
+              - generic [ref=e155]:
+                - generic [ref=e156]:
+                  - text: Operator ID
+                  - textbox "Operator ID" [ref=e157]: ops.mh
+                - generic [ref=e158]:
+                  - text: Display name
+                  - textbox "Display name" [ref=e159]: Martin Holik
+              - generic [ref=e160]:
+                - text: Role
+                - combobox "Role" [ref=e161]:
+                  - option "operator" [selected]
+                  - option "admin"
+                  - option "observer"
+              - generic [ref=e162]:
+                - button "Persist operator session" [ref=e163] [cursor=pointer]
+                - button "Clear session" [ref=e164] [cursor=pointer]
+            - generic [ref=e165]:
+              - generic [ref=e166]:
+                - generic [ref=e167]:
+                  - generic [ref=e168]: Status
+                  - strong [ref=e169]: anonymous
+                - generic [ref=e170]:
+                  - generic [ref=e171]: Operator
+                  - strong [ref=e172]: No operator bound
+                - generic [ref=e173]:
+                  - generic [ref=e174]: Role
+                  - strong [ref=e175]: observer
+                - generic [ref=e176]:
+                  - generic [ref=e177]: Auth source
+                  - strong [ref=e178]: local
+                - generic [ref=e179]:
+                  - generic [ref=e180]: Session ID
+                  - strong
+              - generic [ref=e181]:
+                - text: Destructive controls are blocked unless session status is
+                - strong [ref=e182]: active
+                - text: . This protects audit provenance and avoids anonymous command paths.
+      - article [ref=e183]:
+        - generic [ref=e184]:
+          - heading "Controls" [level=2] [ref=e185]
+          - paragraph [ref=e186]: Runtime commands are typed, reason-coded and provenance-aware. Mock mode is explicit and only simulates control acknowledgements.
+          - generic [ref=e187]:
+            - generic [ref=e188]:
+              - generic [ref=e189]: Control status
+              - strong [ref=e190]: No active operator identity. All destructive commands are blocked.
+            - generic [ref=e191]:
+              - generic [ref=e192]: Provenance
+              - strong [ref=e193]: auth=local status=anonymous provider=ready
+          - generic [ref=e194]:
+            - text: Reason text
+            - textbox "Reason text" [ref=e195]: manual_operator_review
+          - generic [ref=e196]:
+            - button "Pause" [disabled] [ref=e197]
+            - button "Resume" [disabled] [ref=e198]
+            - button "Freeze" [disabled] [ref=e199]
+            - button "Emergency Flatten" [disabled] [ref=e200]
+          - paragraph [ref=e201]: No control action sent yet.
+          - generic [ref=e202]:
+            - generic [ref=e203]:
+              - generic [ref=e204]: Applied runtime control
+              - strong [ref=e205]: unavailable
+            - generic [ref=e206]:
+              - generic [ref=e207]: Forced risk mode
+              - strong [ref=e208]: unavailable
+            - generic [ref=e209]:
+              - generic [ref=e210]: Queued operator command
+              - strong [ref=e211]: none queued
+    - generic [ref=e212]:
+      - article [ref=e213]:
+        - generic [ref=e214]:
+          - heading "Health" [level=2] [ref=e215]
+          - paragraph [ref=e216]: Bridge, backend and artifact-fallback state must be explicit.
+          - list [ref=e217]:
+            - listitem [ref=e218]: Runtime API is configured, but health state is unavailable. RCC is refusing to silently substitute mock health.
+            - listitem [ref=e219]: Integrity payload unavailable; do not trust control surfaces until runtime API recovers.
+            - listitem [ref=e220]: Runtime API is configured, but no authoritative payload has loaded yet. Mock fallback is intentionally disabled in this mode.
+          - generic [ref=e222]:
+            - generic [ref=e223]: Runtime API
+            - strong [ref=e224]: unavailable
+      - article [ref=e225]:
+        - generic [ref=e226]:
+          - heading "Integrity" [level=2] [ref=e227]
+          - paragraph [ref=e228]: Blockers are first-class. Anything ambiguous stays visible.
+          - generic [ref=e230]: runtime_api_unavailable
+          - generic [ref=e232]:
+            - generic [ref=e233]: Runtime API
+            - strong [ref=e234]: unavailable
+      - article [ref=e235]:
+        - generic [ref=e236]:
+          - heading "Incident Note" [level=2] [ref=e237]
+          - paragraph [ref=e238]: Note-writing follows the same operator provenance rules as controls.
+          - generic [ref=e239]:
+            - generic [ref=e240]:
+              - generic [ref=e241]:
+                - text: Severity
+                - combobox "Severity" [ref=e242]:
+                  - option "SEV-1"
+                  - option "SEV-2" [selected]
+                  - option "SEV-3"
+              - generic [ref=e243]:
+                - text: Tags
+                - textbox "Tags" [ref=e244]: manual-review,replay
+            - generic [ref=e245]:
+              - text: Note
+              - textbox "Note" [ref=e246]: Observed degraded runtime API posture. Control action reason and replay follow-up documented.
+            - generic [ref=e247]: "Deferred preview length: 93 characters."
+            - button "Write incident note" [disabled] [ref=e249]
+    - generic [ref=e250]:
+      - article [ref=e251]:
+        - generic [ref=e252]:
+          - heading "Market Monitor" [level=2] [ref=e253]
+          - paragraph [ref=e254]: Symbols and decisions are separated so stale or blocked surfaces cannot masquerade as healthy.
+          - table [ref=e256]:
+            - rowgroup [ref=e257]:
+              - row "Symbol Venue Bid Ask Spread bps Latency Quality Stale" [ref=e258]:
+                - columnheader "Symbol" [ref=e259]
+                - columnheader "Venue" [ref=e260]
+                - columnheader "Bid" [ref=e261]
+                - columnheader "Ask" [ref=e262]
+                - columnheader "Spread bps" [ref=e263]
+                - columnheader "Latency" [ref=e264]
+                - columnheader "Quality" [ref=e265]
+                - columnheader "Stale" [ref=e266]
+            - rowgroup
+      - article [ref=e267]:
+        - generic [ref=e268]:
+          - heading "Decision Feed" [level=2] [ref=e269]
+          - paragraph [ref=e270]: Risk verdicts, blockers and last actions remain explicit so control operators can challenge the runtime instead of trusting summaries.
+          - table [ref=e272]:
+            - rowgroup [ref=e273]:
+              - row "Symbol Intent Confidence Edge Verdict Blockers Last action" [ref=e274]:
+                - columnheader "Symbol" [ref=e275]
+                - columnheader "Intent" [ref=e276]
+                - columnheader "Confidence" [ref=e277]
+                - columnheader "Edge" [ref=e278]
+                - columnheader "Verdict" [ref=e279]
+                - columnheader "Blockers" [ref=e280]
+                - columnheader "Last action" [ref=e281]
+            - rowgroup
+    - generic [ref=e282]:
+      - article [ref=e283]:
+        - generic [ref=e284]:
+          - heading "Alert Feed" [level=2] [ref=e285]
+          - paragraph [ref=e286]: Critical alerts should bias toward freeze or flatten, not silent continuation.
+          - table [ref=e288]:
+            - rowgroup [ref=e289]:
+              - row "Severity Module Message Timestamp" [ref=e290]:
+                - columnheader "Severity" [ref=e291]
+                - columnheader "Module" [ref=e292]
+                - columnheader "Message" [ref=e293]
+                - columnheader "Timestamp" [ref=e294]
+            - rowgroup
+      - article [ref=e295]:
+        - generic [ref=e296]:
+          - heading "Replay Lab" [level=2] [ref=e297]
+          - paragraph [ref=e298]: Forensics surfaces remain attached to the active run so incident review starts from evidence, not memory.
+          - generic [ref=e299]:
+            - generic [ref=e300]:
+              - strong [ref=e301]: Timeline items
+              - generic [ref=e302]: "0"
+            - generic [ref=e303]:
+              - strong [ref=e304]: Incidents
+              - generic [ref=e305]: "0"
+            - generic [ref=e306]:
+              - strong [ref=e307]: Critical alerts
+              - generic [ref=e308]: "0"
+            - generic [ref=e309]:
+              - strong [ref=e310]: Counterfactuals
+              - generic [ref=e311]: "0"
+          - generic [ref=e312]:
+            - heading "Timeline" [level=3] [ref=e314]
+            - heading "Incidents" [level=3] [ref=e316]
+          - generic [ref=e317]:
+            - generic [ref=e318]:
+              - heading "Analog matches" [level=3] [ref=e319]
+              - list
+            - generic [ref=e320]:
+              - heading "Counterfactuals" [level=3] [ref=e321]
+              - list
+          - generic [ref=e322]:
+            - generic [ref=e323]:
+              - heading "PnL attribution" [level=3] [ref=e324]
+              - list
+            - generic [ref=e325]:
+              - heading "Notes" [level=3] [ref=e326]
+              - list [ref=e327]:
+                - listitem [ref=e328]:
+                  - strong [ref=e329]: Runtime API
+                  - text: ": Replay payload unavailable; forensic review requires runtime API recovery."
+    - generic [ref=e330]:
+      - article [ref=e331]:
+        - generic [ref=e332]:
+          - heading "Runbook Alignment" [level=2] [ref=e333]
+          - paragraph [ref=e334]: Procedures are visible in-product so operator action, incident notes and replay review stay coupled.
+          - generic [ref=e335]:
+            - generic [ref=e337]:
+              - heading "Pause" [level=3] [ref=e338]
+              - list [ref=e339]:
+                - listitem [ref=e340]: Suspicious behavior
+                - listitem [ref=e341]: Pre-maintenance
+                - listitem [ref=e342]: Manual inspection
+              - list [ref=e343]:
+                - listitem [ref=e344]: Confirm the pause command with named operator identity.
+                - listitem [ref=e345]: Verify effective state and audit reference returned by the runtime.
+                - listitem [ref=e346]: Add an incident note when the reason is operational.
+            - generic [ref=e348]:
+              - heading "Resume" [level=3] [ref=e349]
+              - list [ref=e350]:
+                - listitem [ref=e351]: Health is acceptable
+                - listitem [ref=e352]: Critical blockers are cleared
+              - list [ref=e353]:
+                - listitem [ref=e354]: Verify health is not in danger state.
+                - listitem [ref=e355]: Verify integrity blockers are understood or cleared.
+                - listitem [ref=e356]: Record explicit resume reason before resuming opens.
+            - generic [ref=e358]:
+              - heading "Freeze" [level=3] [ref=e359]
+              - list [ref=e360]:
+                - listitem [ref=e361]: Integrity state is unclear
+                - listitem [ref=e362]: Human intervention required urgently
+              - list [ref=e363]:
+                - listitem [ref=e364]: Freeze new openings immediately.
+                - listitem [ref=e365]: Open diagnostics and capture evidence bundle.
+                - listitem [ref=e366]: Escalate to replay review if ambiguity persists.
+            - generic [ref=e368]:
+              - heading "Emergency Flatten" [level=3] [ref=e369]
+              - list [ref=e370]:
+                - listitem [ref=e371]: Immediate position exit is required
+                - listitem [ref=e372]: Exposure is unacceptable
+              - list [ref=e373]:
+                - listitem [ref=e374]: Confirm flatten response and audit reference.
+                - listitem [ref=e375]: Open diagnostics and capture replay inputs.
+                - listitem [ref=e376]: Write incident note with operator, timestamp, action and next review step.
+          - heading "Replay checklist" [level=3] [ref=e377]
+          - list [ref=e378]:
+            - listitem [ref=e379]: Open Replay Lab.
+            - listitem [ref=e380]: Inspect run timeline, incidents and analog matches.
+            - listitem [ref=e381]: Review counterfactuals and PnL attribution.
+            - listitem [ref=e382]: Document root-cause hypothesis.
+            - listitem [ref=e383]: Classify severity and define corrective action.
+      - article [ref=e384]:
+        - generic [ref=e385]:
+          - heading "macOS Release Readiness" [level=2] [ref=e386]
+          - paragraph [ref=e387]: This is scriptable and explicit, but still blocked on Apple-controlled external inputs.
+          - generic [ref=e388]:
+            - generic [ref=e389]:
+              - generic [ref=e390]:
+                - generic [ref=e391]: "release status: blocked"
+                - generic [ref=e392]: "bundleId: com.fakturacnysystem.robotcontrolcenter"
+              - generic [ref=e393]:
+                - generic [ref=e394]:
+                  - generic [ref=e395]: Bundle identifier
+                  - strong [ref=e396]: configured
+                - generic [ref=e397]:
+                  - generic [ref=e398]: Apple Team ID
+                  - strong [ref=e399]: Missing APPLE_TEAM_ID.
+                - generic [ref=e400]:
+                  - generic [ref=e401]: Signing identity
+                  - strong [ref=e402]: Missing APPLE_SIGNING_IDENTITY.
+                - generic [ref=e403]:
+                  - generic [ref=e404]: Notarization account
+                  - strong [ref=e405]: Missing APPLE_ID and/or APPLE_APP_PASSWORD.
+                - generic [ref=e406]:
+                  - generic [ref=e407]: Notarization provider short name
+                  - strong [ref=e408]: Missing APPLE_PROVIDER_SHORT_NAME.
+            - generic [ref=e409]:
+              - heading "Exact commands" [level=3] [ref=e410]
+              - generic [ref=e411]: npm run check npm run build npm run release:macos:verify npm run tauri:build APPLE_TEAM_ID=... APPLE_SIGNING_IDENTITY=... APPLE_ID=... APPLE_APP_PASSWORD=... APPLE_PROVIDER_SHORT_NAME=... TAURI_BUNDLE_IDENTIFIER=... npm run release:macos:plan
+              - heading "Missing external inputs" [level=3] [ref=e412]
+              - list [ref=e413]:
+                - listitem [ref=e414]: Apple Team ID
+                - listitem [ref=e415]: Signing identity
+                - listitem [ref=e416]: Notarization account
+                - listitem [ref=e417]: Notarization provider short name
+  - alert [ref=e418]

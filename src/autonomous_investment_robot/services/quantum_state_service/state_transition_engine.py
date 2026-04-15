@@ -52,11 +52,12 @@ def scenario_drift_score(*, regime_label: str, branches: list[ScenarioBranch]) -
         return 1.0
     regime_hint = regime_label.lower()
     aligned = 0.0
+    mean_reversion_family = any(token in regime_hint for token in {"mean", "dead", "chop", "range"})
     for branch in branches:
         label = branch.label.lower()
         if "trend" in regime_hint and label in {"bullish_continuation", "squeeze"}:
             aligned += branch.probability
-        elif "mean" in regime_hint and label in {"mean_reversion_snapback", "dead_market_drift"}:
+        elif mean_reversion_family and label in {"mean_reversion_snapback", "dead_market_drift"}:
             aligned += branch.probability
         elif "vol" in regime_hint and label in {"volatility_expansion", "panic_flush"}:
             aligned += branch.probability

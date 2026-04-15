@@ -49,9 +49,33 @@ def test_stale_data_kill_switch_and_flatten():
 def test_max_orders_per_min_enforced():
     r = _risk()
     d1 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+    r.record_order_attempt()
     d2 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
     assert d1.allowed is True
     assert d2.allowed is False
+
+
+def test_risk_pass_does_not_consume_order_quota_without_submit_attempt():
+    r = _risk()
+    d1 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+    d2 = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+
+    assert d1.allowed is True
+    assert d2.allowed is True
+    assert r.state.orders_in_current_min == 0
+
+
+def test_order_quota_resets_after_sixty_second_window():
+    r = _risk()
+    r.record_order_attempt()
+    assert r.state.orders_in_current_min == 1
+
+    r.state.orders_window_started_monotonic -= 61.0
+
+    decision = r.evaluate(OrderIntent("BTCUSDT", "buy", 100.0, {}), 0.0, 0.0, 0.0, 0, 1.0, 1000.0, True, 0.0, 0.0, 0.0, 0.0, 3.0)
+
+    assert decision.allowed is True
+    assert r.state.orders_in_current_min == 0
 
 
 def test_weekly_loss_triggers_stop_and_safe_mode():

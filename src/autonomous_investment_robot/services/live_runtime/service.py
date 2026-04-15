@@ -24,6 +24,10 @@ class LiveExchangeState:
     unrealized_pnl_truth: UnrealizedPnlTruth
     open_order_count: int
     position_count: int
+    quote_asset: str = ""
+    quote_total_balance: float | None = None
+    quote_free_balance: float | None = None
+    quote_used_balance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -68,11 +72,44 @@ def _truth_snapshot_dict(snapshot: TruthConfidenceSnapshot) -> dict[str, Any]:
 
 
 class LiveStateCoordinator:
+    _TERMINAL_RECOVERY_STATES = {
+        "filled",
+        "cancelled",
+        "rejected",
+        "expired",
+        "recovered",
+        "timed_out",
+    }
+    _PROBLEM_RECOVERY_STATES = {
+        "acknowledged",
+        "accepted",
+        "working",
+        "partially_filled",
+        "cancel_pending",
+        "replace_pending",
+        "replace_rejected",
+        "cancel_rejected",
+        "orphaned",
+        "stuck",
+        "unknown",
+    }
+
     def __init__(self, event_store: EventStore, portfolio: PortfolioService, recon: ReconciliationService, inventory: Any | None = None) -> None:
         self.event_store = event_store
         self.portfolio = portfolio
         self.recon = recon
         self.inventory = inventory
+
+    def _active_lifecycle_snapshot(self, lifecycle_snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        active_records: list[dict[str, Any]] = []
+        for item in lifecycle_snapshot:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state", "")).lower()
+            if state in self._TERMINAL_RECOVERY_STATES:
+                continue
+            active_records.append(item)
+        return active_records
 
     def exchange_state(self, live: object, symbol: str) -> LiveExchangeState:
         positions = live.connector.position_risk(symbol)  # type: ignore[attr-defined]
@@ -87,6 +124,25 @@ class LiveStateCoordinator:
                 continue
             exposure += amt * mark
             count += 1
+        if exposure <= 0.0 and hasattr(live.connector, "base_balance") and hasattr(live.connector, "book_ticker"):  # type: ignore[attr-defined]
+            try:
+                base_balance = dict(live.connector.base_balance(symbol))  # type: ignore[attr-defined]
+                base_total = abs(float(base_balance.get("total", 0.0) or 0.0))
+                tolerance = 0.0
+                if hasattr(live.connector, "market_constraints"):  # type: ignore[attr-defined]
+                    try:
+                        constraints = dict(live.connector.market_constraints(symbol))  # type: ignore[attr-defined]
+                        tolerance = float(constraints.get("min_order_size", 0.0) or 0.0) * 0.5
+                    except Exception:
+                        tolerance = 0.0
+                if base_total > max(tolerance, 1e-12):
+                    book = dict(live.connector.book_ticker(symbol))  # type: ignore[attr-defined]
+                    bid = abs(float(book.get("bidPrice", 0.0) or 0.0))
+                    if bid > 0.0:
+                        exposure = base_total * bid
+                        count = max(count, 1)
+            except Exception:
+                pass
         if hasattr(live, "authoritative_unrealized_pnl"):
             unrealized_truth, gaps = live.authoritative_unrealized_pnl(symbol)  # type: ignore[attr-defined]
             if unrealized_truth is None:
@@ -110,15 +166,35 @@ class LiveStateCoordinator:
             open_orders = []
         open_order_count = len(open_orders) if isinstance(open_orders, list) else 0
         balance_total = None
+        quote_asset = ""
+        quote_total_balance = None
+        quote_free_balance = None
+        quote_used_balance = None
         if hasattr(live.connector, "balances"):  # type: ignore[attr-defined]
             try:
                 balance_total = extract_exchange_balance_total(live.connector.balances())  # type: ignore[attr-defined]
             except Exception:
                 balance_total = None
+        if hasattr(live.connector, "quote_balance"):  # type: ignore[attr-defined]
+            try:
+                quote_balance = dict(live.connector.quote_balance(symbol))  # type: ignore[attr-defined]
+                quote_asset = str(quote_balance.get("asset", "") or "")
+                quote_total_balance = float(quote_balance.get("total", 0.0) or 0.0)
+                quote_free_balance = float(quote_balance.get("free", 0.0) or 0.0)
+                quote_used_balance = float(quote_balance.get("used", 0.0) or 0.0)
+            except Exception:
+                quote_asset = ""
+                quote_total_balance = None
+                quote_free_balance = None
+                quote_used_balance = None
         if balance_total is not None:
             self.portfolio.seed_account_balance(balance_total)
         return LiveExchangeState(
             balance_total=balance_total,
+            quote_asset=quote_asset,
+            quote_total_balance=quote_total_balance,
+            quote_free_balance=quote_free_balance,
+            quote_used_balance=quote_used_balance,
             exposure_notional=exposure,
             unrealized_pnl=unrealized_pnl,
             unrealized_pnl_truth=unrealized_truth,
@@ -180,6 +256,29 @@ class LiveStateCoordinator:
             return account_ts
         return max(account_ts, fill_ts)
 
+    def _has_local_runtime_history(
+        self,
+        *,
+        order_events: list[dict[str, Any]],
+        fill_events: list[dict[str, Any]],
+        position_events: list[dict[str, Any]],
+        account_events: list[dict[str, Any]],
+    ) -> bool:
+        return bool(order_events or fill_events or position_events or account_events)
+
+    def _exchange_is_flat_for_boot(self, exchange: LiveExchangeState) -> bool:
+        if exchange.open_order_count > 0:
+            return False
+        source = str(getattr(exchange.unrealized_pnl_truth, "source", "") or "")
+        reason = str(getattr(exchange.unrealized_pnl_truth, "reason", "") or "")
+        if source == "spot_balance_flat" or reason == "no_open_spot_inventory":
+            return True
+        if source == "spot_trade_history_and_balance" or reason == "provider_unrealized_hook_returned_none":
+            return False
+        if exchange.position_count > 0:
+            return False
+        return abs(exchange.exposure_notional) <= 1e-9
+
     def truth_confidence(
         self,
         *,
@@ -190,16 +289,22 @@ class LiveStateCoordinator:
         market_health: Any | None = None,
         history_since_ms: int | None = None,
         history_recovered: int = 0,
+        defer_market_data_gate: bool = False,
     ) -> TruthConfidenceSnapshot:
         fill_history_gaps = list(fill_history_gaps or [])
         realized_pnl_gaps = list(realized_pnl_gaps or [])
+        history_baseline_required = history_since_ms is None and (
+            history_recovered > 0
+            or exchange.open_order_count > 0
+            or not self._exchange_is_flat_for_boot(exchange)
+        )
 
         fill_level = TruthConfidenceLevel.AUTHORITATIVE
         fill_reason = "native_fill_history_verified"
         if any(gap for gap in fill_history_gaps if gap not in {"fee_truth_gap", "realized_pnl_truth_gap"}):
             fill_level = TruthConfidenceLevel.UNAVAILABLE
             fill_reason = "native_fill_history_gap"
-        elif history_since_ms is None and (exchange.position_count > 0 or exchange.open_order_count > 0 or history_recovered > 0):
+        elif history_baseline_required:
             fill_level = TruthConfidenceLevel.PROXY
             fill_reason = "history_window_baseline_missing"
 
@@ -247,11 +352,12 @@ class LiveStateCoordinator:
             open_order_count=exchange.open_order_count,
         )
 
+        market_data_gate_deferred = bool(defer_market_data_gate and market_health is None)
         if market_health is None:
             market_conf = _confidence(
                 "market_data_truth_confidence",
                 TruthConfidenceLevel.PROXY,
-                "market_health_not_provided",
+                "market_health_deferred_until_first_snapshot" if market_data_gate_deferred else "market_health_not_provided",
             )
         elif getattr(market_health, "feed_stale", False):
             market_conf = _confidence(
@@ -327,14 +433,29 @@ class LiveStateCoordinator:
             "unrealized_pnl": unrealized_conf.level,
         }
         critical_levels = {k: v for k, v in levels.items() if k != "unrealized_pnl"}
+        gated_levels = {
+            name: level
+            for name, level in critical_levels.items()
+            if not (market_data_gate_deferred and name == "market_data")
+        }
         if any(level == TruthConfidenceLevel.UNAVAILABLE for level in critical_levels.values()):
             action = "flatten_only"
             reasons.extend([f"{name}_unavailable" for name, level in critical_levels.items() if level == TruthConfidenceLevel.UNAVAILABLE])
             if levels["unrealized_pnl"] == TruthConfidenceLevel.UNAVAILABLE:
                 reasons.append("unrealized_pnl_unavailable")
-        elif any(level == TruthConfidenceLevel.PROXY for level in levels.values()):
+        elif any(level == TruthConfidenceLevel.PROXY for level in gated_levels.values()) or (
+            levels["unrealized_pnl"] == TruthConfidenceLevel.PROXY
+        ):
             action = "degrade"
-            reasons.extend([f"{name}_proxy" for name, level in levels.items() if level == TruthConfidenceLevel.PROXY])
+            reasons.extend(
+                [
+                    f"{name}_proxy"
+                    for name, level in gated_levels.items()
+                    if level == TruthConfidenceLevel.PROXY
+                ]
+            )
+            if levels["unrealized_pnl"] == TruthConfidenceLevel.PROXY:
+                reasons.append("unrealized_pnl_proxy")
         elif levels["unrealized_pnl"] == TruthConfidenceLevel.UNAVAILABLE:
             action = "degrade"
             reasons.append("unrealized_pnl_unavailable")
@@ -350,7 +471,11 @@ class LiveStateCoordinator:
             unrealized_pnl_confidence=unrealized_conf,
             overall_action=action,
             reasons=reasons,
-            metadata={"history_since_ms": history_since_ms, "history_recovered": history_recovered},
+            metadata={
+                "history_since_ms": history_since_ms,
+                "history_recovered": history_recovered,
+                "market_data_gate_deferred": market_data_gate_deferred,
+            },
         )
 
     def _order_recovery_state(self, status: str, *, seen_fill: bool, exchange_open: bool) -> str:
@@ -368,8 +493,34 @@ class LiveStateCoordinator:
                 return "acknowledged"
             if seen_fill:
                 return "recovered"
-            return "timed_out"
+            return "unknown"
         return "recovered" if seen_fill else "stuck"
+
+    def _lifecycle_state_by_key(self, live: object) -> dict[str, str]:
+        if not hasattr(live, "lifecycle_snapshot"):
+            return {}
+        try:
+            snapshot = live.lifecycle_snapshot()
+        except Exception:
+            return {}
+        states: dict[str, str] = {}
+        if not isinstance(snapshot, list):
+            return states
+        for item in snapshot:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state", "")).strip().lower()
+            if not state:
+                continue
+            for key in (
+                item.get("order_key"),
+                item.get("client_order_id"),
+                item.get("order_id"),
+            ):
+                normalized = str(key or "").strip()
+                if normalized:
+                    states[normalized] = state
+        return states
 
     def recover_inflight_state(
         self,
@@ -382,6 +533,7 @@ class LiveStateCoordinator:
         order_events = self.event_store.load("orders")
         fill_events = self.event_store.load("fills")
         provider_id = getattr(getattr(live, "connector", None), "provider_id", "live")
+        lifecycle_states = self._lifecycle_state_by_key(live)
         local_orders: dict[str, dict[str, Any]] = {}
         local_fill_ids: list[str] = []
         local_filled_orders: set[str] = set()
@@ -452,7 +604,10 @@ class LiveStateCoordinator:
                         reasons.append(f"orphan_cancel_error:{exc}")
                 continue
             local_status = str(local.get("status", "NEW"))
-            state = self._order_recovery_state(local_status, seen_fill=bool(local_filled_orders), exchange_open=True)
+            state = lifecycle_states.get(
+                key,
+                self._order_recovery_state(local_status, seen_fill=bool(local_filled_orders), exchange_open=True),
+            )
             if ok:
                 recovered_orders += 1
             order_states.append({"order_key": key, "state": state, "local_status": local_status, "exchange_status": status})
@@ -462,12 +617,25 @@ class LiveStateCoordinator:
                 continue
             local_status = str(local.get("status", "NEW"))
             seen_fill = str(local.get("orderId", local.get("order_id", ""))) in local_filled_orders
-            state = self._order_recovery_state(local_status, seen_fill=seen_fill, exchange_open=False)
+            state = lifecycle_states.get(
+                key,
+                self._order_recovery_state(local_status, seen_fill=seen_fill, exchange_open=False),
+            )
             if state in {"recovered", "timed_out", "stuck"}:
                 recovered_orders += 1
-                if hasattr(live, "lifecycle_snapshot"):
-                    pass
             order_states.append({"order_key": key, "state": state, "local_status": local_status, "exchange_status": "missing"})
+
+        effective_active_local_orders = [
+            item
+            for item in order_states
+            if str(item.get("state", "")).lower() in self._PROBLEM_RECOVERY_STATES
+        ]
+        effective_historical_local_orders = [
+            item
+            for item in order_states
+            if str(item.get("state", "")).lower() in self._TERMINAL_RECOVERY_STATES
+        ]
+        active_fill_ids = bool(local_fill_ids and (exchange_keys or effective_active_local_orders))
 
         if restart_confidence == "insufficient":
             outcome = "insufficient_confidence_boot"
@@ -475,10 +643,10 @@ class LiveStateCoordinator:
         elif orphan_orders:
             outcome = "warm_restart"
             action = "flatten_only"
-        elif safe_mode_requested and (exchange_keys or local_orders):
+        elif safe_mode_requested and (exchange_keys or effective_active_local_orders):
             outcome = "safe_mode_boot"
             action = "degrade"
-        elif exchange_keys or local_orders or local_fill_ids:
+        elif exchange_keys or effective_active_local_orders or active_fill_ids:
             outcome = "warm_restart"
             action = "degrade" if recovered_orders or duplicate_repairs or out_of_order_repairs else "continue"
         else:
@@ -499,6 +667,8 @@ class LiveStateCoordinator:
             metadata={
                 "swept_order_ids": swept_order_ids,
                 "order_states": order_states,
+                "effective_active_local_orders": effective_active_local_orders,
+                "effective_historical_local_orders": effective_historical_local_orders,
                 "lifecycle_snapshot": live.lifecycle_snapshot() if hasattr(live, "lifecycle_snapshot") else [],
             },
         )
@@ -528,6 +698,8 @@ class LiveStateCoordinator:
             return {"supported": False, "since_ms": None, "fetched": 0, "recovered": 0, "gaps": []}
         since_ms = self._history_since_ms(account_events, fill_events)
         records, gaps = live.authoritative_fill_history(symbol, side="buy", since_ms=since_ms)  # type: ignore[attr-defined]
+        effective_since_ms = since_ms
+        recovered_timestamps_ms: list[int] = []
         existing_fill_ids = {
             str(payload.get("fill_id", payload.get("fillId", "")))
             for event in fill_events
@@ -582,6 +754,15 @@ class LiveStateCoordinator:
                 self.inventory.update_from_fill(record.fill)
             existing_fill_ids.add(record.fill.fill_id)
             recovered += 1
+            metadata = record.metadata if isinstance(record.metadata, dict) else {}
+            raw_ts = metadata.get("timestamp_ms")
+            if raw_ts is not None:
+                try:
+                    recovered_timestamps_ms.append(int(raw_ts))
+                except Exception:
+                    pass
+        if effective_since_ms is None and recovered_timestamps_ms:
+            effective_since_ms = min(recovered_timestamps_ms)
         if records:
             self.event_store.append(
                 "account",
@@ -594,19 +775,57 @@ class LiveStateCoordinator:
                     self.portfolio.account_row(
                         venue=provider_id,
                         metadata={
+                            "baseline_recorded_at_ms": effective_since_ms,
                             "exchange_history_supported": True,
                             "exchange_history_recovered_fills": recovered,
+                            "exchange_history_rehydrate_source": "authoritative_fill_history",
                         },
                     ),
                 ),
             )
         return {
             "supported": True,
-            "since_ms": since_ms,
+            "since_ms": effective_since_ms,
             "fetched": len(records),
             "recovered": recovered,
             "gaps": list(gaps),
         }
+
+    def _can_trust_spot_exchange_history_boot(
+        self,
+        *,
+        provider_id: str,
+        had_local_runtime_history: bool,
+        exchange: LiveExchangeState,
+        history_rehydrate: dict[str, Any],
+        truth_confidence: TruthConfidenceSnapshot,
+        delta: float,
+        tolerance: float,
+    ) -> bool:
+        if provider_id != "kraken_spot":
+            return False
+        if had_local_runtime_history:
+            return False
+        if exchange.open_order_count > 0:
+            return False
+        if history_rehydrate.get("supported") is not True:
+            return False
+        if int(history_rehydrate.get("recovered", 0) or 0) <= 0:
+            return False
+        if history_rehydrate.get("gaps"):
+            return False
+        if history_rehydrate.get("since_ms") is None:
+            return False
+        if abs(delta) > tolerance:
+            return False
+        if truth_confidence.overall_action != "continue":
+            return False
+        unrealized_truth = exchange.unrealized_pnl_truth
+        if str(getattr(unrealized_truth, "confidence", "") or "").lower() != TruthConfidenceLevel.AUTHORITATIVE.value:
+            return False
+        if str(getattr(unrealized_truth, "source", "") or "") != "spot_trade_history_and_balance":
+            return False
+        return True
 
     def rehydrate_state(self, live: object, symbol: str) -> LiveRehydrationResult:
         order_events = self.event_store.load("orders")
@@ -614,28 +833,49 @@ class LiveStateCoordinator:
         position_events = self.event_store.load("positions")
         account_events = self.event_store.load("account")
         provider_id = getattr(getattr(live, "connector", None), "provider_id", "live")
+        had_local_runtime_history = self._has_local_runtime_history(
+            order_events=order_events,
+            fill_events=fill_events,
+            position_events=position_events,
+            account_events=account_events,
+        )
         rehydrated: dict[str, Any] = {}
         if hasattr(live, "rehydrate_state"):
             rehydrated = live.rehydrate_state(order_events, fill_events)
         self.portfolio.rehydrate_from_events(fill_events=fill_events, position_events=position_events, account_events=account_events)
         if self.inventory is not None:
             self.inventory.rehydrate_from_events(fill_events)
-        history_rehydrate = self._exchange_history_rehydrate(
-            live=live,
-            symbol=symbol,
-            provider_id=provider_id,
-            account_events=account_events,
-            fill_events=fill_events,
-        )
+        exchange = self.exchange_state(live, symbol)
+        if (
+            hasattr(live, "authoritative_fill_history")
+            and not had_local_runtime_history
+            and self._exchange_is_flat_for_boot(exchange)
+        ):
+            history_rehydrate = {
+                "supported": True,
+                "since_ms": None,
+                "fetched": 0,
+                "recovered": 0,
+                "gaps": [],
+                "skipped": "flat_account_boot_baseline",
+            }
+        else:
+            history_rehydrate = self._exchange_history_rehydrate(
+                live=live,
+                symbol=symbol,
+                provider_id=provider_id,
+                account_events=account_events,
+                fill_events=fill_events,
+            )
         local_state = self.portfolio.snapshot(symbol)
         account = self.portfolio.account_snapshot(venue=provider_id)
-        exchange = self.exchange_state(live, symbol)
         truth_confidence = self.truth_confidence(
             exchange=exchange,
             fill_history_gaps=history_rehydrate["gaps"],
             unrealized_truth=exchange.unrealized_pnl_truth,
             history_since_ms=history_rehydrate["since_ms"],
             history_recovered=history_rehydrate["recovered"],
+            defer_market_data_gate=True,
         )
         tolerance = max(2.0, abs(exchange.exposure_notional) * 0.1)
         delta = exchange.exposure_notional - abs(local_state.exposure_notional)
@@ -645,6 +885,17 @@ class LiveStateCoordinator:
         if abs(exchange.exposure_notional) <= tolerance and abs(local_state.exposure_notional) <= tolerance and exchange.open_order_count == 0:
             confidence = "trusted"
             reason = "flat_and_consistent"
+        elif self._can_trust_spot_exchange_history_boot(
+            provider_id=provider_id,
+            had_local_runtime_history=had_local_runtime_history,
+            exchange=exchange,
+            history_rehydrate=history_rehydrate,
+            truth_confidence=truth_confidence,
+            delta=delta,
+            tolerance=tolerance,
+        ):
+            confidence = "trusted"
+            reason = "authoritative_exchange_history_rehydrate"
         elif abs(exchange.exposure_notional) > tolerance and not fill_events and not position_events and history_rehydrate["recovered"] == 0:
             confidence = "insufficient"
             reason = "exchange_exposure_without_local_history"
@@ -671,6 +922,10 @@ class LiveStateCoordinator:
             "exchange_positions": exchange.position_count,
             "open_order_count": exchange.open_order_count,
             "exchange_balance": exchange.balance_total,
+            "quote_asset": exchange.quote_asset,
+            "quote_total_balance": exchange.quote_total_balance,
+            "quote_free_balance": exchange.quote_free_balance,
+            "quote_used_balance": exchange.quote_used_balance,
             "local_cash_delta": account.local_cash_delta,
             "exchange_unrealized_pnl": exchange.unrealized_pnl,
             "exchange_unrealized_truth": asdict(exchange.unrealized_pnl_truth),
@@ -725,16 +980,17 @@ class LiveStateCoordinator:
             history_recovered=len(fill_events),
         )
         lifecycle_snapshot = live.lifecycle_snapshot() if hasattr(live, "lifecycle_snapshot") else []
+        active_lifecycle_snapshot = self._active_lifecycle_snapshot(lifecycle_snapshot)
         lifecycle_problem_states = {
             str(item.get("state", "")).lower()
-            for item in lifecycle_snapshot
+            for item in active_lifecycle_snapshot
             if isinstance(item, dict)
         }
-        if exchange.open_order_count > 0 and not lifecycle_snapshot:
+        if exchange.open_order_count > 0 and not active_lifecycle_snapshot:
             order_lifecycle_confidence = TruthConfidenceLevel.UNAVAILABLE.value
         elif lifecycle_problem_states & {"orphaned", "stuck", "unknown", "cancel_rejected"}:
             order_lifecycle_confidence = TruthConfidenceLevel.PROXY.value
-        elif any(str(item.get("confidence", "")).lower() in {"recovery", "local"} for item in lifecycle_snapshot if isinstance(item, dict)):
+        elif any(str(item.get("confidence", "")).lower() in {"recovery", "local"} for item in active_lifecycle_snapshot if isinstance(item, dict)):
             order_lifecycle_confidence = TruthConfidenceLevel.PROXY.value
         else:
             order_lifecycle_confidence = TruthConfidenceLevel.AUTHORITATIVE.value
@@ -750,10 +1006,14 @@ class LiveStateCoordinator:
             truth_confidence=truth_confidence,
             stale_account_snapshot=since_ms is None and (exchange.position_count > 0 or exchange.open_order_count > 0),
             stale_market_snapshot=bool(market_health is not None and getattr(market_health, "feed_stale", False)),
-            lifecycle_snapshot=lifecycle_snapshot,
+            lifecycle_snapshot=active_lifecycle_snapshot,
             order_lifecycle_confidence=order_lifecycle_confidence,
         )
         report.details.setdefault("exchange_balance", exchange.balance_total)
+        report.details.setdefault("quote_asset", exchange.quote_asset)
+        report.details.setdefault("quote_total_balance", exchange.quote_total_balance)
+        report.details.setdefault("quote_free_balance", exchange.quote_free_balance)
+        report.details.setdefault("quote_used_balance", exchange.quote_used_balance)
         report.details.setdefault("local_cash_delta", account.local_cash_delta)
         report.details.setdefault("local_realized_pnl", account.realized_pnl)
         report.details.setdefault("exchange_realized_pnl", exchange_realized_pnl)
@@ -765,6 +1025,7 @@ class LiveStateCoordinator:
         report.details.setdefault("local_unrealized_pnl", local_state.unrealized_pnl)
         report.details.setdefault("order_lifecycle_confidence", order_lifecycle_confidence)
         report.details.setdefault("order_lifecycle_snapshot", lifecycle_snapshot)
+        report.details.setdefault("active_order_lifecycle_snapshot", active_lifecycle_snapshot)
         report.details.setdefault("reconciliation_since_ms", since_ms)
         self.event_store.append(
             "truth",
@@ -832,6 +1093,7 @@ class LiveLedgerCoordinator:
                 )
                 if self.observability is not None:
                     self.observability.journal("lifecycle_journal", transition)
+                    self.observability.journal("lifecycle_evidence_journal", {"type": "transition", **transition})
 
         new_exposure = current_exposure
         fill_truth_ok = True
@@ -998,6 +1260,25 @@ class LiveLedgerCoordinator:
                     "account_snapshot": asdict(account_snapshot),
                 },
             )
+        if live is not None and hasattr(live, "record_lifecycle_reconciliation"):
+            proof_summary = live.record_lifecycle_reconciliation(
+                result_status=str(getattr(result, "status", "") or ""),
+                fill_truth_ok=fill_truth_ok,
+                gap_reasons=list(gap_reasons),
+            )
+            if self.observability is not None:
+                self.observability.journal(
+                    "lifecycle_evidence_journal",
+                    {
+                        "type": "summary",
+                        "symbol": symbol,
+                        "provider_id": provider_id,
+                        "result_status": str(getattr(result, "status", "") or ""),
+                        "fill_truth_ok": fill_truth_ok,
+                        "gap_reasons": list(gap_reasons),
+                        "proof": proof_summary,
+                    },
+                )
         return LiveLedgerApplyResult(
             exposure_notional=new_exposure,
             account_snapshot=account_snapshot,

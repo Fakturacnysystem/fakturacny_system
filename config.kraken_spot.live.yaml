@@ -1,8 +1,19 @@
 {
   "mode": "live",
+  "rollout_stage": "limited_live",
   "safe_mode_default": false,
   "provider_whitelist": ["kraken_spot"],
   "universe": ["BTC/USD"],
+  "market_universe": {
+    "pair_universe": ["BTC/USD", "ETH/USD", "SOL/USD"],
+    "max_active_pairs": 1,
+    "pair_rotation_interval_s": 180,
+    "pair_min_depth_notional": 30000.0,
+    "pair_max_spread_bps": 18.0,
+    "pair_min_expectancy_bps": 0.0,
+    "pair_min_fill_rate": 0.0,
+    "pair_clustering_enabled": true
+  },
   "execution": {
     "provider_id": "kraken_spot",
     "mode": "live",
@@ -28,7 +39,7 @@
       "allow_full_live_stage": false
     }
   },
-  "canary_mode": true,
+  "canary_mode": false,
   "doctrine": {
     "target_provider": "kraken_spot",
     "product_target": "spot",

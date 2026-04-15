@@ -134,6 +134,14 @@ class OrderLifecycleMirror:
         if record.client_order_id:
             self._aliases[record.client_order_id] = record.order_key
 
+    def _confidence_for_source(self, source: str) -> str:
+        normalized = str(source or "").lower()
+        if normalized.startswith("exchange"):
+            return "exchange"
+        if normalized.startswith("recovery"):
+            return "recovery"
+        return "local"
+
     def _transition(
         self,
         *,
@@ -369,6 +377,87 @@ class OrderLifecycleMirror:
         record = self._records.get(canonical_key)
         if record is not None:
             record.fill_count += 1
+
+    def fill_confirmed(
+        self,
+        *,
+        symbol: str,
+        order_key: str,
+        order_id: str = "",
+        client_order_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        ok, reason, _ = self._transition(
+            symbol=symbol,
+            order_key=order_key,
+            to_state=OrderLifecycleState.FILLED.value,
+            source="exchange_fill_update",
+            reason="fill_confirmed",
+            confidence="exchange",
+            metadata=metadata,
+            order_id=order_id,
+            client_order_id=client_order_id,
+        )
+        canonical_key = self._resolve_key(order_key)
+        record = self._records.get(canonical_key)
+        if record is not None:
+            record.fill_count += 1
+        return ok, reason
+
+    def rehydrate_transition(self, transition: dict[str, Any]) -> tuple[bool, str]:
+        if not isinstance(transition, dict):
+            return False, "invalid_transition"
+        order_key = str(transition.get("order_key", transition.get("client_order_id", transition.get("order_id", ""))) or "")
+        to_state = str(transition.get("to_state", "") or "").strip()
+        if not order_key or not to_state:
+            return False, "missing_transition_identity"
+        symbol = str(transition.get("symbol", "") or "")
+        metadata = dict(transition.get("metadata", {}) or {})
+        order_id = str(
+            transition.get("order_id")
+            or metadata.get("order_id")
+            or dict(metadata.get("raw", {}) or {}).get("orderId")
+            or dict(metadata.get("raw", {}) or {}).get("order_id")
+            or ""
+        )
+        client_order_id = str(
+            transition.get("client_order_id")
+            or metadata.get("client_order_id")
+            or dict(metadata.get("raw", {}) or {}).get("clientOrderId")
+            or dict(metadata.get("raw", {}) or {}).get("origClientOrderId")
+            or order_key
+        )
+        canonical_key = self._resolve_key(order_key)
+        record = self._records.get(canonical_key)
+        if record is None:
+            record = OrderLifecycleRecord(
+                symbol=symbol,
+                venue=self.venue,
+                order_key=canonical_key,
+                state=to_state,
+                confidence=self._confidence_for_source(str(transition.get("source", "") or "")),
+                order_id=order_id,
+                client_order_id=client_order_id,
+                metadata=metadata,
+            )
+        else:
+            record.state = to_state
+            record.confidence = self._confidence_for_source(str(transition.get("source", "") or ""))
+            record.metadata.update(metadata)
+            if order_id:
+                record.order_id = order_id
+            if client_order_id:
+                record.client_order_id = client_order_id
+        raw_ts = transition.get("ts")
+        if isinstance(raw_ts, str):
+            try:
+                record.last_event_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                pass
+        record.fill_count = max(record.fill_count, int(transition.get("fill_count", record.fill_count) or 0))
+        self._records[canonical_key] = record
+        self._remember_aliases(record)
+        return True, "ok"
 
     def drain_transitions(self) -> list[dict[str, Any]]:
         pending = [asdict(item) for item in self._pending]

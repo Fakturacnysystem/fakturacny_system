@@ -1,23 +1,15 @@
-version: '3.8'
+x-runtime-classification:
+  status: legacy_blocked
+  reason: unsupported_root_compose_use_infra_and_kraken_spot_launchers
 
 services:
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-
-  oracle-brain:
-    build: .
-    command: python3 ./src/autonomous_investment_robot/services/mastermind/oracle_service.py
-    depends_on:
-      - redis
-    environment:
-      - NVIDIA_API_KEY=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
-
-  trading-core:
-    build: .
-    command: python3 god_mode_launcher.py
-    depends_on:
-      - redis
-      - oracle-brain
-    restart: always
+  legacy-root-compose-blocked:
+    image: busybox:1.36
+    command:
+      - /bin/sh
+      - -c
+      - >
+        echo 'unsupported legacy root compose; use infra/docker-compose.yml for infra only and scripts/run_kraken_spot_*.sh for runtime';
+        exit 64
+    profiles:
+      - legacy-blocked

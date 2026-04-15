@@ -54,6 +54,20 @@ def test_kraken_spot_live_profit_config_accepts_full_stage_unlock(monkeypatch) -
     assert gate["full_live_stage_sources"]["env_allow_full_live_stage"] is True
 
 
+def test_kraken_spot_tiny_live_config_is_real_money_without_full_stage_unlock(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+
+    settings = RobotSettings.from_file("config.kraken_spot.tiny_live.yaml")
+
+    gate = settings.live_gate_status()
+    assert settings.rollout_stage().value == "tiny_live"
+    assert gate["full_live_stage_required"] is False
+    assert gate["rollout_profile"]["aggression_envelope"] == "tiny_size_probe_only"
+
+
 def test_orchestrator_live_boot_reaches_live_loop_when_safe(monkeypatch, tmp_path: Path) -> None:
     from autonomous_investment_robot.core import orchestrator as orchestrator_module
     from autonomous_investment_robot.services.live_runtime.coordination import LiveBootState
@@ -172,6 +186,60 @@ def test_orchestrator_live_boot_blocks_when_preflight_fails_with_operator_summar
     assert summary["preflight"]["reason"] == "private_api_verified_failed"
 
 
+def test_orchestrator_live_boot_emits_readiness_artifacts_when_preflight_raises(monkeypatch, tmp_path: Path) -> None:
+    from autonomous_investment_robot.core import orchestrator as orchestrator_module
+
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+
+    class FakeLiveKrakenSpot:
+        def __init__(self, settings, run_id, connector):  # noqa: ARG002
+            self.connector = SimpleNamespace(provider_id="kraken_spot", has_credentials=True)
+
+        def preflight(self):
+            raise RuntimeError('trade_history_fetch_failed:kraken {"error":["EAPI:Invalid key"]}')
+
+    monkeypatch.setattr(orchestrator_module, "LiveKrakenSpotService", FakeLiveKrakenSpot)
+    monkeypatch.setattr(orchestrator_module, "KrakenSpotConnector", lambda settings: object())
+
+    config = json.loads(Path("config.kraken_spot.tiny_live.yaml").read_text(encoding="utf-8"))
+    config["storage"]["run_dir"] = str(tmp_path / "kraken_spot_tiny_live_blocked")
+    config_path = tmp_path / "config.tiny.live.blocked.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = run_with_config(str(config_path))
+
+    assert result["status"] == "blocked"
+    assert "trade_history_fetch_failed" in result["reason"]
+    run_dir = Path(config["storage"]["run_dir"])
+    assert Path(result["operator_summary_path"]).exists()
+    assert (run_dir / "tiny_live_readiness_report.json").exists()
+    assert (run_dir / "safety_preflight_live_target.json").exists()
+    assert (run_dir / "rollback_preflight_liveprofit_paper.json").exists()
+    assert (run_dir / "tiny_live_envelope_summary.json").exists()
+    assert (run_dir / "live_operator_start_procedure.json").exists()
+    assert (run_dir / "health_summary.json").exists()
+    assert (run_dir / "live_artifact_index.json").exists()
+    assert (run_dir / "throughput_diagnostics.json").exists()
+    assert (run_dir / "failure_taxonomy.json").exists()
+    assert (run_dir / "decision_explainability.json").exists()
+    summary = json.loads(Path(result["operator_summary_path"]).read_text(encoding="utf-8"))
+    assert summary["preflight"]["ok"] is False
+    assert "trade_history_fetch_failed" in summary["preflight"]["reason"]
+    rollback = json.loads((run_dir / "rollback_preflight_liveprofit_paper.json").read_text(encoding="utf-8"))
+    assert rollback["flatten_command"].endswith("--config config.kraken_spot.tiny_live.yaml")
+    explainability = json.loads((run_dir / "decision_explainability.json").read_text(encoding="utf-8"))
+    trace_latest = json.loads((run_dir / "decision_collapse_trace_latest.json").read_text(encoding="utf-8"))
+    assert explainability["action_state"] == "blocked_preflight"
+    assert explainability["trade_path_state"] == "not_attempted"
+    assert trace_latest["final_decision"] == "blocked_preflight"
+    assert trace_latest["trade_path_state"] == "not_attempted"
+    assert trace_latest["ranked_blockers"][0]["code"] == "recovery:halt"
+    assert any("trade_history_fetch_failed" in blocker["code"] for blocker in trace_latest["ranked_blockers"])
+
+
 def test_live_runtime_summary_emits_capability_artifacts(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
     monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
@@ -217,3 +285,185 @@ def test_live_runtime_summary_emits_capability_artifacts(monkeypatch, tmp_path: 
     assert (Path(settings.storage.run_dir) / "live_activated_capabilities.json").exists()
     assert (Path(settings.storage.run_dir) / "live_still_gated_capabilities.json").exists()
     assert (Path(settings.storage.run_dir) / "live_doctrine_blocked_capabilities.json").exists()
+    assert (Path(settings.storage.run_dir) / "throughput_diagnostics.json").exists()
+    assert (Path(settings.storage.run_dir) / "failure_taxonomy.json").exists()
+    assert (Path(settings.storage.run_dir) / "decision_explainability.json").exists()
+    assert (Path(settings.storage.run_dir) / "health_summary.json").exists()
+
+
+def test_orchestrator_live_boot_emits_tiny_live_readiness_artifacts(monkeypatch, tmp_path: Path) -> None:
+    from autonomous_investment_robot.core import orchestrator as orchestrator_module
+    from autonomous_investment_robot.services.live_runtime.coordination import LiveBootState
+
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+
+    class FakeLiveKrakenSpot:
+        def __init__(self, settings, run_id, connector):  # noqa: ARG002
+            self.connector = SimpleNamespace(provider_id="kraken_spot", has_credentials=True)
+            self.safe_mode = False
+            self.flatten_only = False
+            self.killed = False
+            self.kill_reason = ""
+
+        def preflight(self):
+            return True, "ok"
+
+    monkeypatch.setattr(orchestrator_module, "LiveKrakenSpotService", FakeLiveKrakenSpot)
+    monkeypatch.setattr(orchestrator_module, "KrakenSpotConnector", lambda settings: object())
+    monkeypatch.setattr(
+        orchestrator_module.LiveRecoveryCoordinator,
+        "boot_state",
+        lambda self, live, symbol: LiveBootState(
+            confidence="strong",
+            details={"truth_confidence": {"level": "high", "reason": "boot_ok"}},
+            recovery_decision=RecoveryDecision(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                outcome="clean_boot",
+                action="continue",
+                confidence="strong",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.LiveStateCoordinator,
+        "exchange_state",
+        lambda self, live, symbol: SimpleNamespace(balance_total=100.0),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.RobotOrchestrator,
+        "_live_loop",
+        lambda self, live, symbol, mode: {"status": "ok", "mode": mode.value, "reason": "loop_entered"},
+    )
+
+    config = json.loads(Path("config.kraken_spot.tiny_live.yaml").read_text(encoding="utf-8"))
+    config["storage"]["run_dir"] = str(tmp_path / "kraken_spot_tiny_live")
+    config_path = tmp_path / "config.tiny.live.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = run_with_config(str(config_path))
+
+    assert result["status"] == "ok"
+    run_dir = Path(config["storage"]["run_dir"])
+    assert (run_dir / "tiny_live_readiness_report.json").exists()
+    assert (run_dir / "tiny_live_envelope_summary.json").exists()
+    assert (run_dir / "safety_preflight_live_target.json").exists()
+    assert (run_dir / "rollback_preflight_liveprofit_paper.json").exists()
+    assert (run_dir / "config_truth_report.json").exists()
+    assert (run_dir / "release_manifest.json").exists()
+    assert (run_dir / "deployment_stamp.json").exists()
+    assert (run_dir / "runtime_fingerprint.json").exists()
+    assert (run_dir / "readiness_summary.json").exists()
+    assert (run_dir / "live_safety_summary.json").exists()
+    assert (run_dir / "health_summary.json").exists()
+    assert (run_dir / "live_artifact_index.json").exists()
+    assert (run_dir / "throughput_diagnostics.json").exists()
+    assert (run_dir / "failure_taxonomy.json").exists()
+    assert (run_dir / "decision_explainability.json").exists()
+    readiness = json.loads((run_dir / "tiny_live_readiness_report.json").read_text(encoding="utf-8"))
+    assert readiness["stage"] == "tiny_live"
+
+
+def test_orchestrator_live_boot_fails_closed_when_boot_truth_confidence_forces_flatten_only(monkeypatch, tmp_path: Path) -> None:
+    from autonomous_investment_robot.core import orchestrator as orchestrator_module
+    from autonomous_investment_robot.services.live_runtime.coordination import LiveBootState
+
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+
+    class FakeLiveKrakenSpot:
+        def __init__(self, settings, run_id, connector):  # noqa: ARG002
+            self.connector = SimpleNamespace(provider_id="kraken_spot", has_credentials=True)
+            self.safe_mode = False
+            self.flatten_only = False
+            self.flatten_reason = ""
+
+        def preflight(self):
+            return True, "ok"
+
+        def enter_flatten_only(self, reason="flatten_only"):
+            self.flatten_only = True
+            self.safe_mode = True
+            self.flatten_reason = reason
+
+    monkeypatch.setattr(orchestrator_module, "LiveKrakenSpotService", FakeLiveKrakenSpot)
+    monkeypatch.setattr(orchestrator_module, "KrakenSpotConnector", lambda settings: object())
+    monkeypatch.setattr(
+        orchestrator_module.LiveRecoveryCoordinator,
+        "boot_state",
+        lambda self, live, symbol: LiveBootState(
+            confidence="strong",
+            details={
+                "truth_confidence": {
+                    "overall_action": "flatten_only",
+                    "reasons": ["fill_unavailable", "unrealized_pnl_unavailable"],
+                    "fill_truth_confidence": {"level": "unavailable"},
+                }
+            },
+            recovery_decision=RecoveryDecision(
+                symbol=symbol,
+                ts=datetime.now(timezone.utc),
+                outcome="clean_boot",
+                action="continue",
+                confidence="strong",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.LiveStateCoordinator,
+        "exchange_state",
+        lambda self, live, symbol: SimpleNamespace(balance_total=100.0),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.RobotOrchestrator,
+        "_live_loop",
+        lambda self, live, symbol, mode: {
+            "status": "ok",
+            "mode": mode.value,
+            "reason": "loop_entered",
+            "flatten_only": live.flatten_only,
+            "safe_mode": live.safe_mode,
+            "flatten_reason": live.flatten_reason,
+        },
+    )
+
+    config = json.loads(Path("config.kraken_spot.tiny_live.yaml").read_text(encoding="utf-8"))
+    config["storage"]["run_dir"] = str(tmp_path / "kraken_spot_tiny_live_fail_closed")
+    config_path = tmp_path / "config.tiny.live.fail_closed.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = run_with_config(str(config_path))
+
+    assert result["status"] == "ok"
+    assert result["flatten_only"] is True
+    assert result["safe_mode"] is True
+    assert result["flatten_reason"] == "truth_confidence:flatten_only"
+
+    run_dir = Path(config["storage"]["run_dir"])
+    summary = json.loads(Path(result["operator_summary_path"]).read_text(encoding="utf-8"))
+    assert summary["ordering_allowed"] is False
+
+    safety = json.loads((run_dir / "safety_preflight_live_target.json").read_text(encoding="utf-8"))
+    assert safety["ordering_allowed"] is False
+    assert safety["truth_confidence_action"] == "flatten_only"
+    assert safety["blocking_reasons"] == [
+        "truth_confidence:flatten_only:fill_unavailable",
+        "truth_confidence:flatten_only:unrealized_pnl_unavailable",
+    ]
+
+    readiness = json.loads((run_dir / "tiny_live_readiness_report.json").read_text(encoding="utf-8"))
+    assert readiness["ready"] is False
+    assert "truth_confidence:flatten_only:fill_unavailable" in readiness["blocking_reasons"]
+
+    live_safety = json.loads((run_dir / "live_safety_summary.json").read_text(encoding="utf-8"))
+    assert live_safety["safety_ready"] is False
+    assert "truth_confidence:flatten_only:fill_unavailable" in live_safety["blocking_reasons"]
+
+    health = json.loads((run_dir / "health_summary.json").read_text(encoding="utf-8"))
+    assert health["ordering_allowed"] is False
+    assert "truth_confidence:flatten_only:fill_unavailable" in health["blocking_reasons"]

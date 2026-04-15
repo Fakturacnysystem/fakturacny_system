@@ -162,14 +162,42 @@ class InventoryService:
         gross_exposure_notional: float,
         minimum_reserve_pct: float,
         capital_floor: float = 0.0,
+        quote_asset: str = "",
+        quote_total_balance: float | None = None,
+        quote_free_balance: float | None = None,
+        quote_used_balance: float | None = None,
+        required_quote_with_fee_buffer: float = 0.0,
+        reserve_policy_source: str = "policy_default",
+        configured_minimum_reserve_pct: float | None = None,
     ) -> ReserveState:
-        total_capital = max(exchange_balance, capital_floor, abs(local_cash_delta) + gross_exposure_notional, 1.0)
-        free_quote = max(0.0, total_capital - gross_exposure_notional)
-        reserve_pct = free_quote / max(total_capital, 1.0)
         reasons: list[str] = []
+        metadata: dict[str, Any] = {
+            "reserve_policy_source": str(reserve_policy_source or "policy_default"),
+            "configured_minimum_reserve_pct": float(minimum_reserve_pct if configured_minimum_reserve_pct is None else configured_minimum_reserve_pct),
+        }
+        if quote_total_balance is not None or quote_free_balance is not None:
+            total_capital = max(
+                0.0,
+                float(quote_total_balance if quote_total_balance is not None else 0.0),
+                float(quote_free_balance if quote_free_balance is not None else 0.0),
+            )
+            free_quote = max(0.0, float(quote_free_balance if quote_free_balance is not None else 0.0))
+            reserve_floor_quote = max(0.0, total_capital * minimum_reserve_pct)
+            entry_buying_power_quote = max(0.0, free_quote - reserve_floor_quote)
+            reserve_pct = 0.0 if total_capital <= 0.0 else free_quote / total_capital
+            metadata["affordability_source"] = "quote_asset_balance"
+        else:
+            total_capital = max(exchange_balance, capital_floor, abs(local_cash_delta) + gross_exposure_notional, 1.0)
+            free_quote = max(0.0, total_capital - gross_exposure_notional)
+            reserve_floor_quote = max(0.0, total_capital * minimum_reserve_pct)
+            entry_buying_power_quote = free_quote
+            reserve_pct = free_quote / max(total_capital, 1.0)
+            metadata["affordability_source"] = "aggregate_exchange_balance"
         breached = reserve_pct < minimum_reserve_pct
         if breached:
             reasons.append("free_quote_reserve_breached")
+        if required_quote_with_fee_buffer > 0.0 and entry_buying_power_quote + 1e-9 < required_quote_with_fee_buffer:
+            reasons.append("insufficient_quote_below_min_order_quote")
         return ReserveState(
             ts=ts,
             total_capital=total_capital,
@@ -177,5 +205,13 @@ class InventoryService:
             free_quote_reserve_pct=reserve_pct,
             minimum_reserve_pct=minimum_reserve_pct,
             reserve_breached=breached,
+            quote_asset=quote_asset,
+            quote_total_balance=max(0.0, float(quote_total_balance if quote_total_balance is not None else total_capital)),
+            quote_free_balance=max(0.0, float(quote_free_balance if quote_free_balance is not None else free_quote)),
+            quote_used_balance=max(0.0, float(quote_used_balance if quote_used_balance is not None else 0.0)),
+            reserve_floor_quote=reserve_floor_quote,
+            entry_buying_power_quote=entry_buying_power_quote,
+            required_quote_with_fee_buffer=max(0.0, float(required_quote_with_fee_buffer)),
             reasons=reasons,
+            metadata=metadata,
         )

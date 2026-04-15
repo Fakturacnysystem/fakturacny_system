@@ -262,4 +262,183 @@ def test_venue_capability_registry_prefers_dynamic_live_capability_evidence():
     assert matrix.user_stream_confidence == "user_stream_plus_rest_repair"
     assert evidence is not None
     assert evidence.partial is False
+
+
+def test_venue_capability_registry_upgrades_kraken_spot_when_private_ws_observability_is_live() -> None:
+    now = datetime.now(timezone.utc)
+    live = type(
+        "FakeKrakenSpotWsLive",
+        (),
+        {
+            "user_stream_connected": True,
+            "supports_replace": False,
+            "supports_expire": True,
+            "market_integrity_evidence": lambda self, now_dt=None: {"ts": now_dt or now, "sequence_ok": True, "checksum_ok": True},
+            "lifecycle_snapshot": lambda self: [],
+            "capability_evidence": lambda self, now_dt=None: {
+                "ts": now_dt or now,
+                "user_stream_connected": True,
+                "lifecycle_snapshot_count": 0,
+                "lifecycle_snapshot_seeded": True,
+                "sequence_ok": True,
+                "checksum_ok": True,
+                "replace_support_evidence": "dynamic",
+                "expire_support_evidence": "dynamic",
+                "auth_validated": True,
+                "private_api_healthy": True,
+                "public_market_data_connected": True,
+                "book_repeat_count": 0,
+                "seconds_since_distinct_book_change": 1.0,
+                "has_credentials": True,
+                "ws_lifecycle_observability": True,
+                "reasons": ["lifecycle_proof_incomplete"],
+                "partial": False,
+                "classifications": {"promotion_blocker": ["lifecycle_proof_incomplete"]},
+            },
+        },
+    )()
+
+    registry = VenueCapabilityRegistry()
+    matrix = registry.resolve("kraken_spot", live=live, connector=object(), now=now)
+    evidence = registry.last_evidence("kraken_spot")
+
+    assert matrix.user_stream_confidence == "user_stream_plus_rest_repair"
+    assert matrix.lifecycle_completeness == "strong_without_replace"
+    assert evidence is not None
+    assert evidence.partial is False
+    assert "lifecycle_snapshot_absent" not in evidence.reasons
+    assert "user_stream_not_connected" not in evidence.reasons
+    assert "lifecycle_proof_incomplete" in evidence.metadata["classifications"]["promotion_blocker"]
+
+
+def test_venue_capability_registry_upgrades_kraken_spot_after_local_lifecycle_proof():
+    now = datetime.now(timezone.utc)
+    live = type(
+        "FakeKrakenSpotLive",
+        (),
+        {
+            "user_stream_connected": False,
+            "supports_replace": False,
+            "supports_expire": True,
+            "market_integrity_evidence": lambda self, now_dt=None: {"ts": now_dt or now, "sequence_ok": True, "checksum_ok": True},
+            "lifecycle_snapshot": lambda self: [{"state": "working"}],
+            "capability_evidence": lambda self, now_dt=None: {
+                "ts": now_dt or now,
+                "user_stream_connected": False,
+                "lifecycle_snapshot_count": 1,
+                "sequence_ok": True,
+                "checksum_ok": True,
+                "replace_support_evidence": "dynamic",
+                "expire_support_evidence": "dynamic",
+                "auth_validated": True,
+                "private_api_healthy": True,
+                "public_market_data_connected": True,
+                "book_repeat_count": 0,
+                "seconds_since_distinct_book_change": 1.0,
+                "has_credentials": True,
+                "single_process_scope": True,
+                "rest_lifecycle_proven": True,
+                "lifecycle_reconciliation_complete": True,
+                "lifecycle_proof_mode": "local_submit_plus_rest_query",
+            },
+        },
+    )()
+
+    registry = VenueCapabilityRegistry()
+    matrix = registry.resolve("kraken_spot", live=live, connector=object(), now=now)
+    evidence = registry.last_evidence("kraken_spot")
+
+    assert matrix.user_stream_confidence == "single_process_rest_repair"
+    assert matrix.lifecycle_completeness == "strong_without_replace"
+    assert evidence is not None
+    assert evidence.partial is False
+    assert "user_stream_not_connected" not in evidence.reasons
+    assert evidence.metadata["single_process_lifecycle_equivalent"] is True
     assert evidence.metadata["auth_validated"] is True
+
+
+def test_venue_capability_registry_requires_reconciliation_complete_for_kraken_spot_upgrade():
+    now = datetime.now(timezone.utc)
+    live = type(
+        "FakeKrakenSpotIncompleteProof",
+        (),
+        {
+            "user_stream_connected": False,
+            "supports_replace": False,
+            "supports_expire": True,
+            "market_integrity_evidence": lambda self, now_dt=None: {"ts": now_dt or now, "sequence_ok": True, "checksum_ok": True},
+            "lifecycle_snapshot": lambda self: [{"state": "working"}],
+            "capability_evidence": lambda self, now_dt=None: {
+                "ts": now_dt or now,
+                "user_stream_connected": False,
+                "lifecycle_snapshot_count": 1,
+                "sequence_ok": True,
+                "checksum_ok": True,
+                "replace_support_evidence": "dynamic",
+                "expire_support_evidence": "dynamic",
+                "auth_validated": True,
+                "private_api_healthy": True,
+                "public_market_data_connected": True,
+                "book_repeat_count": 0,
+                "seconds_since_distinct_book_change": 1.0,
+                "has_credentials": True,
+                "single_process_scope": True,
+                "rest_lifecycle_proven": True,
+                "lifecycle_reconciliation_complete": False,
+                "lifecycle_proof_mode": "local_submit_plus_rest_query",
+            },
+        },
+    )()
+
+    registry = VenueCapabilityRegistry()
+    matrix = registry.resolve("kraken_spot", live=live, connector=object(), now=now)
+    evidence = registry.last_evidence("kraken_spot")
+
+    assert matrix.user_stream_confidence == "rest_history_only"
+    assert matrix.lifecycle_completeness == "rest_history_without_replace"
+    assert evidence is not None
+    assert evidence.partial is True
+    assert evidence.metadata["single_process_lifecycle_equivalent"] is False
+
+
+def test_venue_capability_registry_classifies_partial_kraken_spot_observability_gaps():
+    now = datetime.now(timezone.utc)
+    live = type(
+        "FakeKrakenSpotPartialLive",
+        (),
+        {
+            "user_stream_connected": False,
+            "supports_replace": False,
+            "supports_expire": True,
+            "market_integrity_evidence": lambda self, now_dt=None: {"ts": now_dt or now, "sequence_ok": True, "checksum_ok": True},
+            "lifecycle_snapshot": lambda self: [],
+            "capability_evidence": lambda self, now_dt=None: {
+                "ts": now_dt or now,
+                "user_stream_connected": False,
+                "lifecycle_snapshot_count": 0,
+                "sequence_ok": True,
+                "checksum_ok": True,
+                "replace_support_evidence": "dynamic",
+                "expire_support_evidence": "dynamic",
+                "auth_validated": True,
+                "private_api_healthy": True,
+                "public_market_data_connected": True,
+                "book_repeat_count": 0,
+                "seconds_since_distinct_book_change": 2.0,
+                "has_credentials": True,
+            },
+        },
+    )()
+
+    registry = VenueCapabilityRegistry()
+    matrix = registry.resolve("kraken_spot", live=live, connector=object(), now=now)
+    evidence = registry.last_evidence("kraken_spot")
+
+    assert matrix.lifecycle_completeness == "partial_without_snapshot"
+    assert evidence is not None
+    assert evidence.partial is True
+    assert evidence.metadata["classifications"]["promotion_blocker"] == [
+        "user_stream_not_connected",
+        "lifecycle_snapshot_absent",
+    ]
+    assert evidence.metadata["classifications"]["execution_blocker"] == []

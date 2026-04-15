@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime, timezone
+import math
 from types import SimpleNamespace
 
 from autonomous_investment_robot.config.settings import AllocatorSettings, PolicySettings, TCOSettings, UNSPECIFIED
@@ -99,6 +100,100 @@ class PolicyService:
             filtered.append(signal)
         return filtered
 
+    @staticmethod
+    def _directional_strategy_names() -> set[str]:
+        return {"trend", "mean_reversion"}
+
+    def _directional_cooldown_snapshot(self, regime: str) -> dict[str, int]:
+        snapshot: dict[str, int] = {}
+        for name in self._directional_strategy_names():
+            remaining = int(self.strategy_regime_cooldowns.get((name, regime), 0) or 0)
+            if remaining > 0:
+                snapshot[name] = remaining
+        return snapshot
+
+    def _empty_signal_decision(
+        self,
+        *,
+        fc: Forecast,
+        profitability_context: dict | None,
+        inventory_context: dict | None,
+    ) -> PolicyDecision:
+        doctrine_filter = {
+            "active": self._kraken_spot_doctrine_active(),
+            "blocked_strategies": list(self.last_doctrine_blocked_strategies),
+            "reasons": list(self.last_doctrine_filter_reasons),
+        }
+        cooldowns = self._directional_cooldown_snapshot(fc.regime)
+        cooldown_reasons = [f"directional_strategy_cooldown:{name}@{fc.regime}:{steps}" for name, steps in sorted(cooldowns.items())]
+        reserve_state = {}
+        if isinstance(profitability_context, dict):
+            reserve_state = dict(
+                (
+                    profitability_context.get("capital_release", {}) or {}
+                ).get("metadata", {}) or {}
+            ).get("reserve_state", {}) or {}
+        reserve_state = dict(reserve_state or {})
+        reserve_reasons = [str(reason).strip() for reason in list(reserve_state.get("reasons", []) or []) if str(reason).strip()]
+        confidence = float(fc.confidence)
+        uncertainty = max(0.0, min(1.0, 1.0 - confidence))
+
+        if any("insufficient_quote" in reason or "reserve_breach" in reason for reason in reserve_reasons):
+            no_trade_reason = "insufficient_quote_external_capital"
+            reasons = [no_trade_reason, *reserve_reasons, *cooldown_reasons, *doctrine_filter["reasons"]]
+        elif cooldown_reasons:
+            no_trade_reason = "directional_signal_cooldown"
+            reasons = [no_trade_reason, *cooldown_reasons, *doctrine_filter["reasons"]]
+        elif doctrine_filter["reasons"]:
+            no_trade_reason = "kraken_spot_doctrine_filter"
+            reasons = ["no_signals", *doctrine_filter["reasons"]]
+        else:
+            no_trade_reason = "no_signals"
+            reasons = ["no_signals"]
+
+        why: dict[str, object] = {
+            "doctrine_target": {
+                "target_provider": self.target_provider,
+                "product_target": self.product_target,
+                "long_only": self.long_only,
+                "kraken_spot_doctrine_active": self._kraken_spot_doctrine_active(),
+            }
+        }
+        if doctrine_filter["reasons"]:
+            why["doctrine_filter"] = doctrine_filter
+        if cooldowns:
+            why["strategy_regime_cooldowns"] = {f"{name}@{fc.regime}": steps for name, steps in sorted(cooldowns.items())}
+
+        return PolicyDecision(
+            symbol=fc.symbol,
+            ts=fc.ts,
+            trade_allowed=False,
+            expected_edge_bps=0.0,
+            expected_cost_bps=0.0,
+            expected_slippage_bps=0.0,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            regime_fit=0.0,
+            capacity_limit=0.0,
+            why=why,
+            profitability={} if profitability_context is None else dict(profitability_context),
+            inventory={} if inventory_context is None else dict(inventory_context),
+            no_trade=NoTradeDecision(
+                symbol=fc.symbol,
+                ts=fc.ts,
+                reason=no_trade_reason,
+                reasons=sorted(dict.fromkeys(reasons)),
+                expected_edge_bps=0.0,
+                expected_cost_bps=0.0,
+                confidence=confidence,
+                uncertainty=uncertainty,
+                metadata={
+                    **why,
+                    "reserve_state": reserve_state,
+                },
+            ),
+        )
+
     def evaluate_strategies(self, features: dict[str, float], forecast: Forecast) -> list[StrategySignal]:
         out: list[StrategySignal] = []
         for s in self.strategies:
@@ -134,6 +229,225 @@ class PolicyService:
     def _clear_regime_veto_streak(self, strategy_name: str, regime: str) -> None:
         self.strategy_regime_veto_streaks[(strategy_name, regime)] = 0
 
+    @staticmethod
+    def _bounded(value: float, floor: float = 0.0, ceil: float = 1.0) -> float:
+        return max(floor, min(ceil, value))
+
+    @staticmethod
+    def _safe_float(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _trade_admission_assessment(
+        self,
+        *,
+        fc: Forecast,
+        features: dict[str, float],
+        expected_edge_bps: float,
+        expected_cost_bps: float,
+        expected_adverse_excursion_bps: float,
+        expected_favorable_excursion_bps: float,
+        execution_quality: ExecutionQualityForecast | None,
+        portfolio_allocation: PortfolioAllocation | None,
+        profitability_context: dict | None,
+        inventory_context: dict | None,
+        event_intelligence_report: object | None,
+        provider_capability: object | None,
+    ) -> dict[str, object]:
+        missing_evidence: list[str] = []
+        if execution_quality is None:
+            missing_evidence.append("execution_quality")
+        if portfolio_allocation is None:
+            missing_evidence.append("portfolio_allocation")
+        if provider_capability is None:
+            missing_evidence.append("provider_capability")
+
+        fill_probability = 0.5 if execution_quality is None else self._bounded(float(execution_quality.fill_probability))
+        expected_fill_speed_ms = 750.0 if execution_quality is None else max(1.0, float(execution_quality.expected_fill_speed_ms))
+        adverse_selection_risk = 0.25 if execution_quality is None else self._bounded(float(execution_quality.adverse_selection_risk))
+        execution_survivability_score = self._bounded(fill_probability * (1.0 - adverse_selection_risk * 0.7))
+        confidence = self._bounded(float(fc.confidence))
+        signal_age_seconds = max(0.0, float(features.get("seconds_since_distinct_book_change", 0.0) or 0.0))
+        signal_decay_risk = self._bounded(max(signal_age_seconds / 20.0, expected_fill_speed_ms / 4000.0))
+        opportunity_cost_score = 0.0 if portfolio_allocation is None else self._bounded(float(portfolio_allocation.opportunity_cost_score))
+        concentration_score = 0.0 if portfolio_allocation is None else self._bounded(float(portfolio_allocation.concentration_score))
+        inventory_pressure = 0.0 if not isinstance(inventory_context, dict) else self._bounded(float(inventory_context.get("stale_inventory_score", 0.0) or 0.0))
+        capital_release_pressure = 0.0
+        if isinstance(profitability_context, dict):
+            capital_release_pressure = self._bounded(
+                float(((profitability_context.get("capital_release", {}) or {}).get("pressure_score", 0.0) or 0.0))
+            )
+        event_risk = 0.0 if event_intelligence_report is None else self._bounded(float(getattr(event_intelligence_report, "overall_risk_score", 0.0) or 0.0))
+        provider_replace_supported = False if provider_capability is None else bool(getattr(provider_capability, "replace_supported", False))
+        provider_lifecycle = "" if provider_capability is None else str(getattr(provider_capability, "lifecycle_completeness", "") or "")
+        lifecycle_penalty = 0.15 if provider_lifecycle.startswith("partial") else 0.0
+
+        expected_realized_net_edge_bps = max(
+            0.0,
+            float(expected_edge_bps)
+            - float(expected_cost_bps)
+            - adverse_selection_risk * 12.0
+            - signal_decay_risk * 8.0
+            - event_risk * 6.0
+            - lifecycle_penalty * 10.0,
+        )
+        expected_mfe_bps = max(float(expected_favorable_excursion_bps), expected_realized_net_edge_bps)
+        expected_mae_bps = max(0.0, float(expected_adverse_excursion_bps) * (0.85 + signal_decay_risk * 0.25 + event_risk * 0.15))
+
+        favorable_to_floor = self._bounded(expected_mfe_bps / 120.0)
+        edge_to_floor = self._bounded(expected_realized_net_edge_bps / 120.0)
+        mae_penalty = self._bounded(expected_mae_bps / max(expected_mfe_bps + 1.0, 1.0))
+        floor_compatibility_score = self._bounded(
+            0.30 * confidence
+            + 0.20 * fill_probability
+            + 0.20 * favorable_to_floor
+            + 0.15 * edge_to_floor
+            + 0.15 * (1.0 - mae_penalty)
+        )
+        floor_reach_probability = self._bounded(
+            0.35 * confidence
+            + 0.25 * fill_probability
+            + 0.20 * favorable_to_floor
+            + 0.10 * (1.0 - signal_decay_risk)
+            + 0.10 * (1.0 - event_risk)
+        )
+        expected_time_to_floor_minutes = None
+        if expected_realized_net_edge_bps > 0.0:
+            expected_time_to_floor_minutes = round(
+                max(
+                    2.0,
+                    120.0 / max(expected_realized_net_edge_bps, 1e-6) * (expected_fill_speed_ms / 1000.0) * (1.0 + signal_decay_risk + opportunity_cost_score),
+                ),
+                2,
+            )
+        capital_lock_cost_score = self._bounded(
+            0.45 * opportunity_cost_score
+            + 0.20 * concentration_score
+            + 0.20 * inventory_pressure
+            + 0.15 * capital_release_pressure
+        )
+        floor_time_penalty = 0.0 if expected_time_to_floor_minutes is None else self._bounded(expected_time_to_floor_minutes / 180.0)
+        edge_per_time_score = self._bounded(
+            0.0
+            if expected_time_to_floor_minutes is None
+            else expected_realized_net_edge_bps / max(expected_time_to_floor_minutes, 5.0) / 1.5
+        )
+        expected_utility_score = self._bounded(
+            0.30 * floor_reach_probability
+            + 0.20 * floor_compatibility_score
+            + 0.20 * edge_per_time_score
+            + 0.15 * execution_survivability_score
+            + 0.15 * (1.0 - capital_lock_cost_score)
+            - 0.15 * signal_decay_risk
+            - 0.10 * event_risk
+        )
+
+        recommended_action = "continue"
+        recommended_size_multiplier = 1.0
+        rationale: list[str] = []
+        if expected_realized_net_edge_bps <= 0.0:
+            recommended_action = "no_trade"
+            recommended_size_multiplier = 0.0
+            rationale.append("expected_realized_net_edge_non_positive")
+        elif floor_compatibility_score < 0.40 or floor_reach_probability < 0.35:
+            recommended_action = "no_trade"
+            recommended_size_multiplier = 0.0
+            rationale.append("profit_floor_reach_probability_too_low")
+        elif capital_lock_cost_score >= 0.75 and expected_utility_score < 0.45:
+            recommended_action = "wait"
+            recommended_size_multiplier = 0.0
+            rationale.append("capital_lock_cost_too_high")
+        elif signal_decay_risk >= 0.75 and execution_survivability_score < 0.55:
+            recommended_action = "wait"
+            recommended_size_multiplier = 0.0
+            rationale.append("signal_decay_dominates_fill_survivability")
+        elif expected_utility_score < 0.50:
+            recommended_action = "trade_smaller"
+            recommended_size_multiplier = 0.5
+            rationale.append("expected_utility_below_full_size_threshold")
+        elif expected_utility_score < 0.62:
+            recommended_action = "probe"
+            recommended_size_multiplier = 0.25
+            rationale.append("probe_before_full_commit")
+
+        if missing_evidence and expected_realized_net_edge_bps > 0.0:
+            if recommended_action == "no_trade" and "profit_floor_reach_probability_too_low" in rationale:
+                recommended_action = "continue" if confidence >= float(self.settings.confidence_threshold) else "trade_smaller"
+                recommended_size_multiplier = 1.0 if recommended_action == "continue" else 0.40
+                rationale = [reason for reason in rationale if reason != "profit_floor_reach_probability_too_low"]
+                rationale.append("missing_evidence_neutral_no_floor_veto")
+            elif recommended_action == "wait" and "capital_lock_cost_too_high" in rationale:
+                recommended_action = "trade_smaller"
+                recommended_size_multiplier = min(recommended_size_multiplier, 0.40)
+                rationale.append("missing_evidence_no_hard_capital_lock_veto")
+
+        if missing_evidence:
+            rationale.append(f"missing_evidence:{','.join(missing_evidence)}")
+
+        return {
+            "evidence_state": "complete" if not missing_evidence else "partial",
+            "missing_evidence": missing_evidence,
+            "floor_reach_probability": floor_reach_probability,
+            "floor_compatibility_score": floor_compatibility_score,
+            "expected_mae_bps": expected_mae_bps,
+            "expected_mfe_bps": expected_mfe_bps,
+            "expected_time_to_floor_minutes": expected_time_to_floor_minutes,
+            "expected_realized_net_edge_bps": expected_realized_net_edge_bps,
+            "capital_lock_cost_score": capital_lock_cost_score,
+            "signal_decay_risk": signal_decay_risk,
+            "expected_utility_score": expected_utility_score,
+            "execution_survivability_score": execution_survivability_score,
+            "edge_per_time_score": edge_per_time_score,
+            "provider_replace_supported": provider_replace_supported,
+            "recommended_execution_style": "marketable_limit"
+            if signal_decay_risk >= 0.65 and execution_survivability_score >= 0.75 and floor_compatibility_score >= 0.80
+            else "passive_limit"
+            if execution_survivability_score < 0.60 or not provider_replace_supported
+            else "limit",
+            "recommended_action": recommended_action,
+            "recommended_size_multiplier": recommended_size_multiplier,
+            "rationale": rationale,
+        }
+
+    def _decision_waterfall(self, *, why: dict[str, object], no_trade_reason: str | None, reasons: list[str]) -> list[dict[str, object]]:
+        order = [
+            ("market_watch", "action"),
+            ("mastermind", "decision"),
+            ("event_intelligence", "recommended_action"),
+            ("synthetic_affect", "recommended_action"),
+            ("capital_sovereignty", "action"),
+            ("execution_simulation", "recommended_action"),
+            ("spre", "dominant_action"),
+            ("shadow_rival", "action"),
+            ("decision_doctrine", "recommended_action"),
+            ("trade_admission", "recommended_action"),
+        ]
+        items: list[dict[str, object]] = []
+        for key, action_key in order:
+            payload = why.get(key)
+            if not isinstance(payload, dict):
+                continue
+            action = str(payload.get(action_key, "continue") or "continue")
+            item = {
+                "layer": key,
+                "action": action,
+                "status": "fail" if action in {"no_trade", "wait", "flatten_only", "manual_review"} else "degrade" if action in {"probe", "trade_smaller"} else "pass",
+                "reasons": list(payload.get("reasons", payload.get("rationale", [])) or []),
+            }
+            items.append(item)
+        items.append(
+            {
+                "layer": "final_decision",
+                "action": "no_trade" if no_trade_reason is not None else "trade",
+                "status": "fail" if no_trade_reason is not None else "pass",
+                "primary_reason": no_trade_reason,
+                "reasons": list(dict.fromkeys(reasons)),
+            }
+        )
+        return items
+
     def evaluate_decision(
         self,
         fc: Forecast,
@@ -165,23 +479,10 @@ class PolicyService:
         self.last_veto_counts = {}
         signals = self.evaluate_strategies(features, fc)
         if not signals:
-            doctrine_filter = {
-                "active": self._kraken_spot_doctrine_active(),
-                "blocked_strategies": list(self.last_doctrine_blocked_strategies),
-                "reasons": list(self.last_doctrine_filter_reasons),
-            }
-            return PolicyDecision(
-                symbol=fc.symbol,
-                ts=fc.ts,
-                trade_allowed=False,
-                why={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
-                no_trade=NoTradeDecision(
-                    symbol=fc.symbol,
-                    ts=fc.ts,
-                    reason="kraken_spot_doctrine_filter" if doctrine_filter["reasons"] else "no_signals",
-                    reasons=["no_signals", *doctrine_filter["reasons"]] if doctrine_filter["reasons"] else ["no_signals"],
-                    metadata={"doctrine_filter": doctrine_filter} if doctrine_filter["reasons"] else {},
-                ),
+            return self._empty_signal_decision(
+                fc=fc,
+                profitability_context=profitability_context,
+                inventory_context=inventory_context,
             )
         weights = self.allocator.allocate([s.name for s in signals])
 
@@ -395,13 +696,18 @@ class PolicyService:
             }
             mastermind_action = str(getattr(mastermind_advisory, "decision", "CONTINUE") or "CONTINUE").lower()
             mastermind_confidence = float(getattr(mastermind_advisory, "confidence", 0.0) or 0.0)
+            mastermind_risk = float(getattr(mastermind_advisory, "risk_level", 0.0) or 0.0) / 100.0
             size_multiplier = min(size_multiplier, float(getattr(mastermind_advisory, "size_multiplier", 1.0) or 1.0))
-            if bool(getattr(mastermind_advisory, "veto", False)) or (mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.45):
+            if bool(getattr(mastermind_advisory, "veto", False)) or (
+                mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.55 and mastermind_risk >= 0.75
+            ):
                 no_trade_reason = no_trade_reason or "mastermind_veto"
                 reasons.append("mastermind_veto")
             elif mastermind_action == "wait" and mastermind_confidence >= 0.40:
                 no_trade_reason = no_trade_reason or "mastermind_wait"
                 reasons.append("mastermind_wait")
+            elif mastermind_action in {"no_trade", "hold"} and mastermind_confidence >= 0.40:
+                reasons.append("mastermind_caution_wait")
             elif mastermind_action == "probe":
                 size_multiplier = min(size_multiplier, 0.25)
                 reasons.append("mastermind_probe")
@@ -578,12 +884,19 @@ class PolicyService:
                 "branch_disagreement_score": float(getattr(collapse, "branch_disagreement_score", 0.0)),
                 "scenario_drift_score": float(getattr(collapse, "scenario_drift_score", 0.0)),
                 "reasons": list(collapse.reasons),
+                "uncertainty_decomposition": dict(getattr(getattr(quantum_state, "collapse_context", object()), "uncertainty_decomposition", {}) or {}),
                 "top_states": dict(getattr(getattr(quantum_state, "collapse_context", object()), "top_states", {}) or {}),
+                "metadata": dict(getattr(collapse, "metadata", {}) or {}),
                 "heuristic": quantum_state.heuristic,
             }
             if collapse.recommended_action == "no_trade":
                 no_trade_reason = no_trade_reason or "quantum_no_trade"
                 reasons.append("quantum_no_trade")
+            elif collapse.recommended_action == "wait":
+                reasons.append("quantum_wait")
+            elif collapse.recommended_action == "probe":
+                size_multiplier = min(size_multiplier, float(collapse.size_multiplier or 0.25) or 0.25)
+                reasons.append("quantum_probe")
             elif collapse.side is not None and abs(combined) > 1e-9:
                 implied_side = "buy" if combined > 0 else "sell"
                 if implied_side != collapse.side:
@@ -593,10 +906,8 @@ class PolicyService:
                 no_trade_reason = no_trade_reason or "execution_fragility"
                 reasons.append("execution_fragility")
             if float(getattr(collapse, "branch_disagreement_score", 0.0)) >= 0.6:
-                no_trade_reason = no_trade_reason or "quantum_branch_disagreement"
                 reasons.append("quantum_branch_disagreement")
             if float(getattr(collapse, "scenario_drift_score", 0.0)) >= 0.65:
-                no_trade_reason = no_trade_reason or "quantum_scenario_drift"
                 reasons.append("quantum_scenario_drift")
         if edge_immunity_decision is not None:
             report = edge_immunity_decision.report
@@ -765,6 +1076,44 @@ class PolicyService:
         elif doctrine_action == "trade_smaller":
             size_multiplier = min(size_multiplier, float(doctrine_report.size_multiplier), 0.5)
             reasons.append("decision_doctrine_trade_smaller")
+        trade_admission = self._trade_admission_assessment(
+            fc=fc,
+            features=features,
+            expected_edge_bps=expected_edge_bps,
+            expected_cost_bps=expected_cost_bps,
+            expected_adverse_excursion_bps=max(0.0, fc.sigma * 10000.0),
+            expected_favorable_excursion_bps=max(0.0, abs(fc.mu) * 10000.0),
+            execution_quality=execution_quality,
+            portfolio_allocation=portfolio_allocation,
+            profitability_context=profitability_context,
+            inventory_context=inventory_context,
+            event_intelligence_report=event_intelligence_report,
+            provider_capability=provider_capability,
+        )
+        why["trade_admission"] = trade_admission
+        admission_action = str(trade_admission.get("recommended_action", "continue") or "continue")
+        admission_size_multiplier = float(trade_admission.get("recommended_size_multiplier", 1.0) or 1.0)
+        size_multiplier = min(size_multiplier, admission_size_multiplier)
+        if admission_action == "no_trade":
+            no_trade_reason = no_trade_reason or "trade_admission_reject"
+            reasons.append("trade_admission_reject")
+        elif admission_action == "wait":
+            no_trade_reason = no_trade_reason or "trade_admission_wait"
+            reasons.append("trade_admission_wait")
+        elif admission_action == "probe":
+            reasons.append("trade_admission_probe")
+        elif admission_action == "trade_smaller":
+            reasons.append("trade_admission_trade_smaller")
+        why["decision_waterfall"] = self._decision_waterfall(why=why, no_trade_reason=no_trade_reason, reasons=reasons)
+        why["veto_attribution"] = {
+            "primary_veto": no_trade_reason,
+            "veto_chain": list(dict.fromkeys(reasons)),
+            "protective_layers": [
+                item["layer"]
+                for item in why["decision_waterfall"]
+                if isinstance(item, dict) and item.get("status") in {"fail", "degrade"}
+            ],
+        }
         if no_trade_reason is not None:
             return PolicyDecision(
                 symbol=fc.symbol,

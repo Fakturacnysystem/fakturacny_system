@@ -147,28 +147,49 @@ class HumanEscalationLayer:
         actions: list[str] = []
         reasons: list[str] = []
         disagreement_score = 0.0
+        adverse_actions: set[str] = set()
         if market_integrity is not None:
-            actions.append(str(getattr(market_integrity, "action", "continue")))
-            if str(getattr(market_integrity, "action", "continue")) in {"flatten_only", "halt"}:
+            market_action = str(getattr(market_integrity, "action", "continue"))
+            actions.append(market_action)
+            if market_action in {"flatten_only", "halt"}:
+                adverse_actions.add(market_action)
                 reasons.append("market_integrity_severe")
         if quantum_state is not None:
             collapse = getattr(quantum_state, "collapse_decision", None)
             if collapse is not None:
-                actions.append(str(getattr(collapse, "recommended_action", "continue")))
+                quantum_action = str(getattr(collapse, "recommended_action", "continue"))
+                actions.append(quantum_action)
+                if quantum_action in {"no_trade", "wait", "flatten_only"}:
+                    adverse_actions.add(quantum_action)
                 if float(getattr(collapse, "uncertainty", 0.0) or 0.0) >= 0.8:
                     reasons.append("quantum_uncertainty_extreme")
         if edge_immunity_decision is not None:
-            actions.append(str(getattr(edge_immunity_decision, "action", "continue")))
+            edge_action = str(getattr(edge_immunity_decision, "action", "continue"))
+            actions.append(edge_action)
+            if edge_action in {"wait", "no_trade"}:
+                adverse_actions.add(edge_action)
         if event_intelligence is not None:
-            actions.append(str(getattr(event_intelligence, "recommended_action", "continue")))
+            event_action = str(getattr(event_intelligence, "recommended_action", "continue"))
+            actions.append(event_action)
+            if event_action in {"wait", "no_trade"}:
+                adverse_actions.add(event_action)
         if synthetic_affect is not None:
-            actions.append(str(getattr(synthetic_affect, "recommended_action", "continue")))
+            affect_action = str(getattr(synthetic_affect, "recommended_action", "continue"))
+            actions.append(affect_action)
+            if affect_action in {"wait", "no_trade"}:
+                adverse_actions.add(affect_action)
             if max(float(getattr(synthetic_affect, "stress", 0.0) or 0.0), float(getattr(synthetic_affect, "fear", 0.0) or 0.0)) >= 0.8:
                 reasons.append("synthetic_stress_extreme")
         if capital_sovereignty is not None:
-            actions.append(str(getattr(capital_sovereignty, "action", "continue")))
+            capital_action = str(getattr(capital_sovereignty, "action", "continue"))
+            actions.append(capital_action)
+            if capital_action in {"wait", "no_trade", "release", "rotate"}:
+                adverse_actions.add(capital_action)
         if execution_simulation is not None:
-            actions.append(str(getattr(execution_simulation, "recommended_action", "continue")))
+            simulation_action = str(getattr(execution_simulation, "recommended_action", "continue"))
+            actions.append(simulation_action)
+            if simulation_action in {"wait", "no_trade"}:
+                adverse_actions.add(simulation_action)
             if float(getattr(execution_simulation, "stressed_fill_probability", 1.0) or 1.0) <= 0.2:
                 reasons.append("execution_simulation_breaks_trade")
 
@@ -179,15 +200,17 @@ class HumanEscalationLayer:
         severity = "info"
         manual_review_required = False
         distinct_actions = sorted(distinct)
+        disagreement_without_risk = disagreement_score >= 0.4 and not reasons
+        severe_adverse_conflict = disagreement_score >= 0.65 and bool(adverse_actions)
         if "market_integrity_severe" in reasons:
             action = "flatten_only"
             severity = "critical"
             manual_review_required = True
-        elif disagreement_score >= 0.65 or len(reasons) >= 2:
+        elif len(reasons) >= 2 or severe_adverse_conflict:
             action = "manual_review"
             severity = "high"
             manual_review_required = True
-        elif disagreement_score >= 0.4:
+        elif disagreement_score >= 0.4 and reasons:
             action = "manual_review"
             severity = "medium"
             manual_review_required = True
@@ -224,6 +247,8 @@ class HumanEscalationLayer:
             metadata={
                 "actions": actions,
                 "distinct_actions": distinct_actions,
+                "adverse_actions": sorted(adverse_actions),
+                "disagreement_without_risk": disagreement_without_risk,
                 "acknowledgment": ack_payload,
             },
         )

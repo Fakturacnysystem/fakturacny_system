@@ -164,3 +164,20 @@ def test_market_watch_degrades_on_spread_and_liquidity_weakness(monkeypatch, tmp
     assert report.score < 0.70
     assert "spread_degraded" in report.reasons
     assert "liquidity_map_degraded" in report.reasons
+
+
+def test_market_watch_dead_market_only_degrades_when_microstructure_is_healthy(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    settings = _settings(tmp_path, market_watch=MarketWatchSettings(enabled=True))
+
+    report = MarketWatchService(settings).evaluate(
+        symbol="BTC/USD",
+        ts=datetime.now(timezone.utc),
+        snapshot=SimpleNamespace(spread_bps=0.02, depth_notional=500000.0),
+        forecast=SimpleNamespace(regime="RANGE", liquidity_regime="GOOD"),
+        regime_assessment=SimpleNamespace(label="dead_market"),
+    )
+
+    assert report.action == "degrade"
+    assert "regime_watch:dead_market" in report.reasons

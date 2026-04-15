@@ -33,6 +33,13 @@ class KrakenSpotTradeRow:
     raw: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class KrakenSpotTradeHistoryPage:
+    rows: list[KrakenSpotTradeRow]
+    fetched_count: int
+    total_count: int | None
+
+
 class KrakenSpotConnector:
     provider_id = "kraken_spot"
     supports_live_trading = True
@@ -88,6 +95,9 @@ class KrakenSpotConnector:
     def _userref(self, client_order_id: str) -> int:
         digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()[:8]
         return max(1, int(digest, 16))
+
+    def client_order_userref(self, client_order_id: str) -> int:
+        return self._userref(client_order_id)
 
     def _match_client_order(self, order: dict[str, Any], client_order_id: str) -> bool:
         info = order.get("info", {}) if isinstance(order.get("info"), dict) else {}
@@ -153,6 +163,33 @@ class KrakenSpotConnector:
             "quote": str(market.get("quote", "")),
         }
 
+    def symbol_from_market_id(self, market_id: str) -> str:
+        self._load_markets()
+        normalized = str(market_id or "").strip()
+        if not normalized:
+            return ""
+        by_id = getattr(self.exchange, "markets_by_id", {}) or {}
+        direct = by_id.get(normalized)
+        if isinstance(direct, list) and direct:
+            market = direct[0]
+            if isinstance(market, dict):
+                return str(market.get("symbol", normalized))
+        if isinstance(direct, dict):
+            return str(direct.get("symbol", normalized))
+        needle = normalized.upper()
+        for market in self.exchange.markets.values():
+            if not isinstance(market, dict):
+                continue
+            candidates = {
+                str(market.get("id", "")).upper(),
+                str(market.get("wsname", "")).upper(),
+                str(market.get("altname", "")).upper(),
+                str(market.get("symbol", "")).upper(),
+            }
+            if needle in candidates:
+                return str(market.get("symbol", normalized))
+        return normalized
+
     def normalize_amount(self, symbol: str, amount: float) -> float:
         self._load_markets()
         try:
@@ -169,7 +206,7 @@ class KrakenSpotConnector:
 
     def book_ticker(self, symbol: str) -> dict[str, Any]:
         try:
-            order_book = self.exchange.fetch_order_book(symbol, limit=1)
+            order_book = self.exchange.fetch_order_book(symbol, limit=10)
         except Exception as exc:
             raise KrakenSpotConnectorError(f"book_fetch_failed:{exc}") from exc
         bids = order_book.get("bids", []) if isinstance(order_book, dict) else []
@@ -179,6 +216,11 @@ class KrakenSpotConnector:
         bid_qty = bids[0][1] if bids else 0.0
         ask_qty = asks[0][1] if asks else 0.0
         ts = order_book.get("timestamp") if isinstance(order_book, dict) else None
+        depth_notional = 0.0
+        for price, qty, *_ in bids[:10]:
+            depth_notional += float(price or 0.0) * float(qty or 0.0)
+        for price, qty, *_ in asks[:10]:
+            depth_notional += float(price or 0.0) * float(qty or 0.0)
         return {
             "symbol": symbol,
             "bidPrice": str(bid),
@@ -186,6 +228,7 @@ class KrakenSpotConnector:
             "bidQty": str(bid_qty),
             "askQty": str(ask_qty),
             "timestamp": ts,
+            "depthNotional": depth_notional,
         }
 
     def balances(self) -> list[dict[str, Any]]:
@@ -227,6 +270,21 @@ class KrakenSpotConnector:
                 "used": float(row.get("usedBalance", 0.0) or 0.0),
             }
         return {"total": 0.0, "free": 0.0, "used": 0.0}
+
+    def quote_balance(self, symbol: str) -> dict[str, float | str]:
+        rules = self.market_constraints(symbol)
+        quote_asset = str(rules.get("quote", ""))
+        rows = self.balances()
+        for row in rows:
+            if str(row.get("asset", "")).upper() != quote_asset.upper():
+                continue
+            return {
+                "asset": quote_asset,
+                "total": float(row.get("balance", 0.0) or 0.0),
+                "free": float(row.get("availableBalance", 0.0) or 0.0),
+                "used": float(row.get("usedBalance", 0.0) or 0.0),
+            }
+        return {"asset": quote_asset, "total": 0.0, "free": 0.0, "used": 0.0}
 
     def position_risk(self, symbol: str | None = None) -> list[dict[str, Any]]:
         symbols = [symbol] if symbol else [str(row.get("symbol", "")) for row in self.exchange_info().get("symbols", []) if str(row.get("symbol", ""))]
@@ -271,7 +329,12 @@ class KrakenSpotConnector:
         quote_qty = abs(executed_qty * avg_price)
         return {
             "clientOrderId": str(client_order_id or order.get("clientOrderId", info.get("cl_ord_id", info.get("userref", "")))),
-            "orderId": str(order.get("id", info.get("txid", ""))),
+            "orderId": str(
+                order.get("id")
+                or info.get("id")
+                or (info.get("txid", [""])[0] if isinstance(info.get("txid"), list) and info.get("txid") else info.get("txid", ""))
+                or ""
+            ),
             "status": status,
             "symbol": symbol,
             "side": str(order.get("side", info.get("descr", {}).get("type", ""))).upper(),
@@ -306,11 +369,28 @@ class KrakenSpotConnector:
                 return self._normalize_order(order, client_order_id=client_order_id)
         return None
 
-    def validate_order_preview(self, *, symbol: str, side: str, amount: float, price: float, post_only: bool = False) -> tuple[bool, str]:
+    def validate_order_preview(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: float,
+        post_only: bool = False,
+        client_order_id: str = "",
+        time_in_force: str = "",
+        expire_seconds: int | None = None,
+    ) -> tuple[bool, str]:
         self._require_private_access()
-        params: dict[str, Any] = {"validate": True, "userref": self._userref(f"validate|{symbol}|{side}|{amount:.8f}|{price:.8f}")}
+        params: dict[str, Any] = {"validate": True}
+        if client_order_id:
+            params["cl_ord_id"] = client_order_id
         if post_only:
             params["postOnly"] = True
+        if time_in_force:
+            params["timeinforce"] = str(time_in_force)
+        if expire_seconds is not None:
+            params["expiretm"] = f"+{max(1, int(expire_seconds))}"
         try:
             self.exchange.create_order(symbol, "limit", side.lower(), amount, price, params)
         except Exception as exc:
@@ -327,11 +407,15 @@ class KrakenSpotConnector:
         price = payload.get("price")
         params: dict[str, Any] = {}
         if client_order_id:
-            params["userref"] = self._userref(client_order_id)
+            params["cl_ord_id"] = client_order_id
         if bool(payload.get("postOnly", False)):
             params["postOnly"] = True
         if bool(payload.get("validate", False)):
             params["validate"] = True
+        if payload.get("timeInForce"):
+            params["timeinforce"] = str(payload.get("timeInForce"))
+        if payload.get("expireSeconds") is not None:
+            params["expiretm"] = f"+{max(1, int(payload.get('expireSeconds')))}"
         try:
             created = self.exchange.create_order(
                 symbol,
@@ -345,6 +429,18 @@ class KrakenSpotConnector:
             raise KrakenSpotConnectorError(f"place_order_failed:{exc}") from exc
         return self._normalize_order(created, client_order_id=client_order_id)
 
+    def get_websockets_token(self) -> str:
+        self._require_private_access()
+        try:
+            payload = self.exchange.privatePostGetWebSocketsToken()
+        except Exception as exc:
+            raise KrakenSpotConnectorError(f"websockets_token_fetch_failed:{exc}") from exc
+        result = payload.get("result", {}) if isinstance(payload, dict) else {}
+        token = str(result.get("token", "") or "")
+        if not token:
+            raise KrakenSpotConnectorError("websockets_token_missing")
+        return token
+
     def cancel_order(self, symbol: str, client_order_id: str) -> dict[str, Any]:
         self._require_private_access()
         order = self.query_order(symbol, client_order_id)
@@ -356,7 +452,7 @@ class KrakenSpotConnector:
             raise KrakenSpotConnectorError(f"cancel_order_failed:{exc}") from exc
         return self._normalize_order(result if isinstance(result, dict) else {"id": order.get("orderId"), "symbol": symbol, "status": "canceled"}, client_order_id=client_order_id)
 
-    def trade_history(self, symbol: str, *, offset: int = 0, limit: int = 50) -> list[KrakenSpotTradeRow]:
+    def trade_history_page(self, symbol: str, *, offset: int = 0, limit: int = 50) -> KrakenSpotTradeHistoryPage:
         self._require_private_access()
         market = self._market(symbol)
         market_id = str(market.get("id", ""))
@@ -366,6 +462,12 @@ class KrakenSpotConnector:
             raise KrakenSpotConnectorError(f"trade_history_fetch_failed:{exc}") from exc
         result = payload.get("result", {}) if isinstance(payload, dict) else {}
         trades = result.get("trades", {}) if isinstance(result, dict) else {}
+        fetched_count = len(trades) if isinstance(trades, dict) else 0
+        total_count_raw = result.get("count") if isinstance(result, dict) else None
+        try:
+            total_count = int(total_count_raw) if total_count_raw is not None else None
+        except Exception:
+            total_count = None
         rows: list[KrakenSpotTradeRow] = []
         for trade_id, row in trades.items() if isinstance(trades, dict) else []:
             if not isinstance(row, dict):
@@ -391,7 +493,10 @@ class KrakenSpotConnector:
             except Exception:
                 continue
         rows.sort(key=lambda item: (item.timestamp_ms, item.trade_id))
-        return rows[:limit]
+        return KrakenSpotTradeHistoryPage(rows=rows[:limit], fetched_count=fetched_count, total_count=total_count)
+
+    def trade_history(self, symbol: str, *, offset: int = 0, limit: int = 50) -> list[KrakenSpotTradeRow]:
+        return self.trade_history_page(symbol, offset=offset, limit=limit).rows
 
     def get_account_summary(self) -> tuple[float, float]:
         try:

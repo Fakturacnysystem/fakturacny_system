@@ -67,3 +67,17 @@ def test_event_intelligence_records_partial_provenance_without_events():
     assert report.partial is True
     assert report.provenance.partial is True
     assert "partial_event_intelligence" in report.reasons
+
+
+def test_event_intelligence_without_events_does_not_inflate_risk():
+    report = EventIntelligenceService().evaluate(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        features={"event_novelty": 0.2},
+        forecast=None,
+        events=[],
+    )
+
+    assert report.recommended_action == "continue"
+    assert report.overall_risk_score <= 0.1
+    assert report.metadata["trust_gap_risk"] == 0.0

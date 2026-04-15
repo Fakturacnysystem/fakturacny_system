@@ -171,12 +171,34 @@ class SPREEngine:
     ) -> float:
         wait_bonus = float(fork.metadata.get("wait_bonus", 0.0) or 0.0)
         avoid_loss_bonus = float(fork.metadata.get("avoid_loss_bonus", 0.0) or 0.0)
+        edge_adjustment = float(fork.edge_adjustment_bps)
         if action == "trade_now":
-            return base_edge + fork.edge_adjustment_bps - fork.execution_cost_penalty_bps - ambiguity_penalty * 2.7
+            return base_edge + edge_adjustment - fork.execution_cost_penalty_bps - ambiguity_penalty * 2.7
         if action == "trade_smaller":
-            return (base_edge * 0.64) + (fork.edge_adjustment_bps * 0.56) - (fork.execution_cost_penalty_bps * 0.50) - ambiguity_penalty * 1.1
+            reduced_edge_adjustment = edge_adjustment
+            if edge_adjustment < 0.0:
+                downside_cap = max(6.0, abs(base_edge) * 1.60 + no_trade_quality * 1.15)
+                reduced_edge_adjustment = max(edge_adjustment, -downside_cap)
+            return (
+                (base_edge * 0.64)
+                + (reduced_edge_adjustment * 0.42)
+                - (fork.execution_cost_penalty_bps * 0.42)
+                - ambiguity_penalty * 0.85
+                - no_trade_quality * 0.18
+            )
         if action == "probe":
-            return (base_edge * 0.20) + (fork.edge_adjustment_bps * 0.30) - (fork.execution_cost_penalty_bps * 0.18) + learning_value - ambiguity_penalty * 0.25
+            reduced_edge_adjustment = edge_adjustment
+            if edge_adjustment < 0.0:
+                downside_cap = max(4.0, abs(base_edge) * 1.20 + no_trade_quality * 1.10 + learning_value * 0.80)
+                reduced_edge_adjustment = max(edge_adjustment, -downside_cap)
+            return (
+                (base_edge * 0.24)
+                + (reduced_edge_adjustment * 0.16)
+                - (fork.execution_cost_penalty_bps * 0.18)
+                + (learning_value * 1.10)
+                - ambiguity_penalty * 0.16
+                - no_trade_quality * 0.52
+            )
         if action == "wait":
             return wait_value + wait_bonus - max(0.0, base_edge) * 0.20 - ambiguity_penalty * 0.12
         return no_trade_quality + avoid_loss_bonus
@@ -221,14 +243,36 @@ class SPREEngine:
         event_risk = 0.0 if event_intelligence_report is None else float(getattr(event_intelligence_report, "overall_risk_score", 0.0) or 0.0)
         affect_shift = 0.0 if synthetic_affect_state is None else float(getattr(synthetic_affect_state, "no_trade_threshold_shift", 0.0) or 0.0)
         simulated_cost_bps = 0.0 if execution_simulation_report is None else float(getattr(execution_simulation_report, "worst_case_cost_bps", 0.0) or 0.0)
-        ambiguity_penalty = max(uncertainty + affect_shift, branch_disagreement, scenario_drift, event_risk * 0.8) + float(calibration_meta.get("dominance_caution_bias", 0.0) or 0.0)
+        ambiguity_components = {
+            "uncertainty": float(uncertainty),
+            "affect_shift": affect_shift,
+            "branch_disagreement": branch_disagreement,
+            "scenario_drift": scenario_drift,
+        }
+        adverse_components = {
+            "no_trade_probability": no_trade_probability,
+            "fragility": fragility,
+            "event_risk": event_risk,
+            "simulated_cost_pressure": min(1.0, simulated_cost_bps / 20.0),
+        }
+        ambiguity_penalty = max(
+            float(uncertainty) + affect_shift,
+            branch_disagreement * 0.90,
+            scenario_drift * 0.80,
+        ) + float(calibration_meta.get("dominance_caution_bias", 0.0) or 0.0)
+        adverse_evidence_penalty = max(
+            no_trade_probability,
+            fragility,
+            event_risk * 0.85,
+            adverse_components["simulated_cost_pressure"],
+        )
         learning_value = max(0.0, min(2.8, uncertainty * 1.5 + branch_disagreement * 1.1 + scenario_drift * 0.9))
         no_trade_quality = max(
-            no_trade_probability * 8.0,
-            ambiguity_penalty * 7.4,
+            no_trade_probability * 6.0,
             fragility * 8.7,
             event_risk * 6.9,
-            simulated_cost_bps * 0.40,
+            adverse_evidence_penalty * 7.2,
+            simulated_cost_bps * 0.30,
         )
         forks = self._forks(
             expected_move_bps=expected_move_bps,
@@ -276,10 +320,15 @@ class SPREEngine:
         evaluations: list[ActionEvaluation] = []
         for action, metric in raw_metrics.items():
             regret = max(0.0, best_expected - float(metric["expected_utility"]))
+            survival_scale = max(4.0, abs(base_edge) * 0.30)
+            if action == "no_trade":
+                survival_scale *= 0.35
+            elif action == "probe":
+                survival_scale *= 0.80
             dominance = (
                 float(metric["expected_utility"]) * 0.52
                 + float(metric["worst_case"]) * 0.12
-                + float(metric["survival_ratio"]) * max(4.0, abs(base_edge) * 0.30)
+                + float(metric["survival_ratio"]) * survival_scale
                 - regret * 0.25
             )
             if action == "no_trade":
@@ -342,12 +391,13 @@ class SPREEngine:
         elif (
             probe_eval is not None
             and selected.action == "no_trade"
-            and float(probe_eval.metadata.get("dominance_score", 0.0) or 0.0) >= float(selected.metadata.get("dominance_score", 0.0) or 0.0) - 2.50
-            and no_trade_probability < 0.25
+            and float(probe_eval.metadata.get("dominance_score", 0.0) or 0.0) >= float(selected.metadata.get("dominance_score", 0.0) or 0.0) - 3.50
+            and no_trade_probability < 0.45
             and event_risk < 0.35
-            and fragility < 0.35
+            and fragility < 0.40
             and branch_disagreement >= 0.30
             and learning_value >= 0.90
+            and base_edge > max(4.0, no_trade_quality * 1.75)
         ):
             selected = probe_eval
         runner_candidates = [evaluation for evaluation in evaluations if evaluation.action != selected.action]
@@ -388,6 +438,10 @@ class SPREEngine:
             final_action = "trade_smaller"
             size_multiplier = min(size_multiplier, 0.35)
             reasons.append("event_ambiguity_forces_smaller")
+        elif final_action == "wait" and no_trade_probability >= 0.65 and fragility >= 0.60:
+            final_action = "no_trade"
+            size_multiplier = 0.0
+            reasons.append("adverse_evidence_dominates_wait")
 
         side = None if abs(combined_signal) < 1e-9 else ("buy" if combined_signal > 0 else "sell")
         narrative = (
@@ -415,6 +469,9 @@ class SPREEngine:
                 "event_risk": event_risk,
                 "simulated_cost_bps": simulated_cost_bps,
                 "ambiguity_penalty": ambiguity_penalty,
+                "adverse_evidence_penalty": adverse_evidence_penalty,
+                "ambiguity_components": ambiguity_components,
+                "adverse_components": adverse_components,
                 "learning_value": learning_value,
                 "dominance_scores": dominance_scores,
                 "action_rankings": action_rankings,

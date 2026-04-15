@@ -163,6 +163,65 @@ def test_execution_service_uses_doctrine_context_to_make_forced_exit_more_aggres
     assert plan.reasons["global_execution_adjustments"]["preferred_exit_style"] == "marketable_limit"
 
 
+def test_execution_service_preserves_lifecycle_proof_submitted_notional_for_kraken_spot():
+    svc = ExecutionService(ExecutionSettings(provider_id="kraken_spot", fee_bps=30.0, slippage_bps=8.0))
+    intent = OrderIntent(
+        symbol="BTC/USD",
+        side="buy",
+        target_notional=12.0,
+        why={
+            "decision_doctrine": {"recommended_action": "probe", "size_multiplier": 0.5},
+            "lifecycle_proof": {
+                "enabled": True,
+                "proof_target_notional": 12.0,
+                "submitted_target_notional": 12.0,
+            },
+        },
+    )
+
+    plan = svc.build_execution_plan(intent, depth_notional=100000.0, spread_bps=2.0, regime="RANGE", liquidity_regime="GOOD")
+
+    assert plan.target_notional == pytest.approx(12.0)
+    assert plan.reasons["constraint_adjustment"]["constraints_blocked"] is False
+    assert plan.reasons["notional_breakdown"] == {
+        "policy_requested_notional": 12.0,
+        "constraint_normalized_notional": 12.0,
+        "doctrine_scaled_notional": 6.0,
+        "proof_override_notional": 12.0,
+        "submitted_target_notional": 12.0,
+    }
+
+
+def test_execution_service_degrades_style_under_high_confidence_bad_realized_feedback():
+    svc = ExecutionService(ExecutionSettings(provider_id="kraken_spot"))
+    intent = OrderIntent(
+        symbol="BTC/USD",
+        side="buy",
+        target_notional=100.0,
+        why={
+            "trade_admission": {
+                "recommended_action": "continue",
+                "recommended_size_multiplier": 1.0,
+                "signal_decay_risk": 0.8,
+                "execution_survivability_score": 0.85,
+                "floor_compatibility_score": 0.9,
+                "recommended_execution_style": "marketable_limit",
+            },
+            "execution_calibration_feedback": {
+                "confidence": 0.75,
+                "realized_slippage_overshoot_bps": 5.0,
+                "fill_delay_destruction_bps": 7.0,
+                "edge_capture_efficiency": 0.45,
+            },
+        },
+    )
+
+    plan = svc.build_execution_plan(intent, depth_notional=100000.0, spread_bps=2.0, regime="RANGE", liquidity_regime="GOOD")
+
+    assert plan.order_style == "limit"
+    assert plan.reasons["global_execution_adjustments"]["execution_calibration_feedback"]["confidence"] == pytest.approx(0.75)
+
+
 def test_execution_service_exposes_provider_capability_matrix():
     svc = ExecutionService(ExecutionSettings(provider_id="kraken_derivatives"))
 
@@ -368,3 +427,18 @@ def test_robot_settings_config_hash_changes_when_manifest_changes(monkeypatch):
     assert base.rollout_stage() == RolloutStage.CANARY_LIVE
     assert changed.rollout_stage() == RolloutStage.NORMAL_LIVE
     assert base.config_hash() != changed.config_hash()
+
+
+def test_robot_settings_live_tiny_override_skips_full_stage_unlock(monkeypatch):
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    monkeypatch.setenv("ACK_I_UNDERSTAND_RISKS", "true")
+    monkeypatch.setenv("KRAKEN_SPOT_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_SPOT_API_SECRET", "s")
+    settings = RobotSettings.from_file("config.kraken_spot.tiny_live.yaml")
+
+    gate = settings.live_gate_status()
+
+    assert settings.rollout_stage() == RolloutStage.TINY_LIVE
+    assert gate["rollout_stage"] == "tiny_live"
+    assert gate["full_live_stage_required"] is False
+    assert gate["rollout_profile"]["purpose"] == "first_real_money_truth_and_execution_validation"

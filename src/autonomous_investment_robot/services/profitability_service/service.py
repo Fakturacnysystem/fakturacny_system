@@ -207,6 +207,12 @@ class ProfitabilityService:
         inventory_state: InventoryState,
         reserve_state: ReserveState | None = None,
         current_exposure: float = 0.0,
+        regime_label: str = "",
+        liquidity_regime: str = "",
+        execution_quality: ExecutionQualityForecast | None = None,
+        event_intelligence: Any | None = None,
+        synthetic_affect: Any | None = None,
+        position_morph_plan: Any | None = None,
     ) -> tuple[CapitalReleaseDecision, ExitIntent | None]:
         reserve_breach = bool(reserve_state is not None and reserve_state.reserve_breached)
         stale = float(inventory_state.stale_inventory_score)
@@ -222,13 +228,121 @@ class ProfitabilityService:
             cost_basis_proxy_state = "below_cost_basis_proxy"
         elif mark_ratio > 1.01:
             cost_basis_proxy_state = "above_cost_basis_proxy"
-        notional = inventory_state.gross_open_notional * (0.5 if reserve_breach else 0.25)
+        event_action = "continue" if event_intelligence is None else str(getattr(event_intelligence, "recommended_action", "continue") or "continue")
+        event_risk = 0.0 if event_intelligence is None else float(getattr(event_intelligence, "overall_risk_score", 0.0) or 0.0)
+        stress = 0.0 if synthetic_affect is None else float(getattr(synthetic_affect, "stress", 0.0) or 0.0)
+        conviction = 0.0 if synthetic_affect is None else float(getattr(synthetic_affect, "conviction", 0.0) or 0.0)
+        fear = 0.0 if synthetic_affect is None else float(getattr(synthetic_affect, "fear", 0.0) or 0.0)
+        fill_probability = 0.5 if execution_quality is None else float(execution_quality.fill_probability or 0.5)
+        adverse_selection = 0.0 if execution_quality is None else float(execution_quality.adverse_selection_risk or 0.0)
+        expected_fill_speed_ms = 0.0 if execution_quality is None else float(execution_quality.expected_fill_speed_ms or 0.0)
+        oldest_age_hours = float(inventory_state.oldest_age_seconds) / 3600.0
+        weighted_age_hours = float(inventory_state.weighted_age_seconds) / 3600.0
+        allow_runner = bool(getattr(position_morph_plan, "allow_runner", False)) if position_morph_plan is not None else False
+        runner_fraction = 0.0 if position_morph_plan is None else float(getattr(position_morph_plan, "runner_fraction", 0.0) or 0.0)
+
         action = "partial_exit"
         reason = "reserve_breach_with_stale_inventory" if reserve_breach else "stale_inventory_reduction"
         if reserve_breach and cost_basis_proxy_state == "below_cost_basis_proxy":
             reason = "reserve_breach_below_cost_basis_capital_release"
         elif not reserve_breach and cost_basis_proxy_state == "above_cost_basis_proxy":
             reason = "profit_lock_partial_exit"
+
+        exit_family_candidates: list[dict[str, Any]] = []
+
+        def _candidate(
+            name: str,
+            score: float,
+            *,
+            action_name: str,
+            execution_style: str,
+            target_fraction: float,
+            rationale: list[str],
+        ) -> None:
+            exit_family_candidates.append(
+                {
+                    "family": name,
+                    "score": max(0.0, min(1.0, score)),
+                    "action": action_name,
+                    "execution_style": execution_style,
+                    "target_fraction": max(0.0, min(1.0, target_fraction)),
+                    "rationale": rationale,
+                }
+            )
+
+        _candidate(
+            "staged_partial_exit",
+            0.55 + max(0.0, stale - 0.35) * 0.45 + (0.12 if cost_basis_proxy_state == "above_cost_basis_proxy" else 0.0),
+            action_name="partial_exit",
+            execution_style="passive_limit",
+            target_fraction=0.35 if cost_basis_proxy_state == "above_cost_basis_proxy" else 0.25,
+            rationale=["profit_locking" if reason == "profit_lock_partial_exit" else "stale_inventory_rotation"],
+        )
+        _candidate(
+            "volatility_trailing",
+            0.25 + max(0.0, conviction - fear) * 0.35 + (0.10 if allow_runner else 0.0),
+            action_name="hold_runner",
+            execution_style="passive_limit",
+            target_fraction=max(0.0, 1.0 - runner_fraction),
+            rationale=["runner_allowed" if allow_runner else "hold_until_exit_confirmed"],
+        )
+        _candidate(
+            "time_decay_exit",
+            min(1.0, 0.20 + weighted_age_hours / 48.0 + stale * 0.35),
+            action_name="partial_exit",
+            execution_style="passive_limit",
+            target_fraction=0.30 if oldest_age_hours >= 12.0 else 0.15,
+            rationale=["weighted_inventory_age_high"],
+        )
+        _candidate(
+            "regime_failure_exit",
+            min(1.0, 0.25 + (0.45 if regime_label.upper() in {"PANIC", "BREAKDOWN"} else 0.0) + event_risk * 0.20),
+            action_name="risk_exit",
+            execution_style="marketable_limit",
+            target_fraction=0.60,
+            rationale=["regime_failure" if regime_label.upper() in {"PANIC", "BREAKDOWN"} else "regime_not_failed"],
+        )
+        _candidate(
+            "momentum_exhaustion_exit",
+            min(1.0, 0.15 + max(0.0, 0.55 - conviction) * 0.50 + max(0.0, fear - 0.35) * 0.25),
+            action_name="partial_exit",
+            execution_style="passive_limit",
+            target_fraction=0.25,
+            rationale=["conviction_softening"],
+        )
+        _candidate(
+            "liquidity_shock_exit",
+            min(1.0, 0.20 + adverse_selection * 0.45 + (0.25 if liquidity_regime.upper() == "THIN" else 0.0) + (0.15 if expected_fill_speed_ms > 800.0 else 0.0)),
+            action_name="risk_exit",
+            execution_style="marketable_limit",
+            target_fraction=0.50,
+            rationale=["liquidity_shock" if liquidity_regime.upper() == "THIN" else "execution_fragility"],
+        )
+        _candidate(
+            "reacceleration_hold",
+            min(1.0, 0.20 + max(0.0, conviction - fear) * 0.45 + fill_probability * 0.20 + (0.10 if allow_runner else 0.0)),
+            action_name="hold",
+            execution_style="passive_limit",
+            target_fraction=0.0,
+            rationale=["runner_retention" if allow_runner else "hold_bias"],
+        )
+        if event_action in {"no_trade", "wait"}:
+            for row in exit_family_candidates:
+                if row["family"] in {"regime_failure_exit", "liquidity_shock_exit"}:
+                    row["score"] = min(1.0, float(row["score"]) + 0.20)
+                    row["rationale"] = list(row["rationale"]) + [f"event_intelligence:{event_action}"]
+        if reserve_breach:
+            for row in exit_family_candidates:
+                if row["family"] in {"staged_partial_exit", "time_decay_exit", "regime_failure_exit"}:
+                    row["score"] = min(1.0, float(row["score"]) + 0.10)
+
+        chosen_family = max(exit_family_candidates, key=lambda item: float(item["score"]))
+        target_fraction = float(chosen_family.get("target_fraction", 0.0) or 0.0)
+        if reserve_breach:
+            target_fraction = max(target_fraction, 0.5)
+        elif reason == "profit_lock_partial_exit":
+            target_fraction = max(target_fraction, 0.30)
+        notional = inventory_state.gross_open_notional * max(0.15, min(0.75, target_fraction if target_fraction > 0.0 else (0.5 if reserve_breach else 0.25)))
         decision_reasons = ["free_quote_reserve_breached"] if reserve_breach else ["stale_inventory"]
         if cost_basis_proxy_state == "below_cost_basis_proxy":
             decision_reasons.append("below_cost_basis_proxy")
@@ -254,6 +368,17 @@ class ProfitabilityService:
                 "inventory_state": asdict(inventory_state),
                 "reserve_state": {} if reserve_state is None else asdict(reserve_state),
                 "profit_locking": reason == "profit_lock_partial_exit",
+                "requires_doctrine_sell_eligibility": True,
+                "winner_monetization": {
+                    "state": chosen_family.get("family"),
+                    "selected_action": chosen_family.get("action"),
+                    "reacceleration_hold": chosen_family.get("family") == "reacceleration_hold",
+                    "runner_fraction": runner_fraction,
+                },
+                "exit_path_comparison": {
+                    "selected_family": chosen_family.get("family"),
+                    "families": exit_family_candidates,
+                },
             },
         )
         side = "sell" if current_exposure >= 0.0 else "buy"
@@ -270,6 +395,29 @@ class ProfitabilityService:
                 "cost_basis_proxy_state": cost_basis_proxy_state,
                 "profit_locking": reason == "profit_lock_partial_exit",
                 "capital_release_allowed": True,
+                "requires_doctrine_sell_eligibility": True,
+                "selected_exit_family": str(chosen_family.get("family", "")),
+                "selected_exit_action": str(chosen_family.get("action", action)),
+                "winner_monetization": {
+                    "state": chosen_family.get("family"),
+                    "selected_action": chosen_family.get("action"),
+                    "target_fraction": target_fraction,
+                    "runner_fraction": runner_fraction,
+                    "hold_bias": chosen_family.get("family") in {"volatility_trailing", "reacceleration_hold"},
+                },
+                "exit_state_machine": {
+                    "stage": "sell_eligible_gate_pending",
+                    "selected_family": chosen_family.get("family"),
+                    "family_score": chosen_family.get("score"),
+                    "regime_label": regime_label,
+                    "liquidity_regime": liquidity_regime,
+                    "reserve_breach": reserve_breach,
+                },
+                "exit_path_comparison": {
+                    "selected_family": chosen_family.get("family"),
+                    "selected_score": chosen_family.get("score"),
+                    "families": exit_family_candidates,
+                },
             },
         )
         return decision, exit_intent

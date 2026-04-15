@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "generated_policy": "repo_static_baseline",
+  "global_invariants": {
+    "provider": "kraken_spot",
+    "product": "spot",
+    "long_only": true,
+    "cost_basis_sell_block": true,
+    "net_profit_sell_block": true,
+    "minimum_sell_net_profit_bps_floor": 120.0,
+    "no_additive_live_authority_promotion_without_explicit_code_gate": true
+  },
+  "subsystems": [
+    {
+      "name": "cost_model_degradation",
+      "authority_level": "additive_live_telemetry",
+      "decision_status": "evidence_collect",
+      "required_live_sample_count": 20,
+      "required_closed_trade_sample_count": 10,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 0.0,
+      "forbidden_regressions": [
+        "reconciliation_drift",
+        "sell_fence_regression",
+        "unexplained_live_degradation"
+      ],
+      "rollback_trigger": "two_consecutive_degraded_runs",
+      "operator_complexity_impact": "low"
+    },
+    {
+      "name": "market_universe_ranking",
+      "authority_level": "shadow_only",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 40,
+      "required_closed_trade_sample_count": 20,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 2.0,
+      "forbidden_regressions": [
+        "symbol_mapping_ambiguity",
+        "pair_selection_authority_leak",
+        "reconciliation_mismatch"
+      ],
+      "rollback_trigger": "ranking_disagrees_with_authoritative_path",
+      "operator_complexity_impact": "medium"
+    },
+    {
+      "name": "playbook_framework",
+      "authority_level": "shadow_only",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 40,
+      "required_closed_trade_sample_count": 20,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 2.0,
+      "forbidden_regressions": [
+        "doctrine_conflict",
+        "cleanup_sell_leak",
+        "shadow_variant_live_use"
+      ],
+      "rollback_trigger": "one_doctrine_conflict",
+      "operator_complexity_impact": "medium"
+    },
+    {
+      "name": "opportunity_auction",
+      "authority_level": "shadow_only",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 50,
+      "required_closed_trade_sample_count": 25,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 3.0,
+      "forbidden_regressions": [
+        "routing_authority_change_without_gate",
+        "false_positive_spike",
+        "sell_fence_regression"
+      ],
+      "rollback_trigger": "rollback_trigger_report_true",
+      "operator_complexity_impact": "medium"
+    },
+    {
+      "name": "portfolio_allocator",
+      "authority_level": "shadow_only",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 50,
+      "required_closed_trade_sample_count": 25,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 3.0,
+      "forbidden_regressions": [
+        "reserve_breach",
+        "cap_breach",
+        "economic_meaning_drift"
+      ],
+      "rollback_trigger": "one_capital_envelope_breach",
+      "operator_complexity_impact": "high"
+    },
+    {
+      "name": "expectancy_engine",
+      "authority_level": "additive_live_telemetry",
+      "decision_status": "evidence_collect",
+      "required_live_sample_count": 30,
+      "required_closed_trade_sample_count": 15,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 5.0,
+      "forbidden_regressions": [
+        "sample_guard_bypass",
+        "misleading_promotion_ready"
+      ],
+      "rollback_trigger": "score_directional_mismatch_over_two_windows",
+      "operator_complexity_impact": "low"
+    },
+    {
+      "name": "adaptive_cadence_and_self_throttling",
+      "authority_level": "shadow_only",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 30,
+      "required_closed_trade_sample_count": 15,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 0.0,
+      "forbidden_regressions": [
+        "hidden_order_rate_change",
+        "routing_authority_leak"
+      ],
+      "rollback_trigger": "cadence_logic_causes_degradation",
+      "operator_complexity_impact": "medium"
+    },
+    {
+      "name": "exit_intelligence",
+      "authority_level": "additive_live_telemetry",
+      "decision_status": "shadow_only",
+      "required_live_sample_count": 30,
+      "required_closed_trade_sample_count": 20,
+      "required_realized_net_bps_floor": 0.0,
+      "required_expectancy_bps_floor": 0.0,
+      "forbidden_regressions": [
+        "below_floor_sell_path",
+        "cost_basis_conflict"
+      ],
+      "rollback_trigger": "exit_diagnostics_disagree_with_authoritative_history",
+      "operator_complexity_impact": "low"
+    }
+  ]
+}

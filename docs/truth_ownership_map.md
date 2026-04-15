@@ -34,7 +34,7 @@ and journaled into `truth_confidence_journal.jsonl` with levels:
 | live gating status truth | `RobotSettings.live_gate_status` | `authoritative` | Paper still records live gate status so rollout intent remains explicit. |
 | reconciliation status truth | `ReconciliationService.reconcile_report` | `authoritative` | Typed reconciliation outcome is the canonical state-agreement record. |
 
-## Live modes (`execution.mode=live_readonly/live_testnet/live`)
+## Live-capable modes (`execution.mode=live_readonly/live`)
 
 | Domain | Owner | Authority | Notes |
 |---|---|---|---|
@@ -50,7 +50,7 @@ and journaled into `truth_confidence_journal.jsonl` with levels:
 | execution decision truth | `LiveBinanceService/LiveKrakenService execute_intent` | `authoritative` | Canonical execution outcome for each live intent. |
 | configuration truth | `RobotSettings.from_file + OpsService.track_config` | `authoritative` | Config hash and parsed settings define run behavior. |
 | environment variable truth | `OS environment (validated by RobotSettings/connectors)` | `authoritative` | Credential and unlock env vars are validated fail-closed. |
-| runtime mode truth | `RobotSettings.execution_mode_enum` | `authoritative` | Canonical mode selector for readonly/testnet/live behavior. |
+| runtime mode truth | `RobotSettings.execution_mode_enum` | `authoritative` | Canonical mode selector for readonly/live behavior. |
 | risk mode truth | `RiskEngineService.state.risk_mode` | `authoritative` | Explicit risk posture is canonical and is never inferred downstream. |
 | live gating status truth | `RobotOrchestrator.boot LIVE_GATE_STATUS event` | `authoritative` | Combines config gate, rollout stage, adapter preflight, and restart confidence. |
 | reconciliation status truth | `ReconciliationService.reconcile_live_report` | `authoritative` | Typed outcome drives alert, halt, or halt-and-flatten behavior. |
@@ -90,7 +90,7 @@ These gaps are explicitly emitted as `TRUTH_OWNERSHIP_GAP` risk events so they a
 - Rollout stage truth is derived from `RobotSettings.rollout_stage()`:
   - `paper`
   - `shadow` for `live_readonly`
-  - `tiny_live` for `live_testnet`
+  - `tiny_live` for explicit `live` tiny-live configs
   - `limited_live` for `live` canary profiles
   - `normal_live` for full `live`
 - Live gating truth is emitted as `LIVE_GATE_STATUS` during boot.

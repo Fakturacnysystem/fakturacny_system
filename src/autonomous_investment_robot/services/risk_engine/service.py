@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from autonomous_investment_robot.config.settings import RiskLimits, UNSPECIFIED
@@ -23,6 +24,7 @@ class RiskState:
     funding_budget_utilization: float = 0.0
     cooldown_steps_remaining: int = 0
     stable_steps: int = 0
+    orders_window_started_monotonic: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -46,6 +48,16 @@ class RiskEngineService:
         payload = dict(details or {})
         payload.setdefault("risk_mode", self.state.risk_mode)
         return RiskDecision(allowed, reason, adjusted_notional=adjusted_notional, flatten=flatten, details=payload)
+
+    def _refresh_order_window(self) -> None:
+        now = time.monotonic()
+        if now - self.state.orders_window_started_monotonic >= 60.0:
+            self.state.orders_in_current_min = 0
+            self.state.orders_window_started_monotonic = now
+
+    def record_order_attempt(self) -> None:
+        self._refresh_order_window()
+        self.state.orders_in_current_min += 1
 
     def _limits_complete(self) -> bool:
         required = [
@@ -106,6 +118,7 @@ class RiskEngineService:
     def reset_periodic_limits(self, *, reset_orders: bool = True, reset_weekly: bool = False) -> None:
         if reset_orders:
             self.state.orders_in_current_min = 0
+            self.state.orders_window_started_monotonic = time.monotonic()
         if reset_weekly:
             self.state.weekly_stop = False
 
@@ -227,6 +240,7 @@ class RiskEngineService:
         doctrine_execution_survivability_score: float | None = None,
         doctrine_partial_truth_penalty: float | None = None,
     ) -> RiskDecision:
+        self._refresh_order_window()
         if self.state.weekly_stop:
             self._set_risk_mode("flatten-only")
             return self._decision(False, "weekly_stop_safe_mode")
@@ -510,5 +524,4 @@ class RiskEngineService:
                 self._set_risk_mode("cautious")
             else:
                 self._set_risk_mode("normal")
-        self.state.orders_in_current_min += 1
         return self._decision(True, "passed", adjusted_notional=adjusted, details={"crowding_score": self.state.last_crowding_score, "crowding_level": self.state.last_crowding_level, "crowding_components": dict(self.state.last_crowding_components), "funding_budget_utilization": self.state.funding_budget_utilization, "api_error_burst": api_error_burst, "order_reject_burst": order_reject_burst, "abnormal_latency_ms": abnormal_latency_ms, "slippage_drift_bps": slippage_drift_bps, "balance_state_ok": balance_state_ok, "doctrine_action": doctrine_action, "doctrine_size_multiplier": doctrine_size_multiplier, "doctrine_truth_strength": doctrine_truth_strength, "doctrine_survival_score": doctrine_survival_score, "doctrine_robustness_score": doctrine_robustness_score, "doctrine_execution_survivability_score": doctrine_execution_survivability_score, "doctrine_partial_truth_penalty": doctrine_partial_truth_penalty})
